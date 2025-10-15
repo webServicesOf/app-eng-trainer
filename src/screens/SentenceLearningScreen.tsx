@@ -263,43 +263,103 @@ const SentenceLearningScreen: React.FC = () => {
         backgroundColor: theme.palette.grey[100],
         display: 'flex',
         flexDirection: 'column',
-        padding: 2,
+        padding: { xs: 1, sm: 2 },
       }}
     >
       {/* Header */}
       <Paper
         elevation={2}
         sx={{
-          p: 2,
+          p: { xs: 1, sm: 2 },
           mb: 2,
           display: 'flex',
+          flexDirection: { xs: 'column', md: 'row' },
           justifyContent: 'space-between',
-          alignItems: 'center',
+          alignItems: { xs: 'stretch', md: 'center' },
+          gap: { xs: 1, md: 0 },
         }}
       >
-        <IconButton onClick={() => navigate('/')} color="primary">
-          <Home />
-        </IconButton>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <IconButton onClick={() => navigate('/')} color="primary" size="small">
+            <Home />
+          </IconButton>
 
-        <Stack spacing={1}>
-          <Stack direction="row" alignItems="center" spacing={2}>
-            <Typography variant="h6" component="h1">
+          <Stack direction="row" spacing={{ xs: 0.5, sm: 1 }} sx={{ display: { xs: 'flex', md: 'none' } }}>
+            <IconButton
+              onClick={() => setIsBlindMode(!isBlindMode)}
+              color={isBlindMode ? 'primary' : 'default'}
+              size="small"
+              title={isBlindMode ? '통암기 모드' : '기본 모드'}
+            >
+              {isBlindMode ? <VisibilityOff /> : <Visibility />}
+            </IconButton>
+            {!isCumulative && (
+              <IconButton
+                onClick={handleSaveSentence}
+                color={isSaved ? 'primary' : 'default'}
+                size="small"
+                title={isSaved ? '저장됨' : '문장 저장'}
+              >
+                {isSaved ? <Bookmark /> : <BookmarkBorder />}
+              </IconButton>
+            )}
+            <IconButton onClick={() => handleSpeak()} color="primary" size="small">
+              <VolumeUp />
+            </IconButton>
+          </Stack>
+        </Box>
+
+        <Stack spacing={1} sx={{ flex: 1, minWidth: 0 }}>
+          <Stack direction="row" alignItems="center" spacing={{ xs: 0.5, sm: 1 }} flexWrap="wrap">
+            <Typography
+              variant="h6"
+              component="h1"
+              sx={{
+                fontSize: { xs: '1rem', sm: '1.25rem' },
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                flex: { xs: '1 1 100%', sm: '0 1 auto' },
+              }}
+            >
               {article.title}
             </Typography>
-            <Chip label={`${currentIndex}/${article.sentences.length}`} color="primary" variant="outlined" />
-            <Chip label={isCumulative ? '누적' : '단일'} color="secondary" variant="filled" size="small" />
+            <Chip
+              label={`${currentIndex}/${article.sentences.length}`}
+              color="primary"
+              variant="outlined"
+              size="small"
+            />
+            <Chip
+              label={isCumulative ? '누적' : '단일'}
+              color="secondary"
+              variant="filled"
+              size="small"
+            />
           </Stack>
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={{ xs: 0.5, sm: 1 }} flexWrap="wrap">
             {article.difficulty && (
-              <Chip label={`Difficulty: ${article.difficulty}`} size="small" color="primary" variant="outlined" />
+              <Chip
+                label={`${article.difficulty}`}
+                size="small"
+                color="primary"
+                variant="outlined"
+                sx={{ fontSize: { xs: '0.7rem', sm: '0.8rem' } }}
+              />
             )}
             {article.length && (
-              <Chip label={`Length: ${article.length}`} size="small" color="secondary" variant="outlined" />
+              <Chip
+                label={`${article.length}`}
+                size="small"
+                color="secondary"
+                variant="outlined"
+                sx={{ fontSize: { xs: '0.7rem', sm: '0.8rem' } }}
+              />
             )}
           </Stack>
         </Stack>
 
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} sx={{ display: { xs: 'none', md: 'flex' } }}>
           <IconButton
             onClick={() => setIsBlindMode(!isBlindMode)}
             color={isBlindMode ? 'primary' : 'default'}
@@ -332,22 +392,22 @@ const SentenceLearningScreen: React.FC = () => {
         elevation={3}
         sx={{
           flex: 1,
-          mb: 3,
+          mb: { xs: 2, sm: 3 },
           backgroundColor: theme.palette.grey[50],
         }}
       >
-        <CardContent sx={{ p: 4 }}>
-          <Typography variant="subtitle2" color="grey.600" gutterBottom>
+        <CardContent sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
+          <Typography variant="subtitle2" color="grey.600" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             영어 ({isCumulative ? '누적' : '현재'})
           </Typography>
 
           <Box
             sx={{
-              minHeight: '200px',
+              minHeight: { xs: '150px', sm: '200px' },
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              px: 2,
+              px: { xs: 1, sm: 2 },
             }}
           >
             <Typography
@@ -373,7 +433,7 @@ const SentenceLearningScreen: React.FC = () => {
                       handleSpeak(word);
                     }}
                     style={{
-                      color: index === highlightIndex ? 'inherit' : (isBlindMode ? 'transparent' : '#cccccc'),
+                      color: index === highlightIndex ? '#000000' : (isBlindMode ? 'transparent' : '#cccccc'),
                       marginRight: '0.3em',
                       transition: 'color 0.2s',
                       display: 'inline',
@@ -396,16 +456,17 @@ const SentenceLearningScreen: React.FC = () => {
       <Paper
         elevation={3}
         sx={{
-          p: 3,
+          p: { xs: 2, sm: 3 },
           display: 'flex',
+          flexDirection: { xs: 'column', lg: 'row' },
           justifyContent: 'center',
           alignItems: 'center',
-          gap: 3,
+          gap: { xs: 2, sm: 3 },
         }}
       >
         {/* Window Size Control */}
-        <Box sx={{ textAlign: 'center', minWidth: '150px', px: 2 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
+        <Box sx={{ textAlign: 'center', width: { xs: '100%', sm: 'auto' }, minWidth: { sm: '150px' } }}>
+          <Typography variant="body2" color="text.secondary" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             누적 윈도우
           </Typography>
           <TextField
@@ -424,11 +485,11 @@ const SentenceLearningScreen: React.FC = () => {
         </Box>
 
         {/* Speed Control */}
-        <Box sx={{ textAlign: 'center', minWidth: '200px', px: 2 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
+        <Box sx={{ textAlign: 'center', width: { xs: '100%', sm: 'auto' }, minWidth: { sm: '200px' } }}>
+          <Typography variant="body2" color="text.secondary" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             재생 속도
           </Typography>
-          <Typography variant="h6" color="primary" sx={{ mb: 1 }}>
+          <Typography variant="h6" color="primary" sx={{ mb: 1, fontSize: { xs: '1rem', sm: '1.25rem' } }}>
             {ttsRate.toFixed(1)}x
           </Typography>
           <Slider
@@ -445,7 +506,12 @@ const SentenceLearningScreen: React.FC = () => {
             ]}
             valueLabelDisplay="auto"
             valueLabelFormat={(value) => `${value.toFixed(1)}x`}
-            sx={{ width: '100%' }}
+            sx={{
+              width: '100%',
+              '& .MuiSlider-markLabel': {
+                fontSize: { xs: '0.6rem', sm: '0.75rem' },
+              },
+            }}
           />
         </Box>
 
@@ -456,8 +522,8 @@ const SentenceLearningScreen: React.FC = () => {
             gridTemplateColumns: 'repeat(3, 1fr)',
             gridTemplateRows: 'repeat(3, 1fr)',
             gap: 0.5,
-            width: '120px',
-            height: '120px',
+            width: { xs: '100px', sm: '120px' },
+            height: { xs: '100px', sm: '120px' },
           }}
         >
           {/* Top Row */}
@@ -548,20 +614,20 @@ const SentenceLearningScreen: React.FC = () => {
         </Box>
 
         {/* Control Info */}
-        <Box sx={{ textAlign: 'left', color: theme.palette.text.secondary }}>
-          <Typography variant="body2" gutterBottom>
+        <Box sx={{ textAlign: 'left', color: theme.palette.text.secondary, display: { xs: 'none', sm: 'block' } }}>
+          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             ↑ 누적 표시
           </Typography>
-          <Typography variant="body2" gutterBottom>
+          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             ↓ 단일 표시
           </Typography>
-          <Typography variant="body2" gutterBottom>
+          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             ← 이전 문장
           </Typography>
-          <Typography variant="body2" gutterBottom>
+          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             → 다음 문장
           </Typography>
-          <Typography variant="body2">Space TTS 재생</Typography>
+          <Typography variant="body2" sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Space TTS 재생</Typography>
         </Box>
       </Paper>
     </Box>

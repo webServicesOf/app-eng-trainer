@@ -370,12 +370,12 @@ export const HomeScreen: React.FC = () => {
   };
 
   return (
-    <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Box sx={{ mb: 4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h4" component="h1">
+    <Container maxWidth="lg" sx={{ py: { xs: 2, sm: 4 }, px: { xs: 1, sm: 2 } }}>
+      <Box sx={{ mb: { xs: 2, sm: 4 }, display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, justifyContent: 'space-between', alignItems: { xs: 'stretch', sm: 'center' }, gap: { xs: 2, sm: 0 } }}>
+        <Typography variant="h4" component="h1" sx={{ fontSize: { xs: '1.5rem', sm: '2.125rem' } }}>
           English Learning
         </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 1 }, flexWrap: 'wrap', justifyContent: { xs: 'flex-start', sm: 'flex-end' } }}>
           {isAuthenticated ? (
             <>
               <Chip label="로그인됨" color="success" size="small" />
@@ -445,14 +445,14 @@ export const HomeScreen: React.FC = () => {
         <>
           {/* Filters */}
           {articles.length > 0 && (
-            <Box sx={{ mb: 2, display: 'flex', gap: 2, alignItems: 'center' }}>
+            <Box sx={{ mb: 2, display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: { xs: 1, sm: 2 }, alignItems: 'stretch' }}>
               <TextField
                 select
                 label="Difficulty"
                 value={difficultyFilter}
                 onChange={(e) => setDifficultyFilter(e.target.value)}
                 size="small"
-                sx={{ minWidth: 150 }}
+                sx={{ minWidth: { xs: '100%', sm: 150 } }}
               >
                 <MenuItem value="all">All</MenuItem>
                 {difficulties.map((diff) => (
@@ -467,7 +467,7 @@ export const HomeScreen: React.FC = () => {
                 value={lengthFilter}
                 onChange={(e) => setLengthFilter(e.target.value)}
                 size="small"
-                sx={{ minWidth: 150 }}
+                sx={{ minWidth: { xs: '100%', sm: 150 } }}
               >
                 <MenuItem value="all">All</MenuItem>
                 {lengths.map((len) => (
@@ -480,12 +480,14 @@ export const HomeScreen: React.FC = () => {
           )}
 
           {managementMode && filteredArticles.length > 0 && (
-            <Box sx={{ mb: 2, display: 'flex', gap: 1, alignItems: 'center' }}>
+            <Box sx={{ mb: 2, display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: 'stretch' }}>
               <Button
                 variant="outlined"
                 startIcon={<SelectAll />}
                 onClick={selectAllArticles}
                 size="small"
+                fullWidth={true}
+                sx={{ width: { xs: '100%', sm: 'auto' } }}
               >
                 {selectedArticles.size === articles.length ? '전체 해제' : '전체 선택'}
               </Button>
@@ -496,6 +498,8 @@ export const HomeScreen: React.FC = () => {
                 onClick={handleBulkDelete}
                 disabled={selectedArticles.size === 0}
                 size="small"
+                fullWidth={true}
+                sx={{ width: { xs: '100%', sm: 'auto' } }}
               >
                 선택 삭제 ({selectedArticles.size})
               </Button>
@@ -623,12 +627,14 @@ export const HomeScreen: React.FC = () => {
       {currentTab === 1 && (
         <>
           {savedManagementMode && savedSentences.length > 0 && (
-            <Box sx={{ mb: 2, display: 'flex', gap: 1, alignItems: 'center' }}>
+            <Box sx={{ mb: 2, display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: 'stretch' }}>
               <Button
                 variant="outlined"
                 startIcon={<SelectAll />}
                 onClick={selectAllSentences}
                 size="small"
+                fullWidth={true}
+                sx={{ width: { xs: '100%', sm: 'auto' } }}
               >
                 {selectedSentences.size === savedSentences.length ? '전체 해제' : '전체 선택'}
               </Button>
@@ -639,6 +645,8 @@ export const HomeScreen: React.FC = () => {
                 onClick={handleBulkDeleteSentences}
                 disabled={selectedSentences.size === 0}
                 size="small"
+                fullWidth={true}
+                sx={{ width: { xs: '100%', sm: 'auto' } }}
               >
                 선택 삭제 ({selectedSentences.size})
               </Button>
