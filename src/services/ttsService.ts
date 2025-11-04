@@ -7,6 +7,8 @@ export class TTSService {
   private rate: number = 1.0; // 기본 속도
   private highlightCallback: ((charIndex: number, charLength: number) => void) | null = null;
   private highlightInterval: NodeJS.Timeout | null = null;
+  private onboundarySupported: boolean = false; // onboundary 이벤트 작동 여부
+  private boundaryEventFired: boolean = false; // 이 재생에서 boundary 이벤트 발생 여부
 
   constructor() {
     this.synth = window.speechSynthesis;
@@ -57,6 +59,9 @@ export class TTSService {
   ): void {
     this.stop();
 
+    // 이 재생에 대해 boundary 이벤트 발생 여부 초기화
+    this.boundaryEventFired = false;
+
     // If startFromText is provided, find its position and extract substring
     let textToSpeak = text;
     let offset = 0;
@@ -81,6 +86,10 @@ export class TTSService {
       // Primary: onboundary 이벤트 시도
       this.utterance.onboundary = (event) => {
         if (event.name === 'word') {
+          // onboundary 이벤트 발생 확인
+          this.boundaryEventFired = true;
+          this.onboundarySupported = true;
+
           // Adjust charIndex by offset to match original text
           onWordBoundary(event.charIndex + offset, event.charLength || 0);
         }
@@ -119,9 +128,33 @@ export class TTSService {
     const updateInterval = 100; // 100ms마다 확인
     const wordDuration = estimatedDuration / Math.max(words.length, 1);
 
+    // onboundary 이벤트 감지 대기 시간 (200ms 후 onboundary 미수신시 폴백 활성화)
+    const boundaryDetectionTimeout = 200;
+    let boundaryDetectionTimer: NodeJS.Timeout | null = null;
+    let fallbackActive = false;
+
+    // onboundary 이벤트 감지 대기
+    boundaryDetectionTimer = setTimeout(() => {
+      if (!this.boundaryEventFired && !fallbackActive) {
+        // onboundary 이벤트가 발생하지 않음 → 폴백 활성화
+        fallbackActive = true;
+      }
+    }, boundaryDetectionTimeout);
+
     this.highlightInterval = setInterval(() => {
       if (!this.synth.speaking || !this.utterance) {
         clearInterval(this.highlightInterval!);
+        if (boundaryDetectionTimer) clearTimeout(boundaryDetectionTimer);
+        return;
+      }
+
+      // onboundary 이벤트가 발생했으면 폴백 비활성화
+      if (this.boundaryEventFired) {
+        fallbackActive = false;
+      }
+
+      // 폴백이 활성화되지 않으면 동작하지 않음
+      if (!fallbackActive) {
         return;
       }
 
