@@ -165,16 +165,26 @@ const SentenceLearningScreen: React.FC = () => {
         displayText,
         (charIndex, charLength) => {
           // 현재 읽고 있는 단어의 인덱스 찾기
-          let currentPos = 0;
-          for (let i = 0; i < words.length; i++) {
-            const wordStart = displayText.indexOf(words[i], currentPos);
-            const wordEnd = wordStart + words[i].length;
+          // charIndex는 현재 읽는 문자의 위치
+          let cumulativeIndex = 0;
 
-            if (charIndex >= wordStart && charIndex < wordEnd) {
-              setHighlightIndex(i);
-              break;
+          for (let i = 0; i < words.length; i++) {
+            const word = words[i];
+            // displayText에서 단어 위치 찾기
+            const wordStartIndex = displayText.indexOf(word, cumulativeIndex);
+
+            if (wordStartIndex !== -1) {
+              const wordEndIndex = wordStartIndex + word.length;
+
+              // charIndex가 현재 단어의 범위에 포함되는지 확인
+              if (charIndex >= wordStartIndex && charIndex < wordEndIndex) {
+                setHighlightIndex(i);
+                cumulativeIndex = wordEndIndex;
+                return;
+              }
+
+              cumulativeIndex = wordEndIndex;
             }
-            currentPos = wordEnd;
           }
         },
         () => {
