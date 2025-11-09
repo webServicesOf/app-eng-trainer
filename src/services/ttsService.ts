@@ -83,7 +83,7 @@ export class TTSService {
     this.highlightCallback = onWordBoundary || null;
 
     if (onWordBoundary) {
-      // Primary: onboundary 이벤트 시도
+      // onboundary 이벤트 시도 (onboundary가 지원되지 않으면 폴백으로 전환)
       this.utterance.onboundary = (event) => {
         if (event.name === 'word') {
           // onboundary 이벤트 발생 확인
@@ -117,25 +117,37 @@ export class TTSService {
   ): void {
     if (!onWordBoundary || !this.utterance) return;
 
-    // 단어 배열 생성
+    // 단어 배열 생성 (정확한 위치 추적용)
     const words = text.match(/\S+/g) || [];
+    if (words.length === 0) return;
+
+    // 각 단어의 시작 위치를 미리 계산
+    const wordPositions: { word: string; charIndex: number }[] = [];
+    let searchStart = 0;
+    for (const word of words) {
+      const charIndex = text.indexOf(word, searchStart);
+      if (charIndex !== -1) {
+        wordPositions.push({ word, charIndex });
+        searchStart = charIndex + word.length;
+      }
+    }
+
     let wordIndex = 0;
-    let charPosition = 0;
     let estimatedDuration = this.estimateSpeakDuration(text);
 
     // 음성 재생 시간 기반 폴백
     let elapsedTime = 0;
-    const updateInterval = 100; // 100ms마다 확인
+    const updateInterval = 50; // 50ms마다 확인 (더 정확하게)
     const wordDuration = estimatedDuration / Math.max(words.length, 1);
 
-    // onboundary 이벤트 감지 대기 시간 (200ms 후 onboundary 미수신시 폴백 활성화)
-    const boundaryDetectionTimeout = 200;
+    // onboundary 이벤트 감지 대기 시간 (300ms 후 onboundary 미수신시 폴백 활성화)
+    const boundaryDetectionTimeout = 300;
     let boundaryDetectionTimer: NodeJS.Timeout | null = null;
     let fallbackActive = false;
 
     // onboundary 이벤트 감지 대기
     boundaryDetectionTimer = setTimeout(() => {
-      if (!this.boundaryEventFired && !fallbackActive) {
+      if (!this.boundaryEventFired) {
         // onboundary 이벤트가 발생하지 않음 → 폴백 활성화
         fallbackActive = true;
       }
@@ -148,9 +160,11 @@ export class TTSService {
         return;
       }
 
-      // onboundary 이벤트가 발생했으면 폴백 비활성화
+      // onboundary 이벤트가 발생했으면 폴백 완전히 비활성화
       if (this.boundaryEventFired) {
-        fallbackActive = false;
+        clearInterval(this.highlightInterval!);
+        if (boundaryDetectionTimer) clearTimeout(boundaryDetectionTimer);
+        return;
       }
 
       // 폴백이 활성화되지 않으면 동작하지 않음
@@ -161,11 +175,9 @@ export class TTSService {
       elapsedTime += updateInterval;
       const estimatedWordIndex = Math.floor(elapsedTime / wordDuration);
 
-      if (estimatedWordIndex < words.length && estimatedWordIndex !== wordIndex) {
+      if (estimatedWordIndex < wordPositions.length && estimatedWordIndex !== wordIndex) {
         wordIndex = estimatedWordIndex;
-        const word = words[wordIndex];
-        const charIndex = text.indexOf(word, charPosition);
-        charPosition = charIndex + word.length;
+        const { word, charIndex } = wordPositions[wordIndex];
 
         if (charIndex !== -1) {
           onWordBoundary(charIndex + offset, word.length);
@@ -180,10 +192,19 @@ export class TTSService {
   private estimateSpeakDuration(text: string): number {
     // 평균 영어 음성 속도: 150-160 단어/분 = 2.5 단어/초
     // 단어당 400ms 기본값 (rate 1.0 기준)
+    // 문자 수도 고려하여 더 정확한 추정
     const baseWordDuration = 400;
+    const baseCharDuration = 40; // 문자당 40ms (rate 1.0 기준)
+
     const words = text.match(/\S+/g) || [];
     const wordCount = words.length;
-    const baseDuration = wordCount * baseWordDuration;
+
+    // 단어 수와 문자 수를 모두 고려
+    const wordBasedDuration = wordCount * baseWordDuration;
+    const charBasedDuration = text.length * baseCharDuration / 5; // 평균 단어 길이 약 5자
+
+    // 두 추정값의 평균 사용
+    const baseDuration = (wordBasedDuration + charBasedDuration) / 2;
 
     // rate에 따라 조정 (rate가 높을수록 빨라짐)
     return baseDuration / Math.max(this.rate, 0.1);

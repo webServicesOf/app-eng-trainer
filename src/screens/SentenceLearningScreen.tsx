@@ -161,29 +161,27 @@ const SentenceLearningScreen: React.FC = () => {
     if (displayText) {
       const words = displayText.split(/\s+/);
 
+      // 단어별 시작 위치를 미리 계산
+      const wordPositions: number[] = [];
+      let searchStart = 0;
+      for (const word of words) {
+        const pos = displayText.indexOf(word, searchStart);
+        wordPositions.push(pos);
+        searchStart = pos + word.length;
+      }
+
       ttsService.speakWithHighlight(
         displayText,
         (charIndex, charLength) => {
-          // 현재 읽고 있는 단어의 인덱스 찾기
-          // charIndex는 현재 읽는 문자의 위치
-          let cumulativeIndex = 0;
+          // charIndex에 해당하는 단어 찾기
+          for (let i = 0; i < wordPositions.length; i++) {
+            const wordStart = wordPositions[i];
+            const nextWordStart = i + 1 < wordPositions.length ? wordPositions[i + 1] : displayText.length;
 
-          for (let i = 0; i < words.length; i++) {
-            const word = words[i];
-            // displayText에서 단어 위치 찾기
-            const wordStartIndex = displayText.indexOf(word, cumulativeIndex);
-
-            if (wordStartIndex !== -1) {
-              const wordEndIndex = wordStartIndex + word.length;
-
-              // charIndex가 현재 단어의 범위에 포함되는지 확인
-              if (charIndex >= wordStartIndex && charIndex < wordEndIndex) {
-                setHighlightIndex(i);
-                cumulativeIndex = wordEndIndex;
-                return;
-              }
-
-              cumulativeIndex = wordEndIndex;
+            // charIndex가 현재 단어의 범위에 포함되는지 확인
+            if (charIndex >= wordStart && charIndex < nextWordStart) {
+              setHighlightIndex(i);
+              return;
             }
           }
         },
