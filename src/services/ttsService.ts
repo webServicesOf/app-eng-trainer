@@ -7,8 +7,8 @@ export class TTSService {
   private rate: number = 1.0; // 기본 속도
   private highlightCallback: ((charIndex: number, charLength: number) => void) | null = null;
   private highlightInterval: NodeJS.Timeout | null = null;
-  private onboundarySupported: boolean = false; // onboundary 이벤트 작동 여부
-  private boundaryEventFired: boolean = false; // 이 재생에서 boundary 이벤트 발생 여부
+  private startTime: number = 0; // 재생 시작 시간
+  private pausedTime: number = 0; // 일시정지된 총 시간
 
   constructor() {
     this.synth = window.speechSynthesis;
@@ -19,6 +19,10 @@ export class TTSService {
    */
   setRate(rate: number): void {
     this.rate = rate;
+    // 이미 재생 중인 utterance의 rate 변경
+    if (this.utterance) {
+      this.utterance.rate = rate;
+    }
   }
 
   /**
@@ -50,6 +54,7 @@ export class TTSService {
 
   /**
    * 단어별로 음성 재생 (하이라이팅용)
+   * 시간 기반 정확한 추적 방식 사용
    */
   speakWithHighlight(
     text: string,
@@ -58,9 +63,6 @@ export class TTSService {
     startFromText?: string
   ): void {
     this.stop();
-
-    // 이 재생에 대해 boundary 이벤트 발생 여부 초기화
-    this.boundaryEventFired = false;
 
     // If startFromText is provided, find its position and extract substring
     let textToSpeak = text;
@@ -79,111 +81,84 @@ export class TTSService {
     this.utterance.pitch = 1.0;
     this.utterance.volume = 1.0;
 
-    // 콜백 저장 (폴백용)
-    this.highlightCallback = onWordBoundary || null;
-
-    if (onWordBoundary) {
-      // onboundary 이벤트 시도 (onboundary가 지원되지 않으면 폴백으로 전환)
-      this.utterance.onboundary = (event) => {
-        if (event.name === 'word') {
-          // onboundary 이벤트 발생 확인
-          this.boundaryEventFired = true;
-          this.onboundarySupported = true;
-
-          // Adjust charIndex by offset to match original text
-          onWordBoundary(event.charIndex + offset, event.charLength || 0);
-        }
-      };
-    }
-
     if (onEnd) {
       this.utterance.onend = onEnd;
     }
 
-    // Fallback: onboundary가 작동하지 않을 경우를 대비한 폴백 메커니즘
-    // 음성 재생 시작 후 정기적으로 현재 위치 추정
-    this.setupFallbackHighlight(textToSpeak, offset, onWordBoundary);
+    // 시간 기반 정확한 하이라이트 추적 시작
+    this.startTime = Date.now();
+    this.pausedTime = 0;
+    this.setupTimeBasedHighlight(textToSpeak, offset, onWordBoundary);
 
     this.synth.speak(this.utterance);
   }
 
   /**
-   * onboundary 이벤트 미지원 시 폴백: 추정된 위치로 하이라이트 업데이트
+   * 시간 기반 정확한 하이라이트 추적
+   * 실제 경과 시간을 기반으로 현재 읽고 있는 단어를 판단
    */
-  private setupFallbackHighlight(
+  private setupTimeBasedHighlight(
     text: string,
     offset: number,
     onWordBoundary?: (charIndex: number, charLength: number) => void
   ): void {
     if (!onWordBoundary || !this.utterance) return;
 
-    // 단어 배열 생성 (정확한 위치 추적용)
+    // 단어 배열과 시간 정보 미리 계산
     const words = text.match(/\S+/g) || [];
     if (words.length === 0) return;
 
-    // 각 단어의 시작 위치를 미리 계산
-    const wordPositions: { word: string; charIndex: number }[] = [];
+    // 각 단어의 시작 위치와 예상 재생 시간 계산
+    const wordTimings: { word: string; charIndex: number; startTime: number; endTime: number }[] = [];
     let searchStart = 0;
+    const totalDuration = this.estimateSpeakDuration(text);
+    const timePerWord = totalDuration / words.length;
+
+    let cumulativeTime = 0;
     for (const word of words) {
       const charIndex = text.indexOf(word, searchStart);
       if (charIndex !== -1) {
-        wordPositions.push({ word, charIndex });
+        // 이 단어의 길이에 따라 시간 조정
+        const wordLength = word.length;
+        const avgWordLength = text.length / words.length;
+        const wordSpecificDuration = timePerWord * (wordLength / avgWordLength);
+
+        wordTimings.push({
+          word,
+          charIndex,
+          startTime: cumulativeTime,
+          endTime: cumulativeTime + wordSpecificDuration,
+        });
+
+        cumulativeTime += wordSpecificDuration;
         searchStart = charIndex + word.length;
       }
     }
 
-    let wordIndex = 0;
-    let estimatedDuration = this.estimateSpeakDuration(text);
-
-    // 음성 재생 시간 기반 폴백
-    let elapsedTime = 0;
-    const updateInterval = 50; // 50ms마다 확인 (더 정확하게)
-    const wordDuration = estimatedDuration / Math.max(words.length, 1);
-
-    // onboundary 이벤트 감지 대기 시간 (300ms 후 onboundary 미수신시 폴백 활성화)
-    const boundaryDetectionTimeout = 300;
-    let boundaryDetectionTimer: NodeJS.Timeout | null = null;
-    let fallbackActive = false;
-
-    // onboundary 이벤트 감지 대기
-    boundaryDetectionTimer = setTimeout(() => {
-      if (!this.boundaryEventFired) {
-        // onboundary 이벤트가 발생하지 않음 → 폴백 활성화
-        fallbackActive = true;
-      }
-    }, boundaryDetectionTimeout);
+    let lastHighlightedIndex = -1;
 
     this.highlightInterval = setInterval(() => {
       if (!this.synth.speaking || !this.utterance) {
         clearInterval(this.highlightInterval!);
-        if (boundaryDetectionTimer) clearTimeout(boundaryDetectionTimer);
         return;
       }
 
-      // onboundary 이벤트가 발생했으면 폴백 완전히 비활성화
-      if (this.boundaryEventFired) {
-        clearInterval(this.highlightInterval!);
-        if (boundaryDetectionTimer) clearTimeout(boundaryDetectionTimer);
-        return;
-      }
+      // 현재 경과 시간 계산
+      const elapsedTime = Date.now() - this.startTime - this.pausedTime;
 
-      // 폴백이 활성화되지 않으면 동작하지 않음
-      if (!fallbackActive) {
-        return;
-      }
-
-      elapsedTime += updateInterval;
-      const estimatedWordIndex = Math.floor(elapsedTime / wordDuration);
-
-      if (estimatedWordIndex < wordPositions.length && estimatedWordIndex !== wordIndex) {
-        wordIndex = estimatedWordIndex;
-        const { word, charIndex } = wordPositions[wordIndex];
-
-        if (charIndex !== -1) {
-          onWordBoundary(charIndex + offset, word.length);
+      // 현재 읽고 있는 단어 찾기
+      for (let i = 0; i < wordTimings.length; i++) {
+        const timing = wordTimings[i];
+        if (elapsedTime >= timing.startTime && elapsedTime < timing.endTime) {
+          // 하이라이트 업데이트가 필요한 경우만 콜백 호출
+          if (i !== lastHighlightedIndex) {
+            lastHighlightedIndex = i;
+            onWordBoundary(timing.charIndex + offset, timing.word.length);
+          }
+          return;
         }
       }
-    }, updateInterval);
+    }, 30); // 30ms마다 체크 (부드러운 업데이트)
   }
 
   /**
@@ -231,6 +206,8 @@ export class TTSService {
   pause(): void {
     if (this.synth.speaking) {
       this.synth.pause();
+      // 일시정지 시간 기록 (재개될 때 차감하기 위해)
+      this.pausedTime = Date.now() - this.startTime;
     }
   }
 
@@ -240,6 +217,9 @@ export class TTSService {
   resume(): void {
     if (this.synth.paused) {
       this.synth.resume();
+      // 일시정지 기간 계산 및 제거
+      const pauseDuration = Date.now() - this.startTime - this.pausedTime;
+      this.startTime += pauseDuration;
     }
   }
 
