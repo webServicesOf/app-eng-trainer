@@ -1,7 +1,12 @@
 # 영어 학습 웹 애플리케이션
 
 React로 구현된 Google Sheets 기반 영어 학습 웹 애플리케이션입니다.
-
+## 개발자 팁
+### 구현 주소
+- https://github.com/webServicesOf/app-eng-trainer/tree/main
+- https://vercel.com/thk-lightmans-projects/app-eng-trainer-2
+### 개선 방법
+- 로컬에서 수정 후 push 하면, 자동으로 앱에 수정사항 반영됨
 ## 주요 기능
 
 ### 1. Google Sheets 연동
