@@ -50,7 +50,6 @@ export const HomeScreen: React.FC = () => {
     isAuthenticated,
     accessToken,
     loadArticles,
-    fetchArticlesFromSheets,
     deleteArticle,
     updateLastAccessed,
     setGoogleSheetsConfig,

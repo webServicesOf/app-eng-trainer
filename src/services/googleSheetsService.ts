@@ -1,9 +1,6 @@
 import axios from 'axios';
 import { Article, SentenceEntry, GoogleSheetsConfig } from '../types';
 
-// 문장 분리 패턴 (기존 sentenceProcessor와 동일)
-const SENTENCE_DELIMITER = /[.!?]+\s*/g;
-
 export class GoogleSheetsService {
   private accessToken: string;
   private spreadsheetId: string;
