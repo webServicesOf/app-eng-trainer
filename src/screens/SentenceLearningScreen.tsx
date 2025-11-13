@@ -30,7 +30,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Article } from '../types';
 import { useLearningStore } from '../stores/appStore';
 import { localDB } from '../services/database';
-import { ttsService } from '../services/ttsService';
+import { googleCloudTtsService } from '../services/googleCloudTtsService';
 
 const SentenceLearningScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -88,7 +88,7 @@ const SentenceLearningScreen: React.FC = () => {
 
     return () => {
       resetLearningState();
-      ttsService.stop();
+      googleCloudTtsService.stop();
     };
   }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative]);
 
@@ -158,6 +158,15 @@ const SentenceLearningScreen: React.FC = () => {
   }, [article, goToNextSentence]);
 
   const handleSpeak = React.useCallback((startFromWord?: string) => {
+    // Google Cloud TTS API 키 확인
+    const apiKey = localStorage.getItem('google_cloud_tts_api_key');
+    if (!apiKey) {
+      alert('Google Cloud TTS API 키가 설정되지 않았습니다. 홈 화면에서 설정해주세요.');
+      navigate('/');
+      return;
+    }
+    googleCloudTtsService.setApiKey(apiKey);
+
     if (displayText) {
       const words = displayText.split(/\s+/);
 
@@ -170,7 +179,7 @@ const SentenceLearningScreen: React.FC = () => {
         searchStart = pos + word.length;
       }
 
-      ttsService.speakWithHighlight(
+      googleCloudTtsService.speakWithHighlight(
         displayText,
         (charIndex) => {
           // charIndex로부터 단어 인덱스 찾기
@@ -189,13 +198,16 @@ const SentenceLearningScreen: React.FC = () => {
           setHighlightIndex(-1);
         },
         startFromWord
-      );
+      ).catch((error) => {
+        console.error('TTS Error:', error);
+        alert('TTS 재생 중 오류가 발생했습니다. API 키를 확인하세요.');
+      });
     }
-  }, [displayText]);
+  }, [displayText, navigate]);
 
   const handleRateChange = (newRate: number) => {
     setTtsRate(newRate);
-    ttsService.setRate(newRate);
+    googleCloudTtsService.setRate(newRate);
   };
 
   const handleSaveSentence = async () => {
