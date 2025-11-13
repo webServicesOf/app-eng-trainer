@@ -152,12 +152,16 @@ export class GoogleCloudTTSService {
     if (words.length === 0) return;
 
     // 단어별 시작 시간 추정
-    // Google Cloud TTS는 안정적인 음성 속도를 제공하므로
-    // 기본 400ms/단어로 추정해도 Web Speech API보다 정확함
+    // Google Cloud TTS는 안정적인 음성 속도를 제공함
+    // 1배속에서는 느리고 1.4배속에서 적당하므로, 기본값을 높여서 보정
     const wordTimings: { word: string; charIndex: number; startTime: number }[] = [];
     let searchStart = 0;
     let cumulativeTime = 0;
-    const wordDuration = 400 / this.rate; // rate에 따라 조정
+    // 기본 320ms/단어 (원래 400ms보다 20% 빠름)
+    // rate 1.0: 320ms
+    // rate 1.4: 229ms (1.4배 빨라짐)
+    const baseWordDuration = 320;
+    const wordDuration = baseWordDuration / this.rate; // rate에 따라 조정
 
     for (const word of words) {
       const charIndex = textToUse.indexOf(word, searchStart);

@@ -39,6 +39,7 @@ import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
 import { SavedSentence } from '../types';
 import { localDB } from '../services/database';
+import { googleCloudTtsService } from '../services/googleCloudTtsService';
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -74,6 +75,8 @@ export const HomeScreen: React.FC = () => {
   const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
   const [lengthFilter, setLengthFilter] = useState<string>('all');
   const [fetchModeDialogOpen, setFetchModeDialogOpen] = useState(false);
+  const [ttsApiKeyDialogOpen, setTtsApiKeyDialogOpen] = useState(false);
+  const [ttsApiKey, setTtsApiKey] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: (tokenResponse) => {
@@ -88,6 +91,12 @@ export const HomeScreen: React.FC = () => {
   useEffect(() => {
     loadGoogleSheetsConfig();
     loadArticles();
+
+    // Google Cloud TTS API 키 로드
+    const savedKey = localStorage.getItem('google_cloud_tts_api_key');
+    if (savedKey) {
+      setTtsApiKey(savedKey);
+    }
   }, [loadArticles, loadGoogleSheetsConfig]);
 
   useEffect(() => {
@@ -95,6 +104,17 @@ export const HomeScreen: React.FC = () => {
       loadSavedSentences();
     }
   }, [currentTab]);
+
+  const handleSaveTtsApiKey = () => {
+    if (ttsApiKey.trim()) {
+      googleCloudTtsService.setApiKey(ttsApiKey);
+      localStorage.setItem('google_cloud_tts_api_key', ttsApiKey);
+      setTtsApiKeyDialogOpen(false);
+      alert('Google Cloud TTS API 키가 저장되었습니다!');
+    } else {
+      alert('API 키를 입력해주세요.');
+    }
+  };
 
   const loadSavedSentences = async () => {
     try {
@@ -396,6 +416,13 @@ export const HomeScreen: React.FC = () => {
               Google 로그인
             </Button>
           )}
+          <IconButton
+            color="primary"
+            onClick={() => setTtsApiKeyDialogOpen(true)}
+            title="Google Cloud TTS API 키 설정"
+          >
+            <SettingsIcon />
+          </IconButton>
           <IconButton
             color="primary"
             onClick={handleOpenSettings}
@@ -783,6 +810,38 @@ export const HomeScreen: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setFetchModeDialogOpen(false)}>취소</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Google Cloud TTS API 키 설정 다이얼로그 */}
+      <Dialog
+        open={ttsApiKeyDialogOpen}
+        onClose={() => setTtsApiKeyDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Google Cloud TTS API 키 설정</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 2 }}>
+            Google Cloud Text-to-Speech API 키를 입력해주세요.
+          </Typography>
+          <TextField
+            fullWidth
+            label="API 키"
+            type="password"
+            value={ttsApiKey}
+            onChange={(e) => setTtsApiKey(e.target.value)}
+            placeholder="Google Cloud API 키"
+            variant="outlined"
+            size="small"
+            helperText="API 키는 localStorage에 안전하게 저장됩니다"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTtsApiKeyDialogOpen(false)}>취소</Button>
+          <Button onClick={handleSaveTtsApiKey} variant="contained">
+            저장
+          </Button>
         </DialogActions>
       </Dialog>
 
