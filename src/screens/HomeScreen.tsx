@@ -34,10 +34,11 @@ import {
   SelectAll,
   DeleteSweep,
   PlayArrow,
+  Upload as UploadIcon,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence } from '../types';
+import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 
@@ -45,12 +46,16 @@ export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
   const {
     articles,
+    audioArticles,
     isLoading,
     error,
     googleSheetsConfig,
     isAuthenticated,
     accessToken,
     loadArticles,
+    loadAudioArticles,
+    saveAudioArticle,
+    deleteAudioArticle,
     deleteArticle,
     updateLastAccessed,
     setGoogleSheetsConfig,
@@ -77,6 +82,11 @@ export const HomeScreen: React.FC = () => {
   const [fetchModeDialogOpen, setFetchModeDialogOpen] = useState(false);
   const [ttsApiKeyDialogOpen, setTtsApiKeyDialogOpen] = useState(false);
   const [ttsApiKey, setTtsApiKey] = useState('');
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadMp3File, setUploadMp3File] = useState<File | null>(null);
+  const [uploadJsonFile, setUploadJsonFile] = useState<File | null>(null);
+  const [uploadTitle, setUploadTitle] = useState('');
+  const [uploadSource, setUploadSource] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: (tokenResponse) => {
@@ -91,16 +101,17 @@ export const HomeScreen: React.FC = () => {
   useEffect(() => {
     loadGoogleSheetsConfig();
     loadArticles();
+    loadAudioArticles();
 
     // Google Cloud TTS API 키 로드
     const savedKey = localStorage.getItem('google_cloud_tts_api_key');
     if (savedKey) {
       setTtsApiKey(savedKey);
     }
-  }, [loadArticles, loadGoogleSheetsConfig]);
+  }, [loadArticles, loadAudioArticles, loadGoogleSheetsConfig]);
 
   useEffect(() => {
-    if (currentTab === 1) {
+    if (currentTab === 2) {
       loadSavedSentences();
     }
   }, [currentTab]);
@@ -114,6 +125,70 @@ export const HomeScreen: React.FC = () => {
     } else {
       alert('API 키를 입력해주세요.');
     }
+  };
+
+  const handleUploadAudioArticle = async () => {
+    if (!uploadMp3File || !uploadJsonFile || !uploadTitle.trim()) {
+      alert('제목, MP3 파일, JSON 파일 모두 필요합니다.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Parse sentences.json
+      const jsonText = await uploadJsonFile.text();
+      const rawSentences = JSON.parse(jsonText);
+
+      // Validate & normalize sentences
+      const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
+        index: s.index ?? i + 1,
+        text: s.text,
+        start: s.start ?? 0,
+        end: s.end ?? 0,
+        memo: s.memo,
+      }));
+
+      // Read mp3 as blob
+      const audioBlob = new Blob([await uploadMp3File.arrayBuffer()], {
+        type: 'audio/mpeg',
+      });
+
+      const audioArticle: AudioArticle = {
+        id: `audio-${Date.now()}`,
+        title: uploadTitle.trim(),
+        audioBlob,
+        sentences,
+        source: uploadSource.trim() || undefined,
+        createdAt: new Date(),
+        lastAccessed: new Date(),
+      };
+
+      await saveAudioArticle(audioArticle);
+
+      // Reset form
+      setUploadMp3File(null);
+      setUploadJsonFile(null);
+      setUploadTitle('');
+      setUploadSource('');
+      setUploadDialogOpen(false);
+    } catch (error) {
+      console.error('Upload failed:', error);
+      alert('업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteAudioArticle = async (id: string) => {
+    if (window.confirm('이 Audio Article을 삭제하시겠습니까?')) {
+      await deleteAudioArticle(id);
+    }
+  };
+
+  const handleLearnAudioArticle = async (id: string) => {
+    await localDB.updateAudioArticleLastAccessed(id);
+    navigate(`/learn-audio/${id}`);
   };
 
   const loadSavedSentences = async () => {
@@ -344,13 +419,10 @@ export const HomeScreen: React.FC = () => {
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setCurrentTab(newValue);
-    if (newValue === 0) {
-      setSavedManagementMode(false);
-      setSelectedSentences(new Set());
-    } else {
-      setManagementMode(false);
-      setSelectedArticles(new Set());
-    }
+    setManagementMode(false);
+    setSelectedArticles(new Set());
+    setSavedManagementMode(false);
+    setSelectedSentences(new Set());
   };
 
   const toggleSavedManagementMode = () => {
@@ -449,6 +521,16 @@ export const HomeScreen: React.FC = () => {
                 불러오기
               </Button>
             </>
+          ) : currentTab === 1 ? (
+            <Button
+              variant="contained"
+              startIcon={<UploadIcon />}
+              onClick={() => setUploadDialogOpen(true)}
+              disabled={isLoading}
+              size="small"
+            >
+              업로드
+            </Button>
           ) : (
             <Button
               variant={savedManagementMode ? 'outlined' : 'contained'}
@@ -464,6 +546,7 @@ export const HomeScreen: React.FC = () => {
 
       <Tabs value={currentTab} onChange={handleTabChange} sx={{ mb: 3 }}>
         <Tab label="Main" />
+        <Tab label="Audio" />
         <Tab label="Saved" />
       </Tabs>
 
@@ -651,6 +734,86 @@ export const HomeScreen: React.FC = () => {
       )}
 
       {currentTab === 1 && (
+        <>
+          {audioArticles.length === 0 ? (
+            <Box sx={{ textAlign: 'center', py: 8 }}>
+              <Typography variant="h6" color="text.secondary" gutterBottom>
+                Audio Article이 없습니다
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                MP3 + sentences.json을 업로드하세요
+              </Typography>
+              <Button
+                variant="outlined"
+                startIcon={<UploadIcon />}
+                onClick={() => setUploadDialogOpen(true)}
+              >
+                업로드
+              </Button>
+            </Box>
+          ) : (
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: {
+                  xs: 'repeat(1, 1fr)',
+                  sm: 'repeat(2, 1fr)',
+                  md: 'repeat(3, 1fr)',
+                },
+                gap: 3,
+              }}
+            >
+              {audioArticles.map((aa) => (
+                <Card key={aa.id}>
+                  <CardContent>
+                    <Typography variant="h6" gutterBottom noWrap>
+                      {aa.title}
+                    </Typography>
+                    <Chip label="Audio" size="small" color="info" variant="outlined" sx={{ mr: 1 }} />
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                      {aa.sentences.length}개 문장
+                    </Typography>
+                    {aa.source && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {aa.source}
+                      </Typography>
+                    )}
+                    <Typography variant="caption" color="text.secondary">
+                      최근 접근: {new Date(aa.lastAccessed).toLocaleDateString()}
+                    </Typography>
+                  </CardContent>
+                  <CardActions>
+                    <Button
+                      size="small"
+                      color="primary"
+                      onClick={() => handleLearnAudioArticle(aa.id)}
+                    >
+                      학습하기
+                    </Button>
+                    <Button
+                      size="small"
+                      color="secondary"
+                      startIcon={<EditIcon />}
+                      onClick={() => navigate(`/edit-timestamps/${aa.id}`)}
+                    >
+                      편집
+                    </Button>
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => handleDeleteAudioArticle(aa.id)}
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </CardActions>
+                </Card>
+              ))}
+            </Box>
+          )}
+        </>
+      )}
+
+      {currentTab === 2 && (
         <>
           {savedManagementMode && savedSentences.length > 0 && (
             <Box sx={{ mb: 2, display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: 'stretch' }}>
@@ -841,6 +1004,78 @@ export const HomeScreen: React.FC = () => {
           <Button onClick={() => setTtsApiKeyDialogOpen(false)}>취소</Button>
           <Button onClick={handleSaveTtsApiKey} variant="contained">
             저장
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Audio Upload 다이얼로그 */}
+      <Dialog
+        open={uploadDialogOpen}
+        onClose={() => setUploadDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Audio Article 업로드</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
+            yt2csv로 생성한 _full.mp3 + sentences.json을 업로드합니다.
+          </Typography>
+          <TextField
+            fullWidth
+            label="제목"
+            value={uploadTitle}
+            onChange={(e) => setUploadTitle(e.target.value)}
+            margin="normal"
+            placeholder="예: Statistical Rethinking Lecture B01"
+            autoFocus
+          />
+          <TextField
+            fullWidth
+            label="출처 (선택)"
+            value={uploadSource}
+            onChange={(e) => setUploadSource(e.target.value)}
+            margin="normal"
+            placeholder="예: https://youtube.com/watch?v=..."
+          />
+          <Box sx={{ mt: 2 }}>
+            <Button
+              variant="outlined"
+              component="label"
+              fullWidth
+              sx={{ mb: 1, justifyContent: 'flex-start' }}
+            >
+              {uploadMp3File ? `MP3: ${uploadMp3File.name}` : 'MP3 파일 선택'}
+              <input
+                type="file"
+                accept=".mp3,audio/mpeg"
+                hidden
+                onChange={(e) => setUploadMp3File(e.target.files?.[0] || null)}
+              />
+            </Button>
+            <Button
+              variant="outlined"
+              component="label"
+              fullWidth
+              sx={{ justifyContent: 'flex-start' }}
+            >
+              {uploadJsonFile ? `JSON: ${uploadJsonFile.name}` : 'sentences.json 선택'}
+              <input
+                type="file"
+                accept=".json,application/json"
+                hidden
+                onChange={(e) => setUploadJsonFile(e.target.files?.[0] || null)}
+              />
+            </Button>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setUploadDialogOpen(false)}>취소</Button>
+          <Button
+            onClick={handleUploadAudioArticle}
+            variant="contained"
+            disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
+          >
+            업로드
           </Button>
         </DialogActions>
       </Dialog>

@@ -17,7 +17,21 @@ export interface Article {
 export interface SentenceEntry {
   index: number;
   text: string; // 영어 문장
+  start?: number; // seconds (audio seek용, 자동 추정 → 에디터에서 수정)
+  end?: number; // seconds
   memo?: string;
+}
+
+// Audio 기반 Article (full mp3 + sentences.json 업로드)
+export interface AudioArticle {
+  id: string;
+  title: string;
+  audioBlob?: Blob; // full mp3 (IndexedDB 저장용)
+  audioUrl?: string; // blob URL (런타임 전용, 저장 안 함)
+  sentences: SentenceEntry[];
+  source?: string; // YouTube URL 등
+  createdAt: Date;
+  lastAccessed: Date;
 }
 
 // Google Sheets 설정

@@ -64,28 +64,45 @@ export class GoogleCloudTTSService {
     this.stop();
 
     try {
-      // 1. Google Cloud TTS API 호출해서 오디오 생성
-      const audioContent = await this.synthesizeSpeech(text);
+      // Determine text to synthesize
+      let textToSpeak = text;
+      let charOffset = 0;
+      if (startFromText) {
+        const startIndex = text.indexOf(startFromText);
+        if (startIndex !== -1) {
+          textToSpeak = text.substring(startIndex);
+          charOffset = startIndex;
+        }
+      }
 
-      // 2. 오디오 재생 설정
+      // 1. Google Cloud TTS API with timepoints
+      const { audioContent, timepoints } = await this.synthesizeSpeechWithTimepoints(textToSpeak);
+
+      // 2. Audio setup
       const audioBlob = this._base64ToBlob(audioContent, 'audio/mpeg');
       const audioUrl = URL.createObjectURL(audioBlob);
 
       this.currentAudio = new Audio(audioUrl);
       this.currentAudio.playbackRate = this.rate;
 
-      // 3. 단어 타이밍 정보 설정
+      // 3. Word boundary tracking with real timepoints
       if (onWordBoundary) {
         this.highlightCallback = onWordBoundary;
-        this._setupWordBoundaryTracking(text, startFromText);
+
+        if (timepoints.length > 0) {
+          this._setupTimepointTracking(textToSpeak, timepoints, charOffset);
+        } else {
+          // Fallback to estimation if API returns no timepoints
+          this._setupWordBoundaryTracking(textToSpeak, undefined);
+        }
       }
 
-      // 4. 재생 종료 콜백
+      // 4. End callback
       if (onEnd) {
         this.currentAudio.onended = onEnd;
       }
 
-      // 5. 오디오 재생
+      // 5. Play
       this.currentAudio.play();
     } catch (error) {
       console.error('Failed to speak:', error);
@@ -94,27 +111,36 @@ export class GoogleCloudTTSService {
   }
 
   /**
-   * Google Cloud Text-to-Speech API 호출
+   * Google Cloud Text-to-Speech API 호출 (SSML mark + timepointing)
    */
-  private async synthesizeSpeech(text: string): Promise<string> {
+  private async synthesizeSpeechWithTimepoints(text: string): Promise<{
+    audioContent: string;
+    timepoints: { markName: string; timeSeconds: number }[];
+  }> {
+    // Build SSML with <mark> before each word
+    const words = text.match(/\S+/g) || [];
+    const ssmlParts = words.map((word, i) => `<mark name="w${i}"/>${this._escapeXml(word)}`);
+    const ssml = `<speak>${ssmlParts.join(' ')}</speak>`;
+
     const response = await fetch(
-      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${this.apiKey}`,
+      `https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${this.apiKey}`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          input: { text },
+          input: { ssml },
           voice: {
             languageCode: 'en-US',
-            name: 'en-US-Neural2-C', // 자연스러운 남성 음성
+            name: 'en-US-Neural2-C',
           },
           audioConfig: {
             audioEncoding: 'MP3',
             pitch: 0,
-            speakingRate: 1, // Google API에서는 별도로 설정
+            speakingRate: 1,
           },
+          enableTimePointing: ['SSML_MARK'],
         }),
       }
     );
@@ -124,11 +150,99 @@ export class GoogleCloudTTSService {
     }
 
     const data = await response.json();
-    return data.audioContent;
+    return {
+      audioContent: data.audioContent,
+      timepoints: data.timepoints || [],
+    };
   }
 
   /**
-   * 단어 경계 추적 (onboundary 이벤트 에뮬레이션)
+   * XML 특수문자 이스케이프
+   */
+  private _escapeXml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * API timepoints 기반 정확한 단어 추적
+   */
+  private _setupTimepointTracking(
+    text: string,
+    timepoints: { markName: string; timeSeconds: number }[],
+    charOffset: number
+  ): void {
+    if (!this.currentAudio) return;
+
+    const words = text.match(/\S+/g) || [];
+    if (words.length === 0) return;
+
+    // Map word index → char position in original text
+    const wordCharPositions: number[] = [];
+    let searchStart = 0;
+    for (const word of words) {
+      const pos = text.indexOf(word, searchStart);
+      wordCharPositions.push(pos);
+      searchStart = pos + word.length;
+    }
+
+    // Build timing array from timepoints: [{wordIndex, timeSeconds}]
+    const timings: { wordIndex: number; charIndex: number; wordLength: number; timeSeconds: number }[] = [];
+    for (const tp of timepoints) {
+      // markName = "w0", "w1", etc.
+      const idx = parseInt(tp.markName.replace('w', ''), 10);
+      if (idx >= 0 && idx < words.length) {
+        timings.push({
+          wordIndex: idx,
+          charIndex: wordCharPositions[idx] + charOffset,
+          wordLength: words[idx].length,
+          timeSeconds: tp.timeSeconds,
+        });
+      }
+    }
+
+    if (timings.length === 0) return;
+
+    let lastIndex = -1;
+    const updateInterval = setInterval(() => {
+      if (!this.currentAudio) {
+        clearInterval(updateInterval);
+        return;
+      }
+
+      if (this.currentAudio.ended) {
+        clearInterval(updateInterval);
+        return;
+      }
+
+      if (this.currentAudio.paused) return;
+
+      const currentTime = this.currentAudio.currentTime;
+
+      // Find current word (last timepoint <= currentTime)
+      let currentWordIdx = -1;
+      for (let i = 0; i < timings.length; i++) {
+        if (currentTime >= timings[i].timeSeconds) {
+          currentWordIdx = i;
+        } else {
+          break;
+        }
+      }
+
+      if (currentWordIdx !== -1 && currentWordIdx !== lastIndex && this.highlightCallback) {
+        lastIndex = currentWordIdx;
+        const t = timings[currentWordIdx];
+        this.highlightCallback(t.charIndex, t.wordLength);
+      }
+    }, 30);
+  }
+
+  /**
+   * 단어 경계 추적 (onboundary 이벤트 에뮬레이션) — fallback
    * Web Speech API의 onboundary 이벤트를 모방하기 위해
    * 단어 시작 시간을 기반으로 하이라이트 업데이트
    */

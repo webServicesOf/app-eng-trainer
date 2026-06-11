@@ -6,6 +6,8 @@ import { GoogleOAuthProvider } from '@react-oauth/google';
 import HomeScreen from './screens/HomeScreen';
 import SentenceLearningScreen from './screens/SentenceLearningScreen';
 import SavedSentencesScreen from './screens/SavedSentencesScreen';
+import AudioLearningScreen from './screens/AudioLearningScreen';
+import TimestampEditorScreen from './screens/TimestampEditorScreen';
 import { useAppStore } from './stores/appStore';
 
 // Create Material-UI theme
@@ -56,6 +58,8 @@ const App: React.FC = () => {
           <Routes>
             <Route path="/" element={<HomeScreen />} />
             <Route path="/learn/:id" element={<SentenceLearningScreen />} />
+            <Route path="/learn-audio/:id" element={<AudioLearningScreen />} />
+            <Route path="/edit-timestamps/:id" element={<TimestampEditorScreen />} />
             <Route path="/saved" element={<SavedSentencesScreen />} />
           </Routes>
         </Router>

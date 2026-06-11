@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   GoogleSheetsConfig,
+  AudioArticle,
   AppState,
   LearningState
 } from '../types';
@@ -12,6 +13,9 @@ interface AppStore extends AppState {
   accessToken: string | null;
   isAuthenticated: boolean;
 
+  // Audio articles
+  audioArticles: AudioArticle[];
+
   // Actions
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
@@ -21,6 +25,11 @@ interface AppStore extends AppState {
   fetchArticlesFromSheets: () => Promise<void>;
   deleteArticle: (id: string) => Promise<void>;
   updateLastAccessed: (id: string) => Promise<void>;
+
+  // Audio article actions
+  loadAudioArticles: () => Promise<void>;
+  saveAudioArticle: (article: AudioArticle) => Promise<void>;
+  deleteAudioArticle: (id: string) => Promise<void>;
 
   // OAuth actions
   setAccessToken: (token: string | null) => void;
@@ -36,6 +45,7 @@ interface AppStore extends AppState {
 export const useAppStore = create<AppStore>((set, get) => ({
   // Initial state
   articles: [],
+  audioArticles: [],
   isLoading: false,
   error: null,
   googleSheetsConfig: null,
@@ -115,6 +125,38 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().loadArticles();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to update last accessed';
+      set({ error: errorMessage });
+    }
+  },
+
+  // Audio article actions
+  loadAudioArticles: async () => {
+    try {
+      const audioArticles = await localDB.getAudioArticles();
+      set({ audioArticles });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to load audio articles';
+      set({ error: errorMessage });
+    }
+  },
+
+  saveAudioArticle: async (article: AudioArticle) => {
+    try {
+      await localDB.saveAudioArticle(article);
+      await get().loadAudioArticles();
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to save audio article';
+      set({ error: errorMessage });
+    }
+  },
+
+  deleteAudioArticle: async (id: string) => {
+    try {
+      await localDB.deleteAudioArticle(id);
+      const current = get().audioArticles;
+      set({ audioArticles: current.filter(a => a.id !== id) });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to delete audio article';
       set({ error: errorMessage });
     }
   },

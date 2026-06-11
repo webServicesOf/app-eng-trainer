@@ -1,10 +1,11 @@
 import Dexie, { Table } from 'dexie';
-import { Article, GoogleSheetsConfig, SavedSentence } from '../types';
+import { Article, AudioArticle, GoogleSheetsConfig, SavedSentence } from '../types';
 
 export class AppDatabase extends Dexie {
   // 테이블 정의
   articles!: Table<Article>;
   savedSentences!: Table<SavedSentence>;
+  audioArticles!: Table<AudioArticle>;
 
   constructor() {
     super('EnglishLearningAppDB');
@@ -12,6 +13,12 @@ export class AppDatabase extends Dexie {
     this.version(4).stores({
       articles: 'id, title, lastAccessed, createdAt',
       savedSentences: 'id, articleId, sentenceIndex, savedAt, [articleId+sentenceIndex]'
+    });
+
+    this.version(5).stores({
+      articles: 'id, title, lastAccessed, createdAt',
+      savedSentences: 'id, articleId, sentenceIndex, savedAt, [articleId+sentenceIndex]',
+      audioArticles: 'id, title, lastAccessed, createdAt'
     });
   }
 }
@@ -97,6 +104,31 @@ export class LocalDatabaseService {
       .equals([articleId, sentenceIndex])
       .first();
     return !!existing;
+  }
+
+  // AudioArticle 관련 메서드
+  async getAudioArticles(): Promise<AudioArticle[]> {
+    return await db.audioArticles.orderBy('lastAccessed').reverse().toArray();
+  }
+
+  async getAudioArticleById(id: string): Promise<AudioArticle | undefined> {
+    return await db.audioArticles.get(id);
+  }
+
+  async saveAudioArticle(article: AudioArticle): Promise<void> {
+    await db.audioArticles.put(article);
+  }
+
+  async deleteAudioArticle(id: string): Promise<void> {
+    await db.audioArticles.delete(id);
+  }
+
+  async updateAudioArticleLastAccessed(id: string): Promise<void> {
+    const article = await this.getAudioArticleById(id);
+    if (article) {
+      article.lastAccessed = new Date();
+      await this.saveAudioArticle(article);
+    }
   }
 }
 
