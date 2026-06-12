@@ -44,6 +44,7 @@ import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
+import { convertYouTubeUrl } from '../services/ytConvertService';
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -98,6 +99,10 @@ export const HomeScreen: React.FC = () => {
   const [uploadSource, setUploadSource] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [editingTitleValue, setEditingTitleValue] = useState('');
+  const [ytUrlDialogOpen, setYtUrlDialogOpen] = useState(false);
+  const [ytUrl, setYtUrl] = useState('');
+  const [ytConverting, setYtConverting] = useState(false);
+  const [ytStatus, setYtStatus] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
@@ -275,6 +280,29 @@ export const HomeScreen: React.FC = () => {
       alert('업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleYtConvert = async () => {
+    if (!ytUrl.trim() || !accessToken) return;
+    try {
+      setYtConverting(true);
+      setYtStatus('Cloud Run에서 변환 중… (1~2분 소요)');
+      const result = await convertYouTubeUrl(ytUrl.trim(), accessToken);
+      setYtStatus(`완료: "${result.title}" (${result.sentenceCount}문장)`);
+      setYtUrl('');
+      // Reload audio articles from Drive
+      await loadAudioArticles();
+      setTimeout(() => {
+        setYtUrlDialogOpen(false);
+        setYtStatus('');
+      }, 1500);
+    } catch (error) {
+      console.error('YouTube convert failed:', error);
+      setYtStatus('');
+      alert('변환 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setYtConverting(false);
     }
   };
 
@@ -649,6 +677,13 @@ export const HomeScreen: React.FC = () => {
           ) : currentTab === 1 ? (
             <Box sx={{ display: 'flex', gap: 1 }}>
               <Button
+                variant="contained"
+                onClick={() => setYtUrlDialogOpen(true)}
+                size="small"
+              >
+                YouTube URL
+              </Button>
+              <Button
                 variant="outlined"
                 startIcon={<UploadIcon />}
                 onClick={() => setUploadDialogOpen(true)}
@@ -949,7 +984,7 @@ export const HomeScreen: React.FC = () => {
                     )}
                     <Chip label="Audio" size="small" color="info" variant="outlined" sx={{ mr: 1 }} />
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                      {aa.sentences.length}개 문장
+                      {(aa.sentences?.length ?? 0)}개 문장
                     </Typography>
                     {aa.source && (
                       <Typography variant="caption" color="text.secondary" display="block">
@@ -1284,6 +1319,47 @@ export const HomeScreen: React.FC = () => {
             disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
           >
             업로드
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* YouTube URL 변환 다이얼로그 */}
+      <Dialog
+        open={ytUrlDialogOpen}
+        onClose={() => { if (!ytConverting) { setYtUrlDialogOpen(false); setYtStatus(''); } }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>YouTube → Audio Article</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
+            YouTube URL을 입력하면 Cloud Run에서 자동으로 MP3 + sentences를 생성하여 Drive에 저장합니다.
+          </Typography>
+          <TextField
+            fullWidth
+            label="YouTube URL"
+            value={ytUrl}
+            onChange={(e) => setYtUrl(e.target.value)}
+            margin="normal"
+            placeholder="https://www.youtube.com/watch?v=... 또는 shorts URL"
+            autoFocus
+            disabled={ytConverting}
+          />
+          {ytStatus && (
+            <Alert severity={ytStatus.startsWith('완료') ? 'success' : 'info'} sx={{ mt: 2 }}>
+              {ytConverting && <CircularProgress size={16} sx={{ mr: 1 }} />}
+              {ytStatus}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setYtUrlDialogOpen(false); setYtStatus(''); }} disabled={ytConverting}>취소</Button>
+          <Button
+            onClick={handleYtConvert}
+            variant="contained"
+            disabled={!ytUrl.trim() || ytConverting || !isAuthenticated}
+          >
+            {ytConverting ? '변환 중…' : '변환'}
           </Button>
         </DialogActions>
       </Dialog>

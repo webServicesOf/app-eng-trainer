@@ -190,7 +190,7 @@ export class GoogleDriveService {
     return {
       id: meta.id,
       title: meta.title,
-      sentences: meta.sentences,
+      sentences: meta.sentences || [],
       splitPoints: meta.splitPoints,
       source: meta.source,
       nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,

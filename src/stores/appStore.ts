@@ -245,7 +245,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const expectedRanges: { start: number; end: number }[] = [];
         let prev = 0;
         for (let i = 0; i <= sorted.length; i++) {
-          const end = i < sorted.length ? sorted[i] + 1 : aa.sentences.length;
+          const end = i < sorted.length ? sorted[i] + 1 : (aa.sentences?.length ?? 0);
           expectedRanges.push({ start: prev, end });
           prev = end;
         }
