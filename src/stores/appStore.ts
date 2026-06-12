@@ -88,6 +88,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       set({ isSyncing: true, syncError: null });
       const driveService = new GoogleDriveService(token);
+      // One-time cleanup of title-based files (can be removed later)
+      const needsCleanup = !localStorage.getItem('drive_cleanup_done');
+      if (needsCleanup) {
+        await driveService.cleanupNonIdFiles();
+        localStorage.setItem('drive_cleanup_done', '1');
+      }
       await driveService.syncUp();
       await driveService.syncDown();
       // Reload local data after sync-down

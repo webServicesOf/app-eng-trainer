@@ -166,6 +166,25 @@ export class GoogleDriveService {
     return res.blob();
   }
 
+  /** Delete files that don't match id-based naming (cleanup after title-based migration) */
+  async cleanupNonIdFiles(): Promise<number> {
+    const files = await this.listFiles();
+    const localArticles = await db.audioArticles.toArray();
+    const validIds = new Set(localArticles.map(a => a.id));
+    let deleted = 0;
+
+    for (const file of files) {
+      const baseName = file.name.replace(/\.(json|mp3)$/, '');
+      if (validIds.has(baseName)) continue; // id-based, keep
+      // Not an id-based file → delete
+      try {
+        await driveRequest(`${DRIVE_API}/files/${file.id}`, this.token, { method: 'DELETE' });
+        deleted++;
+      } catch { /* ignore */ }
+    }
+    return deleted;
+  }
+
   // ── sync logic ─────────────────────────────────────────
 
   /** Upload all local audioArticles to Drive (create / update) */
