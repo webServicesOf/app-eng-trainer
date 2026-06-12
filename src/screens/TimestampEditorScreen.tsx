@@ -49,7 +49,6 @@ const TimestampEditorScreen: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
-  const currentTimeRef = useRef(0);
   const [hasChanges, setHasChanges] = useState(false);
   const [zoom, setZoom] = useState(50);
   const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set());
@@ -107,11 +106,7 @@ const TimestampEditorScreen: React.FC = () => {
     });
 
     ws.on('timeupdate', (time: number) => {
-      if (destroyed) return;
-      currentTimeRef.current = time;
-      // Update display at ~4fps to avoid excessive re-renders
-      const rounded = Math.round(time * 4) / 4;
-      setCurrentTime(prev => prev === rounded ? prev : rounded);
+      if (!destroyed) setCurrentTime(time);
     });
 
     ws.on('play', () => { if (!destroyed) setIsPlaying(true); });
@@ -245,26 +240,16 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, [sentences, selectedIndex, startEndCheck, clearEndCheck]);
 
-  const pausedAtRef = useRef<number | null>(null);
-
   const handlePlaySentence = useCallback(() => {
     const ws = wavesurferRef.current;
     const s = sentences[selectedIndex];
     if (!s || s.start == null || s.end == null || !ws) return;
 
     if (ws.isPlaying()) {
-      // Save position BEFORE pause
-      pausedAtRef.current = ws.getCurrentTime();
       ws.pause();
       clearEndCheck();
-      // Restore position AFTER pause (wavesurfer may reset it)
-      if (pausedAtRef.current != null) {
-        ws.setTime(pausedAtRef.current);
-      }
       return;
     }
-    // Play from start
-    pausedAtRef.current = null;
     ws.setTime(s.start);
     ws.play();
     startEndCheck(s.end);
