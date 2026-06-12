@@ -303,6 +303,37 @@ const TimestampEditorScreen: React.FC = () => {
     setHasChanges(true);
   }, [sentences, selectedIndex, pushUndo]);
 
+  const handleSplitSentence = useCallback(() => {
+    const current = sentences[selectedIndex];
+    if (!current?.text || !current.start || !current.end) return;
+
+    const words = current.text.split(/\s+/);
+    if (words.length < 2) return; // can't split 1 word
+
+    pushUndo();
+    const midWord = Math.ceil(words.length / 2);
+    const midTime = (current.start + current.end) / 2;
+
+    const first: SentenceEntry = {
+      index: current.index,
+      text: words.slice(0, midWord).join(' '),
+      start: current.start,
+      end: midTime,
+    };
+    const second: SentenceEntry = {
+      index: current.index + 1,
+      text: words.slice(midWord).join(' '),
+      start: midTime,
+      end: current.end,
+    };
+
+    const updated = [...sentences];
+    updated.splice(selectedIndex, 1, first, second);
+    const reindexed = updated.map((s, i) => ({ ...s, index: i + 1 }));
+    setSentences(reindexed);
+    setHasChanges(true);
+  }, [sentences, selectedIndex, pushUndo]);
+
   const handleSave = useCallback(async () => {
     if (!article) return;
     const updated: AudioArticle = {
@@ -384,9 +415,12 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyE') {
         e.preventDefault();
         handlePlayFromEnd();
-      } else if (code === 'KeyD') {
+      } else if (code === 'KeyD' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         toggleSplitMarker(selectedIndex);
+      } else if (code === 'KeyD') {
+        e.preventDefault();
+        handleSplitSentence();
       } else if (code === 'KeyM') {
         e.preventDefault();
         handleMergeSentences();
@@ -413,7 +447,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleSplitSentence, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
 
   if (!article) {
     return (
@@ -511,16 +545,26 @@ const TimestampEditorScreen: React.FC = () => {
             <Typography variant="subtitle2">
               문장 {selected?.index ?? '-'} / {sentences.length}
             </Typography>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<MergeType />}
-              onClick={handleMergeSentences}
-              disabled={selectedIndex >= sentences.length - 1}
-              title="다음 문장과 합치기"
-            >
-              합치기
-            </Button>
+            <Box sx={{ display: 'flex', gap: 0.5 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleSplitSentence}
+                title="문장 분할 (D)"
+              >
+                분할
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<MergeType />}
+                onClick={handleMergeSentences}
+                disabled={selectedIndex >= sentences.length - 1}
+                title="다음 문장과 합치기 (M)"
+              >
+                합치기
+              </Button>
+            </Box>
           </Stack>
           <TextField
             fullWidth
@@ -576,8 +620,9 @@ const TimestampEditorScreen: React.FC = () => {
             <Typography variant="caption" display="block">E: 끝 1초 전</Typography>
             <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
             <Typography variant="caption" display="block">←→: start -0.1s / end +0.1s</Typography>
-            <Typography variant="caption" display="block">D: 분할점 토글 (더블클릭도 가능)</Typography>
+            <Typography variant="caption" display="block">D: 문장 분할</Typography>
             <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
+            <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
             <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
             <Typography variant="caption" display="block">⌘S: 저장</Typography>
           </Box>
