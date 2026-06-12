@@ -88,6 +88,8 @@ const TimestampEditorScreen: React.FC = () => {
       cursorColor: '#dc004e',
       height: 128,
       normalize: true,
+      autoCenter: false,
+      autoScroll: false,
       plugins: [regions],
     });
 
@@ -106,7 +108,7 @@ const TimestampEditorScreen: React.FC = () => {
     });
 
     ws.on('timeupdate', (time: number) => {
-      if (!destroyed) setCurrentTime(time);
+      if (!destroyed) setCurrentTime(Math.round(time * 100) / 100);
     });
 
     ws.on('play', () => { if (!destroyed) setIsPlaying(true); });
@@ -246,15 +248,14 @@ const TimestampEditorScreen: React.FC = () => {
     if (!s || s.start == null || s.end == null || !ws) return;
 
     if (ws.isPlaying()) {
-      const pauseAt = ws.getCurrentTime();
       ws.pause();
-      ws.setTime(pauseAt); // keep cursor at current position
       clearEndCheck();
-    } else {
-      ws.setTime(s.start);
-      ws.play();
-      startEndCheck(s.end);
+      return; // cursor stays at current position naturally
     }
+    // Play from start
+    ws.setTime(s.start);
+    ws.play();
+    startEndCheck(s.end);
   }, [sentences, selectedIndex, startEndCheck, clearEndCheck]);
 
   const handlePlayFromEnd = useCallback(() => {
