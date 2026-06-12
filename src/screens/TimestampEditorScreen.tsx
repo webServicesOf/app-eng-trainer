@@ -220,9 +220,10 @@ const TimestampEditorScreen: React.FC = () => {
       if (!ws) { clearEndCheck(); return; }
       if (ws.getCurrentTime() >= endTime) {
         ws.pause();
+        ws.setTime(endTime); // snap to exact end
         clearEndCheck();
       }
-    }, 30);
+    }, 16);
   }, [clearEndCheck]);
 
   const handlePlayPause = useCallback(() => {
@@ -245,12 +246,10 @@ const TimestampEditorScreen: React.FC = () => {
     if (!s || s.start == null || s.end == null || !ws) return;
 
     if (ws.isPlaying()) {
-      // 재생 중 → 정지 (현재 위치 유지)
       ws.pause();
       clearEndCheck();
     } else {
-      // 정지 상태 → 처음부터 재생
-      ws.setTime(s.start);
+      ws.setTime(s.start); // snap to exact start
       ws.play();
       startEndCheck(s.end);
     }
@@ -259,7 +258,7 @@ const TimestampEditorScreen: React.FC = () => {
   const handlePlayFromEnd = useCallback(() => {
     const s = sentences[selectedIndex];
     if (!s || s.end == null || !wavesurferRef.current) return;
-    const startAt = Math.max(0, s.end - 1);
+    const startAt = Math.max(s.start ?? 0, s.end - 3);
     wavesurferRef.current.setTime(startAt);
     wavesurferRef.current.play();
     startEndCheck(s.end);
@@ -659,7 +658,7 @@ const TimestampEditorScreen: React.FC = () => {
           {/* Shortcuts */}
           <Box sx={{ color: theme.palette.text.secondary, display: { xs: 'none', sm: 'block' } }}>
             <Typography variant="caption" display="block">Space: 처음부터 재생</Typography>
-            <Typography variant="caption" display="block">E: 끝 1초 전</Typography>
+            <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
             <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
             <Typography variant="caption" display="block">←→: start -0.1s / end +0.1s</Typography>
             <Typography variant="caption" display="block">D: 문장 분할</Typography>
