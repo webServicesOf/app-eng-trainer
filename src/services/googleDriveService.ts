@@ -50,9 +50,20 @@ async function driveRequest(
 
 export { DriveAuthError };
 
+/**
+ * Drive folder layout:
+ *   eng-trainer/          ← root
+ *   ├── data/             ← article .json + .mp3
+ *   │   ├── audio-xxx.json
+ *   │   └── audio-xxx.mp3
+ *   └── sys/              ← settings.json
+ *       └── settings.json
+ */
 export class GoogleDriveService {
   private token: string;
-  private folderId: string | null = null;
+  private rootId: string | null = null;
+  private dataFolderId: string | null = null;
+  private sysFolderId: string | null = null;
 
   constructor(token: string) {
     this.token = token;
@@ -60,12 +71,10 @@ export class GoogleDriveService {
 
   // ── folder management ──────────────────────────────────
 
-  /** Find or create the eng-trainer folder and cache its ID */
-  private async ensureFolder(): Promise<string> {
-    if (this.folderId) return this.folderId;
-
-    // Search for existing folder
-    const q = `name='${getDriveFolderName()}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  /** Find or create a folder by name under a parent. */
+  private async findOrCreateFolder(name: string, parentId?: string): Promise<string> {
+    const parentClause = parentId ? ` and '${parentId}' in parents` : '';
+    const q = `name='${name}' and mimeType='application/vnd.google-apps.folder' and trashed=false${parentClause}`;
     const res = await driveRequest(
       `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&spaces=drive`,
       this.token,
@@ -73,29 +82,42 @@ export class GoogleDriveService {
     const data = await res.json();
 
     if (data.files && data.files.length > 0) {
-      this.folderId = data.files[0].id;
-      return this.folderId!;
+      return data.files[0].id;
     }
 
     // Create folder
+    const body: Record<string, any> = {
+      name,
+      mimeType: 'application/vnd.google-apps.folder',
+    };
+    if (parentId) body.parents = [parentId];
+
     const createRes = await driveRequest(`${DRIVE_API}/files`, this.token, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: getDriveFolderName(),
-        mimeType: 'application/vnd.google-apps.folder',
-      }),
+      body: JSON.stringify(body),
     });
     const folder = await createRes.json();
-    this.folderId = folder.id;
-    return this.folderId!;
+    return folder.id;
+  }
+
+  /** Ensure root + data + sys folders exist. */
+  private async ensureFolders(): Promise<{ root: string; data: string; sys: string }> {
+    if (this.rootId && this.dataFolderId && this.sysFolderId) {
+      return { root: this.rootId, data: this.dataFolderId, sys: this.sysFolderId };
+    }
+
+    this.rootId = await this.findOrCreateFolder(getDriveFolderName());
+    this.dataFolderId = await this.findOrCreateFolder('data', this.rootId);
+    this.sysFolderId = await this.findOrCreateFolder('sys', this.rootId);
+
+    return { root: this.rootId, data: this.dataFolderId, sys: this.sysFolderId };
   }
 
   // ── low-level file ops ─────────────────────────────────
 
-  /** List all files inside the eng-trainer folder */
-  private async listFiles(): Promise<{ id: string; name: string; modifiedTime: string }[]> {
-    const folderId = await this.ensureFolder();
+  /** List all files inside a specific folder */
+  private async listFilesIn(folderId: string): Promise<{ id: string; name: string; modifiedTime: string }[]> {
     const q = `'${folderId}' in parents and trashed=false`;
     const fields = 'files(id,name,modifiedTime)';
     const res = await driveRequest(
@@ -111,10 +133,9 @@ export class GoogleDriveService {
     name: string,
     content: Blob | string,
     mimeType: string,
+    parentFolderId: string,
     existingFileId?: string,
   ): Promise<string> {
-    const folderId = await this.ensureFolder();
-
     if (existingFileId) {
       // Update existing file content (PATCH)
       const res = await driveRequest(
@@ -131,7 +152,7 @@ export class GoogleDriveService {
     }
 
     // Create new file via multipart upload
-    const metadata = JSON.stringify({ name, parents: [folderId] });
+    const metadata = JSON.stringify({ name, parents: [parentFolderId] });
     const boundary = '-----eng_trainer_boundary';
     const body =
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
@@ -200,11 +221,56 @@ export class GoogleDriveService {
     };
   }
 
+  // ── migration: move legacy flat files into data/ ───────
+
+  /** One-time migration: move article files from root to data/ folder */
+  private async migrateIfNeeded(): Promise<void> {
+    const { root, data } = await this.ensureFolders();
+    const rootFiles = await this.listFilesIn(root);
+
+    // Find article files still in root (audio-*.json, audio-*.mp3)
+    const articleFiles = rootFiles.filter(f =>
+      (f.name.startsWith('audio-') && (f.name.endsWith('.json') || f.name.endsWith('.mp3')))
+    );
+
+    if (articleFiles.length === 0) return;
+
+    // Move each file: update parent from root → data
+    for (const file of articleFiles) {
+      try {
+        await driveRequest(
+          `${DRIVE_API}/files/${file.id}?addParents=${data}&removeParents=${root}`,
+          this.token,
+          { method: 'PATCH' },
+        );
+      } catch (e) {
+        console.warn(`Migration: failed to move ${file.name}:`, e);
+      }
+    }
+
+    // Also move settings.json to sys/ if it's in root
+    const { sys } = await this.ensureFolders();
+    const settingsInRoot = rootFiles.find(f => f.name === 'settings.json');
+    if (settingsInRoot) {
+      try {
+        await driveRequest(
+          `${DRIVE_API}/files/${settingsInRoot.id}?addParents=${sys}&removeParents=${root}`,
+          this.token,
+          { method: 'PATCH' },
+        );
+      } catch (e) {
+        console.warn('Migration: failed to move settings.json:', e);
+      }
+    }
+  }
+
   // ── public CRUD API ────────────────────────────────────
 
   /** List all audio articles from Drive (metadata only, no blobs) */
   async listArticles(): Promise<AudioArticle[]> {
-    const remoteFiles = await this.listFiles();
+    await this.migrateIfNeeded();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
     const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json'));
 
     const articles: AudioArticle[] = [];
@@ -225,7 +291,8 @@ export class GoogleDriveService {
 
   /** Get a single article's metadata from Drive */
   async getArticle(id: string): Promise<AudioArticle | null> {
-    const remoteFiles = await this.listFiles();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
     const jsonFile = remoteFiles.find((f) => f.name === `${id}.json`);
     if (!jsonFile) return null;
 
@@ -236,7 +303,8 @@ export class GoogleDriveService {
 
   /** Save (upsert) article metadata JSON to Drive */
   async saveArticle(article: AudioArticle): Promise<void> {
-    const remoteFiles = await this.listFiles();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
     const jsonName = `${article.id}.json`;
     const existing = remoteFiles.find((f) => f.name === jsonName);
 
@@ -244,23 +312,26 @@ export class GoogleDriveService {
       jsonName,
       JSON.stringify(this.articleToMeta(article), null, 2),
       'application/json',
+      data,
       existing?.id,
     );
   }
 
   /** Upload MP3 blob to Drive (only if not already present) */
   async uploadMp3(id: string, blob: Blob): Promise<void> {
-    const remoteFiles = await this.listFiles();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
     const mp3Name = `${id}.mp3`;
     const existing = remoteFiles.find((f) => f.name === mp3Name);
     if (existing) return; // already uploaded, skip
 
-    await this.uploadFile(mp3Name, blob, 'audio/mpeg');
+    await this.uploadFile(mp3Name, blob, 'audio/mpeg', data);
   }
 
   /** Download MP3 blob from Drive */
   async downloadMp3(id: string): Promise<Blob | null> {
-    const remoteFiles = await this.listFiles();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
     const mp3File = remoteFiles.find((f) => f.name === `${id}.mp3`);
     if (!mp3File) return null;
 
@@ -269,30 +340,34 @@ export class GoogleDriveService {
 
   // ── Settings sync ────────────────────────────────────
 
-  /** Save app settings to Drive (excludes sensitive keys like TTS API key) */
+  /** Save app settings to Drive sys/ folder */
   async saveSettings(settings: Record<string, any>): Promise<void> {
-    const remoteFiles = await this.listFiles();
+    const { sys } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(sys);
     const existing = remoteFiles.find((f) => f.name === 'settings.json');
     await this.uploadFile(
       'settings.json',
       JSON.stringify(settings, null, 2),
       'application/json',
+      sys,
       existing?.id,
     );
   }
 
-  /** Load app settings from Drive */
+  /** Load app settings from Drive sys/ folder */
   async loadSettings(): Promise<Record<string, any> | null> {
-    const remoteFiles = await this.listFiles();
+    const { sys } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(sys);
     const settingsFile = remoteFiles.find((f) => f.name === 'settings.json');
     if (!settingsFile) return null;
     const blob = await this.downloadFile(settingsFile.id);
     return JSON.parse(await blob.text());
   }
 
-  /** Delete article JSON + MP3 from Drive */
+  /** Delete article JSON + MP3 from Drive data/ folder */
   async deleteArticle(id: string): Promise<void> {
-    const remoteFiles = await this.listFiles();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
     const jsonFile = remoteFiles.find((f) => f.name === `${id}.json`);
     const mp3File = remoteFiles.find((f) => f.name === `${id}.mp3`);
 
