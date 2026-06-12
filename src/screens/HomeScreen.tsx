@@ -37,7 +37,6 @@ import {
   Upload as UploadIcon,
 
   DoneAll as DoneAllIcon,
-  CloudSync as CloudSyncIcon,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
@@ -72,10 +71,6 @@ export const HomeScreen: React.FC = () => {
     cycleReviewInterval,
     loadSubDecks,
     deleteSubDeck,
-    isSyncing,
-    lastSyncedAt,
-    syncError,
-    syncDrive,
   } = useAppStore();
 
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -126,13 +121,6 @@ export const HomeScreen: React.FC = () => {
     if (savedFolder) setDriveFolderName(savedFolder);
   }, [loadArticles, loadAudioArticles, loadGoogleSheetsConfig, loadSubDecks]);
 
-  // Auto-sync on login
-  useEffect(() => {
-    if (isAuthenticated && accessToken) {
-      syncDrive();
-    }
-  }, [isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     if (currentTab === 2) {
       loadSavedSentences();
@@ -178,7 +166,7 @@ export const HomeScreen: React.FC = () => {
     const aa = audioArticles.find(a => a.id === id);
     if (!aa) return;
     const trimmed = newTitle.trim();
-    await localDB.saveAudioArticle({ ...aa, title: trimmed, lastAccessed: new Date() });
+    await saveAudioArticle({ ...aa, title: trimmed, lastAccessed: new Date() });
     // Update SubDeck titles
     const subs = await localDB.getSubDecksByParent(id);
     for (const sd of subs) {
@@ -186,7 +174,6 @@ export const HomeScreen: React.FC = () => {
       const partSuffix = partMatch ? partMatch[0] : `${sd.startIndex}-${sd.endIndex}`;
       await localDB.saveSubDeck({ ...sd, title: `${trimmed} ${partSuffix}` });
     }
-    await loadAudioArticles();
     await loadSubDecks();
     setEditingTitleId(null);
   };
@@ -258,7 +245,10 @@ export const HomeScreen: React.FC = () => {
     if (aa && !aa.nextReviewDate && !aa.reviewInterval) {
       await cycleReviewInterval('audio', id);
     }
-    await localDB.updateAudioArticleLastAccessed(id);
+    // Update lastAccessed in Drive (fire-and-forget)
+    if (aa) {
+      saveAudioArticle({ ...aa, lastAccessed: new Date() }).catch(() => {});
+    }
     navigate(`/learn-audio/${id}`);
   };
 
@@ -574,24 +564,6 @@ export const HomeScreen: React.FC = () => {
             >
               Google 로그인
             </Button>
-          )}
-          {isAuthenticated && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <IconButton
-                color={syncError ? 'error' : 'primary'}
-                onClick={syncDrive}
-                disabled={isSyncing}
-                title={syncError ? `Sync error: ${syncError}` : 'Drive 동기화'}
-                size="small"
-              >
-                {isSyncing ? <CircularProgress size={20} /> : <CloudSyncIcon />}
-              </IconButton>
-              {lastSyncedAt && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: { xs: 'none', sm: 'block' } }}>
-                  {new Date(lastSyncedAt).toLocaleTimeString()}
-                </Typography>
-              )}
-            </Box>
           )}
           <IconButton
             color="primary"

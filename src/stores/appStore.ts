@@ -15,19 +15,11 @@ interface AppStore extends AppState {
   accessToken: string | null;
   isAuthenticated: boolean;
 
-  // Audio articles
+  // Audio articles (Drive-backed)
   audioArticles: AudioArticle[];
 
   // SubDecks
   subDecks: SubDeck[];
-
-  // Sync state
-  isSyncing: boolean;
-  lastSyncedAt: Date | null;
-  syncError: string | null;
-
-  // Sync actions
-  syncDrive: () => Promise<void>;
 
   // Actions
   setLoading: (loading: boolean) => void;
@@ -39,7 +31,7 @@ interface AppStore extends AppState {
   deleteArticle: (id: string) => Promise<void>;
   updateLastAccessed: (id: string) => Promise<void>;
 
-  // Audio article actions
+  // Audio article actions (Drive SSOT)
   loadAudioArticles: () => Promise<void>;
   saveAudioArticle: (article: AudioArticle) => Promise<void>;
   deleteAudioArticle: (id: string) => Promise<void>;
@@ -64,6 +56,12 @@ interface AppStore extends AppState {
   clearGoogleSheetsConfig: () => void;
 }
 
+/** Helper: get DriveService from current token, or null */
+function getDriveService(token: string | null): GoogleDriveService | null {
+  if (!token) return null;
+  return new GoogleDriveService(token);
+}
+
 export const useAppStore = create<AppStore>((set, get) => ({
   // Initial state
   articles: [],
@@ -74,45 +72,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   googleSheetsConfig: null,
   accessToken: null,
   isAuthenticated: false,
-  isSyncing: false,
-  lastSyncedAt: null,
-  syncError: null,
-
-  // Sync action
-  syncDrive: async () => {
-    const token = get().accessToken;
-    if (!token) {
-      set({ syncError: 'Not authenticated' });
-      return;
-    }
-    try {
-      set({ isSyncing: true, syncError: null });
-      const driveService = new GoogleDriveService(token);
-      await driveService.syncUp();
-      await driveService.syncDown();
-      // Reload local data after sync-down
-      const audioArticles = await localDB.getAudioArticles();
-      set({ audioArticles, lastSyncedAt: new Date() });
-      localStorage.setItem('last_synced_at', new Date().toISOString());
-    } catch (error) {
-      if (error instanceof DriveAuthError) {
-        // Token expired — force re-login
-        localDB.clearAccessToken();
-        set({ accessToken: null, isAuthenticated: false, syncError: '토큰 만료 — 재로그인 후 다시 시도' });
-      } else {
-        const msg = error instanceof Error ? error.message : 'Sync failed';
-        set({ syncError: msg });
-      }
-    } finally {
-      set({ isSyncing: false });
-    }
-  },
 
   // Basic actions
   setLoading: (loading: boolean) => set({ isLoading: loading }),
   setError: (error: string | null) => set({ error }),
 
-  // Article actions
+  // Article actions (Text — Sheets-based, unchanged)
   loadArticles: async () => {
     try {
       set({ isLoading: true, error: null });
@@ -185,37 +150,74 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  // Audio article actions
+  // ── Audio article actions (Drive SSOT) ─────────────────
+
   loadAudioArticles: async () => {
+    const drive = getDriveService(get().accessToken);
+    if (!drive) {
+      // No token — nothing to load
+      set({ audioArticles: [] });
+      return;
+    }
     try {
-      const audioArticles = await localDB.getAudioArticles();
+      const audioArticles = await drive.listArticles();
       set({ audioArticles });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to load audio articles';
-      set({ error: errorMessage });
+      if (error instanceof DriveAuthError) {
+        localDB.clearAccessToken();
+        set({ accessToken: null, isAuthenticated: false, error: '토큰 만료 — 재로그인 후 다시 시도' });
+      } else {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to load audio articles';
+        set({ error: errorMessage });
+      }
     }
   },
 
   saveAudioArticle: async (article: AudioArticle) => {
+    const drive = getDriveService(get().accessToken);
+    if (!drive) {
+      set({ error: 'Drive 인증 필요' });
+      return;
+    }
     try {
-      await localDB.saveAudioArticle(article);
-      await get().loadAudioArticles();
-      // Immediate Drive upload (fire-and-forget)
-      const token = get().accessToken;
-      if (token) {
-        new GoogleDriveService(token).uploadArticle(article).catch(() => {});
+      // Save JSON metadata to Drive
+      await drive.saveArticle(article);
+
+      // Upload MP3 to Drive (only if not already there) + cache locally
+      if (article.audioBlob) {
+        await drive.uploadMp3(article.id, article.audioBlob);
+        await localDB.cacheMp3(article.id, article.audioBlob);
       }
+
+      // Reload list from Drive
+      await get().loadAudioArticles();
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to save audio article';
-      set({ error: errorMessage });
+      if (error instanceof DriveAuthError) {
+        localDB.clearAccessToken();
+        set({ accessToken: null, isAuthenticated: false, error: '토큰 만료 — 재로그인 후 다시 시도' });
+      } else {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to save audio article';
+        set({ error: errorMessage });
+      }
     }
   },
 
   deleteAudioArticle: async (id: string) => {
+    const drive = getDriveService(get().accessToken);
     try {
-      await localDB.deleteAudioArticle(id);
+      // Delete from Drive
+      if (drive) {
+        await drive.deleteArticle(id);
+      }
+      // Remove cached MP3
+      await localDB.removeCachedMp3(id);
+      // Remove SubDecks
+      await localDB.deleteSubDecksByParent(id);
+
       const current = get().audioArticles;
       set({ audioArticles: current.filter(a => a.id !== id) });
+      // Reload subdecks
+      await get().loadSubDecks();
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to delete audio article';
       set({ error: errorMessage });
@@ -226,7 +228,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   loadSubDecks: async () => {
     try {
       // Auto-create SubDecks from splitPoints if missing
-      const audioArticles = await localDB.getAudioArticles();
+      const audioArticles = get().audioArticles;
       for (const aa of audioArticles) {
         if (!aa.splitPoints?.length) continue;
         const existing = await localDB.getSubDecksByParent(aa.id);
@@ -293,8 +295,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   // Review actions
   markReviewDone: async (type: 'article' | 'audio' | 'subdeck', id: string) => {
     try {
-      await localDB.markReviewDone(type, id);
-      if (type === 'article') {
+      if (type === 'audio') {
+        // Audio: update in Drive
+        const drive = getDriveService(get().accessToken);
+        if (!drive) return;
+        const article = get().audioArticles.find(a => a.id === id);
+        if (!article) return;
+        const interval = article.reviewInterval || 1;
+        const next = new Date();
+        next.setDate(next.getDate() + interval);
+        const updated: AudioArticle = { ...article, reviewInterval: interval, nextReviewDate: next, lastAccessed: new Date() };
+        await drive.saveArticle(updated);
+        await get().loadAudioArticles();
+      } else if (type === 'article') {
+        await localDB.markReviewDone('article', id);
         await get().loadArticles();
         // Reverse-sync review fields back to Google Sheets
         const article = await localDB.getArticleById(id);
@@ -303,13 +317,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
           const config = get().googleSheetsConfig;
           if (token && config) {
             const sheetsService = new GoogleSheetsService(token, config);
-            sheetsService.syncReviewFields(article).catch(() => {
-              // Silent fail — local state is already saved
-            });
+            sheetsService.syncReviewFields(article).catch(() => {});
           }
         }
-      } else if (type === 'audio') await get().loadAudioArticles();
-      else await get().loadSubDecks();
+      } else {
+        await localDB.markReviewDone('subdeck', id);
+        await get().loadSubDecks();
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to mark review done';
       set({ error: errorMessage });
@@ -318,17 +332,26 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   cycleReviewInterval: async (type: 'article' | 'audio' | 'subdeck', id: string) => {
     try {
-      let record: any;
-      if (type === 'article') record = await localDB.getArticleById(id);
-      else if (type === 'audio') record = await localDB.getAudioArticleById(id);
-      else {
-        const decks = await localDB.getSubDecks();
-        record = decks.find(d => d.id === id);
-      }
-      if (!record) return;
-      const newInterval = localDB.cycleInterval(record.reviewInterval || 0);
-      await localDB.setReviewInterval(type, id, newInterval);
-      if (type === 'article') {
+      if (type === 'audio') {
+        // Audio: update in Drive
+        const drive = getDriveService(get().accessToken);
+        if (!drive) return;
+        const article = get().audioArticles.find(a => a.id === id);
+        if (!article) return;
+        const newInterval = localDB.cycleInterval(article.reviewInterval || 0);
+        let nextReviewDate: Date | null = null;
+        if (newInterval > 0) {
+          nextReviewDate = new Date();
+          nextReviewDate.setDate(nextReviewDate.getDate() + newInterval);
+        }
+        const updated: AudioArticle = { ...article, reviewInterval: newInterval, nextReviewDate, lastAccessed: new Date() };
+        await drive.saveArticle(updated);
+        await get().loadAudioArticles();
+      } else if (type === 'article') {
+        const record = await localDB.getArticleById(id);
+        if (!record) return;
+        const newInterval = localDB.cycleInterval(record.reviewInterval || 0);
+        await localDB.setReviewInterval('article', id, newInterval);
         await get().loadArticles();
         // Reverse-sync review fields back to Google Sheets
         const article = await localDB.getArticleById(id);
@@ -337,13 +360,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
           const config = get().googleSheetsConfig;
           if (token && config) {
             const sheetsService = new GoogleSheetsService(token, config);
-            sheetsService.syncReviewFields(article).catch(() => {
-              // Silent fail — local state is already saved
-            });
+            sheetsService.syncReviewFields(article).catch(() => {});
           }
         }
-      } else if (type === 'audio') await get().loadAudioArticles();
-      else await get().loadSubDecks();
+      } else {
+        const decks = await localDB.getSubDecks();
+        const record = decks.find(d => d.id === id);
+        if (!record) return;
+        const newInterval = localDB.cycleInterval(record.reviewInterval || 0);
+        await localDB.setReviewInterval('subdeck', id, newInterval);
+        await get().loadSubDecks();
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to cycle review interval';
       set({ error: errorMessage });

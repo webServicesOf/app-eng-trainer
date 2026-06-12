@@ -32,12 +32,13 @@ import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
 import { AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
+import { GoogleDriveService } from '../services/googleDriveService';
 
 const TimestampEditorScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const theme = useTheme();
-  const { createSubDeck, loadSubDecks } = useAppStore();
+  const { createSubDeck, loadSubDecks, accessToken, audioArticles } = useAppStore();
 
   const waveformRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
@@ -56,23 +57,37 @@ const TimestampEditorScreen: React.FC = () => {
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
 
-  // Load article
+  // Load article from Drive (metadata from store) + MP3 from cache or Drive
   useEffect(() => {
     const load = async () => {
       if (!id) return;
-      const loaded = await localDB.getAudioArticleById(id);
-      if (loaded) {
-        setArticle(loaded);
-        setSentences([...loaded.sentences]);
-        if (loaded.splitPoints?.length) {
-          setSplitMarkers(new Set(loaded.splitPoints));
-        }
-      } else {
+
+      // Get metadata from store (already loaded from Drive)
+      const meta = audioArticles.find(a => a.id === id);
+      if (!meta) {
         navigate('/');
+        return;
+      }
+
+      // Get MP3: try cache first, then Drive
+      let audioBlob = await localDB.getCachedMp3(id);
+      if (!audioBlob && accessToken) {
+        const drive = new GoogleDriveService(accessToken);
+        audioBlob = (await drive.downloadMp3(id)) || undefined;
+        if (audioBlob) {
+          await localDB.cacheMp3(id, audioBlob);
+        }
+      }
+
+      const loaded: AudioArticle = { ...meta, audioBlob };
+      setArticle(loaded);
+      setSentences([...loaded.sentences]);
+      if (loaded.splitPoints?.length) {
+        setSplitMarkers(new Set(loaded.splitPoints));
       }
     };
     load();
-  }, [id, navigate]);
+  }, [id, navigate, accessToken, audioArticles]);
 
   // Initialize WaveSurfer
   useEffect(() => {
@@ -336,15 +351,16 @@ const TimestampEditorScreen: React.FC = () => {
   }, [sentences, selectedIndex, pushUndo]);
 
   const handleSave = useCallback(async () => {
-    if (!article) return;
+    if (!article || !accessToken) return;
     const updated: AudioArticle = {
       ...article,
       sentences,
     };
-    await localDB.saveAudioArticle(updated);
+    const drive = new GoogleDriveService(accessToken);
+    await drive.saveArticle(updated);
     setArticle(updated);
     setHasChanges(false);
-  }, [article, sentences]);
+  }, [article, sentences, accessToken]);
 
   const toggleSplitMarker = useCallback((idx: number) => {
     setSplitMarkers(prev => {
@@ -356,13 +372,14 @@ const TimestampEditorScreen: React.FC = () => {
   }, []);
 
   const handleSaveSplits = useCallback(async () => {
-    if (!article || splitMarkers.size === 0) return;
+    if (!article || splitMarkers.size === 0 || !accessToken) return;
 
     const sortedMarkers = Array.from(splitMarkers).sort((a, b) => a - b);
 
-    // Save splitPoints into the article (for Drive sync)
+    // Save splitPoints into the article (Drive SSOT)
     const updated: AudioArticle = { ...article, sentences, splitPoints: sortedMarkers };
-    await localDB.saveAudioArticle(updated);
+    const drive = new GoogleDriveService(accessToken);
+    await drive.saveArticle(updated);
     setArticle(updated);
 
     // Recreate SubDecks from splitPoints
@@ -376,7 +393,7 @@ const TimestampEditorScreen: React.FC = () => {
     await loadSubDecks();
     setHasChanges(false);
     alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
-  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks]);
+  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, accessToken]);
 
   const handleSelectSentence = useCallback((idx: number) => {
     setSelectedIndex(idx);

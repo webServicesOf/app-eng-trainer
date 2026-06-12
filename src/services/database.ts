@@ -133,29 +133,32 @@ export class LocalDatabaseService {
     return !!existing;
   }
 
-  // AudioArticle 관련 메서드
-  async getAudioArticles(): Promise<AudioArticle[]> {
-    return await db.audioArticles.orderBy('lastAccessed').reverse().toArray();
+  // ── MP3 Blob Cache (IndexedDB) ────────────────────────
+
+  /** Get cached MP3 blob by article ID */
+  async getCachedMp3(id: string): Promise<Blob | undefined> {
+    const record = await db.audioArticles.get(id);
+    return record?.audioBlob;
   }
 
-  async getAudioArticleById(id: string): Promise<AudioArticle | undefined> {
-    return await db.audioArticles.get(id);
+  /** Cache MP3 blob in IndexedDB */
+  async cacheMp3(id: string, blob: Blob): Promise<void> {
+    // Store minimal record — just id + blob
+    await db.audioArticles.put({
+      id,
+      audioBlob: blob,
+      title: '',
+      sentences: [],
+      nextReviewDate: null,
+      reviewInterval: 0,
+      createdAt: new Date(),
+      lastAccessed: new Date(),
+    } as AudioArticle);
   }
 
-  async saveAudioArticle(article: AudioArticle): Promise<void> {
-    await db.audioArticles.put(article);
-  }
-
-  async deleteAudioArticle(id: string): Promise<void> {
+  /** Remove cached MP3 blob */
+  async removeCachedMp3(id: string): Promise<void> {
     await db.audioArticles.delete(id);
-  }
-
-  async updateAudioArticleLastAccessed(id: string): Promise<void> {
-    const article = await this.getAudioArticleById(id);
-    if (article) {
-      article.lastAccessed = new Date();
-      await this.saveAudioArticle(article);
-    }
   }
 
   // SubDeck methods
@@ -182,11 +185,10 @@ export class LocalDatabaseService {
   // Spaced repetition — fixed interval steps
   static readonly REVIEW_INTERVALS = [0, 1, 3, 7, 10, 30, 120];
 
-  /** Set review interval and compute nextReviewDate */
-  async setReviewInterval(type: 'article' | 'audio' | 'subdeck', id: string, interval: number): Promise<void> {
+  /** Set review interval and compute nextReviewDate (for Text articles and SubDecks only) */
+  async setReviewInterval(type: 'article' | 'subdeck', id: string, interval: number): Promise<void> {
     let record: any;
     if (type === 'article') record = await this.getArticleById(id);
-    else if (type === 'audio') record = await this.getAudioArticleById(id);
     else record = await db.subDecks.get(id);
     if (!record) return;
 
@@ -200,15 +202,13 @@ export class LocalDatabaseService {
     }
 
     if (type === 'article') await this.saveArticle(record);
-    else if (type === 'audio') await this.saveAudioArticle(record);
     else await this.saveSubDeck(record);
   }
 
-  /** Mark review done with current interval setting */
-  async markReviewDone(type: 'article' | 'audio' | 'subdeck', id: string): Promise<void> {
+  /** Mark review done with current interval setting (for Text articles and SubDecks only) */
+  async markReviewDone(type: 'article' | 'subdeck', id: string): Promise<void> {
     let record: any;
     if (type === 'article') record = await this.getArticleById(id);
-    else if (type === 'audio') record = await this.getAudioArticleById(id);
     else record = await db.subDecks.get(id);
     if (!record) return;
     await this.setReviewInterval(type, id, record.reviewInterval || 1);

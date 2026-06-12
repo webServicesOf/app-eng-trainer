@@ -1,5 +1,4 @@
 import { AudioArticle, SentenceEntry } from '../types';
-import { db } from './database';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
@@ -95,7 +94,7 @@ export class GoogleDriveService {
   // ── low-level file ops ─────────────────────────────────
 
   /** List all files inside the eng-trainer folder */
-  async listFiles(): Promise<{ id: string; name: string; modifiedTime: string }[]> {
+  private async listFiles(): Promise<{ id: string; name: string; modifiedTime: string }[]> {
     const folderId = await this.ensureFolder();
     const q = `'${folderId}' in parents and trashed=false`;
     const fields = 'files(id,name,modifiedTime)';
@@ -108,7 +107,7 @@ export class GoogleDriveService {
   }
 
   /** Upload (create or update) a file. Returns the Drive file ID. */
-  async uploadFile(
+  private async uploadFile(
     name: string,
     content: Blob | string,
     mimeType: string,
@@ -158,7 +157,7 @@ export class GoogleDriveService {
   }
 
   /** Download file content as a Blob */
-  async downloadFile(fileId: string): Promise<Blob> {
+  private async downloadFile(fileId: string): Promise<Blob> {
     const res = await driveRequest(
       `${DRIVE_API}/files/${fileId}?alt=media`,
       this.token,
@@ -166,26 +165,12 @@ export class GoogleDriveService {
     return res.blob();
   }
 
-  /** Delete files that don't match id-based naming (cleanup after title-based migration) */
-  async cleanupNonIdFiles(): Promise<number> {
-    const files = await this.listFiles();
-    const localArticles = await db.audioArticles.toArray();
-    const validIds = new Set(localArticles.map(a => a.id));
-    let deleted = 0;
-
-    for (const file of files) {
-      const baseName = file.name.replace(/\.(json|mp3)$/, '');
-      if (validIds.has(baseName)) continue; // id-based, keep
-      // Not an id-based file → delete
-      try {
-        await driveRequest(`${DRIVE_API}/files/${file.id}`, this.token, { method: 'DELETE' });
-        deleted++;
-      } catch { /* ignore */ }
-    }
-    return deleted;
+  /** Delete a file by Drive file ID */
+  private async deleteDriveFile(fileId: string): Promise<void> {
+    await driveRequest(`${DRIVE_API}/files/${fileId}`, this.token, { method: 'DELETE' });
   }
 
-  // ── sync logic ─────────────────────────────────────────
+  // ── helpers ────────────────────────────────────────────
 
   private articleToMeta(article: AudioArticle): AudioArticleMeta {
     return {
@@ -201,114 +186,98 @@ export class GoogleDriveService {
     };
   }
 
-  /** Upload a single article to Drive (called immediately after local save) */
-  async uploadArticle(article: AudioArticle): Promise<void> {
+  private metaToArticle(meta: AudioArticleMeta): AudioArticle {
+    return {
+      id: meta.id,
+      title: meta.title,
+      sentences: meta.sentences,
+      splitPoints: meta.splitPoints,
+      source: meta.source,
+      nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
+      reviewInterval: meta.reviewInterval || 0,
+      createdAt: new Date(meta.createdAt),
+      lastAccessed: new Date(meta.lastAccessed),
+    };
+  }
+
+  // ── public CRUD API ────────────────────────────────────
+
+  /** List all audio articles from Drive (metadata only, no blobs) */
+  async listArticles(): Promise<AudioArticle[]> {
     const remoteFiles = await this.listFiles();
-    const remoteMap = new Map(remoteFiles.map((f) => [f.name, f]));
+    const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json'));
 
+    const articles: AudioArticle[] = [];
+    for (const jsonFile of jsonFiles) {
+      try {
+        const jsonBlob = await this.downloadFile(jsonFile.id);
+        const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
+        articles.push(this.metaToArticle(meta));
+      } catch (e) {
+        console.warn(`Failed to parse ${jsonFile.name}:`, e);
+      }
+    }
+
+    // Sort by lastAccessed descending
+    articles.sort((a, b) => new Date(b.lastAccessed).getTime() - new Date(a.lastAccessed).getTime());
+    return articles;
+  }
+
+  /** Get a single article's metadata from Drive */
+  async getArticle(id: string): Promise<AudioArticle | null> {
+    const remoteFiles = await this.listFiles();
+    const jsonFile = remoteFiles.find((f) => f.name === `${id}.json`);
+    if (!jsonFile) return null;
+
+    const jsonBlob = await this.downloadFile(jsonFile.id);
+    const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
+    return this.metaToArticle(meta);
+  }
+
+  /** Save (upsert) article metadata JSON to Drive */
+  async saveArticle(article: AudioArticle): Promise<void> {
+    const remoteFiles = await this.listFiles();
     const jsonName = `${article.id}.json`;
-    const mp3Name = `${article.id}.mp3`;
-    const remoteJson = remoteMap.get(jsonName);
+    const existing = remoteFiles.find((f) => f.name === jsonName);
 
-    // Always upload JSON (local just saved = always newest)
     await this.uploadFile(
       jsonName,
       JSON.stringify(this.articleToMeta(article), null, 2),
       'application/json',
-      remoteJson?.id,
+      existing?.id,
     );
-
-    // Upload MP3 only if missing on remote
-    const remoteMp3 = remoteMap.get(mp3Name);
-    if (!remoteMp3 && article.audioBlob) {
-      await this.uploadFile(mp3Name, article.audioBlob, 'audio/mpeg');
-    }
   }
 
-  /** Upload all local audioArticles to Drive */
-  async syncUp(): Promise<{ uploaded: number }> {
-    const localArticles = await db.audioArticles.toArray();
-    let uploaded = 0;
-    for (const article of localArticles) {
-      await this.uploadArticle(article);
-      uploaded++;
-    }
-    return { uploaded };
-  }
-
-  /** Download remote audioArticles that are NOT in local (new from other devices only) */
-  async syncDown(): Promise<{ downloaded: number; skipped: number }> {
+  /** Upload MP3 blob to Drive (only if not already present) */
+  async uploadMp3(id: string, blob: Blob): Promise<void> {
     const remoteFiles = await this.listFiles();
+    const mp3Name = `${id}.mp3`;
+    const existing = remoteFiles.find((f) => f.name === mp3Name);
+    if (existing) return; // already uploaded, skip
 
-    const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json'));
-    const mp3Map = new Map(
-      remoteFiles
-        .filter((f) => f.name.endsWith('.mp3'))
-        .map((f) => [f.name.replace('.mp3', ''), f]),
-    );
+    await this.uploadFile(mp3Name, blob, 'audio/mpeg');
+  }
 
-    let downloaded = 0;
-    let skipped = 0;
+  /** Download MP3 blob from Drive */
+  async downloadMp3(id: string): Promise<Blob | null> {
+    const remoteFiles = await this.listFiles();
+    const mp3File = remoteFiles.find((f) => f.name === `${id}.mp3`);
+    if (!mp3File) return null;
 
-    for (const jsonFile of jsonFiles) {
-      const articleId = jsonFile.name.replace('.json', '');
+    return this.downloadFile(mp3File.id);
+  }
 
-      // Skip if already exists locally (local always wins)
-      const local = await db.audioArticles.get(articleId);
-      if (local) {
-        skipped++;
-        continue;
-      }
+  /** Delete article JSON + MP3 from Drive */
+  async deleteArticle(id: string): Promise<void> {
+    const remoteFiles = await this.listFiles();
+    const jsonFile = remoteFiles.find((f) => f.name === `${id}.json`);
+    const mp3File = remoteFiles.find((f) => f.name === `${id}.mp3`);
 
-      const jsonBlob = await this.downloadFile(jsonFile.id);
-      const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
-
-      let audioBlob: Blob | undefined;
-      const remoteMp3 = mp3Map.get(articleId);
-      if (remoteMp3) {
-        audioBlob = await this.downloadFile(remoteMp3.id);
-      }
-
-      const audioArticle: AudioArticle = {
-        id: meta.id,
-        title: meta.title,
-        sentences: meta.sentences,
-        splitPoints: meta.splitPoints,
-        source: meta.source,
-        audioBlob,
-        nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
-        reviewInterval: meta.reviewInterval || 0,
-        createdAt: new Date(meta.createdAt),
-        lastAccessed: new Date(meta.lastAccessed),
-      };
-
-      await db.audioArticles.put(audioArticle);
-
-      // Reconstruct SubDecks from splitPoints
-      if (meta.splitPoints?.length) {
-        await db.subDecks.where('parentId').equals(meta.id).delete();
-        const sorted = [...meta.splitPoints].sort((a, b) => a - b);
-        let prev = 0;
-        for (let i = 0; i <= sorted.length; i++) {
-          const end = i < sorted.length ? sorted[i] + 1 : meta.sentences.length;
-          await db.subDecks.put({
-            id: `${meta.id}_${prev}_${end}_${Date.now()}_${i}`,
-            parentId: meta.id,
-            title: `${meta.title} Part ${i + 1}`,
-            startIndex: prev,
-            endIndex: end,
-            nextReviewDate: null,
-            reviewInterval: 0,
-            createdAt: new Date(),
-            lastAccessed: new Date(),
-          });
-          prev = end;
-        }
-      }
-
-      downloaded++;
+    if (jsonFile) {
+      try { await this.deleteDriveFile(jsonFile.id); } catch { /* ignore */ }
     }
-
-    return { downloaded, skipped };
+    if (mp3File) {
+      try { await this.deleteDriveFile(mp3File.id); } catch { /* ignore */ }
+    }
   }
 }

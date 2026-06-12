@@ -28,9 +28,10 @@ import {
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { AudioArticle } from '../types';
-import { useLearningStore } from '../stores/appStore';
+import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
+import { GoogleDriveService } from '../services/googleDriveService';
 
 const AudioLearningScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -49,6 +50,8 @@ const AudioLearningScreen: React.FC = () => {
     resetLearningState,
   } = useLearningStore();
 
+  const { audioArticles, accessToken } = useAppStore();
+
   const [article, setArticle] = useState<AudioArticle | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
@@ -61,32 +64,43 @@ const AudioLearningScreen: React.FC = () => {
 
   const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }) => {
     try {
-      const loaded = await localDB.getAudioArticleById(articleId);
-      if (loaded) {
-        // If subdeck range, slice sentences and re-index
-        if (range) {
-          const sliced = loaded.sentences
-            .slice(range.start, range.end)
-            .map((s, i) => ({ ...s, index: i + 1 }));
-          setArticle({ ...loaded, sentences: sliced });
-        } else {
-          setArticle(loaded);
-        }
-
-        // Create blob URL from stored blob and load audio
-        if (loaded.audioBlob) {
-          const blobUrl = URL.createObjectURL(loaded.audioBlob);
-          audioSeekService.load(blobUrl);
-          setAudioLoaded(true);
-        }
-      } else {
+      // Get metadata from store (Drive-backed)
+      const meta = audioArticles.find(a => a.id === articleId);
+      if (!meta) {
         navigate('/');
+        return;
+      }
+
+      // If subdeck range, slice sentences and re-index
+      if (range) {
+        const sliced = meta.sentences
+          .slice(range.start, range.end)
+          .map((s, i) => ({ ...s, index: i + 1 }));
+        setArticle({ ...meta, sentences: sliced });
+      } else {
+        setArticle(meta);
+      }
+
+      // Get MP3: try cache first, then Drive download
+      let audioBlob = await localDB.getCachedMp3(articleId);
+      if (!audioBlob && accessToken) {
+        const drive = new GoogleDriveService(accessToken);
+        audioBlob = (await drive.downloadMp3(articleId)) || undefined;
+        if (audioBlob) {
+          await localDB.cacheMp3(articleId, audioBlob);
+        }
+      }
+
+      if (audioBlob) {
+        const blobUrl = URL.createObjectURL(audioBlob);
+        audioSeekService.load(blobUrl);
+        setAudioLoaded(true);
       }
     } catch (error) {
       console.error('Failed to load audio article:', error);
       navigate('/');
     }
-  }, [navigate]);
+  }, [navigate, audioArticles, accessToken]);
 
   useEffect(() => {
     if (id) {
