@@ -206,6 +206,26 @@ export class GoogleDriveService {
         }
       }
 
+      // Clean up old-named files for the same article ID (title may have changed)
+      for (const [name, file] of Array.from(remoteMap.entries())) {
+        if (name === jsonName || name === mp3Name) continue;
+        if (!name.endsWith('.json')) continue;
+        // Download and check if same article ID
+        try {
+          const blob = await this.downloadFile(file.id);
+          const oldMeta = JSON.parse(await blob.text());
+          if (oldMeta.id === article.id) {
+            // Delete old JSON and its MP3
+            await driveRequest(`${DRIVE_API}/files/${file.id}`, this.token, { method: 'DELETE' });
+            const oldMp3Name = name.replace('.json', '.mp3');
+            const oldMp3 = remoteMap.get(oldMp3Name);
+            if (oldMp3) {
+              await driveRequest(`${DRIVE_API}/files/${oldMp3.id}`, this.token, { method: 'DELETE' });
+            }
+          }
+        } catch { /* ignore cleanup errors */ }
+      }
+
       // Upload JSON metadata
       await this.uploadFile(
         jsonName,

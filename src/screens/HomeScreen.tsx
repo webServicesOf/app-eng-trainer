@@ -178,7 +178,7 @@ export const HomeScreen: React.FC = () => {
     const aa = audioArticles.find(a => a.id === id);
     if (!aa) return;
     const trimmed = newTitle.trim();
-    await localDB.saveAudioArticle({ ...aa, title: trimmed });
+    await localDB.saveAudioArticle({ ...aa, title: trimmed, lastAccessed: new Date() });
     // Update SubDeck titles
     const subs = await localDB.getSubDecksByParent(id);
     for (const sd of subs) {
