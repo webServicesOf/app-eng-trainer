@@ -115,7 +115,18 @@ const TimestampEditorScreen: React.FC = () => {
     });
 
     ws.on('play', () => { if (!destroyed) setIsPlaying(true); });
-    ws.on('pause', () => { if (!destroyed) setIsPlaying(false); });
+    ws.on('pause', () => {
+      if (destroyed) return;
+      // Save scroll position before React re-render
+      const container = waveformRef.current?.querySelector('.scroll') as HTMLElement
+        ?? waveformRef.current?.firstElementChild as HTMLElement;
+      const scrollLeft = container?.scrollLeft ?? 0;
+      setIsPlaying(false);
+      // Restore scroll after re-render
+      requestAnimationFrame(() => {
+        if (container) container.scrollLeft = scrollLeft;
+      });
+    });
 
     return () => {
       destroyed = true;
