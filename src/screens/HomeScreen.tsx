@@ -177,7 +177,15 @@ export const HomeScreen: React.FC = () => {
     if (!newTitle.trim()) return;
     const aa = audioArticles.find(a => a.id === id);
     if (!aa) return;
-    await localDB.saveAudioArticle({ ...aa, title: newTitle.trim() });
+    const trimmed = newTitle.trim();
+    await localDB.saveAudioArticle({ ...aa, title: trimmed });
+    // Update SubDeck titles
+    const subs = await localDB.getSubDecksByParent(id);
+    for (const sd of subs) {
+      const partMatch = sd.title.match(/Part \d+$/);
+      const partSuffix = partMatch ? partMatch[0] : `${sd.startIndex}-${sd.endIndex}`;
+      await localDB.saveSubDeck({ ...sd, title: `${trimmed} ${partSuffix}` });
+    }
     await loadAudioArticles();
     await loadSubDecks();
     setEditingTitleId(null);
