@@ -29,13 +29,15 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { AudioArticle, SentenceEntry } from '../types';
+import { AudioArticle, SentenceEntry, SubDeck } from '../types';
 import { localDB } from '../services/database';
+import { useAppStore } from '../stores/appStore';
 
 const TimestampEditorScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const theme = useTheme();
+  const { createSubDeck, loadSubDecks } = useAppStore();
 
   const waveformRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
@@ -49,6 +51,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [hasChanges, setHasChanges] = useState(false);
   const [zoom, setZoom] = useState(50);
+  const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set()); // sentence indices where splits occur (after this index)
   const undoStackRef = useRef<SentenceEntry[][]>([]);
 
   // Load article
@@ -296,6 +299,39 @@ const TimestampEditorScreen: React.FC = () => {
     setHasChanges(false);
   }, [article, sentences]);
 
+  const toggleSplitMarker = useCallback((idx: number) => {
+    setSplitMarkers(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  }, []);
+
+  const handleSaveSplits = useCallback(async () => {
+    if (!article || splitMarkers.size === 0) return;
+
+    // Delete existing subdecks for this article
+    await localDB.deleteSubDecksByParent(article.id);
+
+    // Create splits from markers
+    const sortedMarkers = Array.from(splitMarkers).sort((a, b) => a - b);
+    let prev = 0;
+    for (let i = 0; i <= sortedMarkers.length; i++) {
+      const end = i < sortedMarkers.length ? sortedMarkers[i] + 1 : sentences.length;
+      const partNum = i + 1;
+      await createSubDeck(
+        article.id,
+        `${article.title} Part ${partNum}`,
+        prev,
+        end,
+      );
+      prev = end;
+    }
+    await loadSubDecks();
+    alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
+  }, [article, sentences.length, splitMarkers, createSubDeck, loadSubDecks]);
+
   const handleSelectSentence = useCallback((idx: number) => {
     setSelectedIndex(idx);
     const s = sentences[idx];
@@ -333,6 +369,9 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyE') {
         e.preventDefault();
         handlePlayFromEnd();
+      } else if (code === 'KeyD') {
+        e.preventDefault();
+        toggleSplitMarker(selectedIndex);
       } else if (code === 'KeyM') {
         e.preventDefault();
         handleMergeSentences();
@@ -358,7 +397,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleTextEdit]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleTextEdit, toggleSplitMarker, selectedIndex]);
 
   if (!article) {
     return (
@@ -393,6 +432,16 @@ const TimestampEditorScreen: React.FC = () => {
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           {hasChanges && <Chip label="변경됨" color="warning" size="small" />}
+          {splitMarkers.size > 0 && (
+            <Button
+              variant="outlined"
+              color="info"
+              onClick={handleSaveSplits}
+              size="small"
+            >
+              분할 저장 ({splitMarkers.size + 1}파트)
+            </Button>
+          )}
           <Button
             variant="contained"
             startIcon={<Save />}
@@ -511,6 +560,7 @@ const TimestampEditorScreen: React.FC = () => {
             <Typography variant="caption" display="block">E: 끝 1초 전</Typography>
             <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
             <Typography variant="caption" display="block">←→: start -0.1s / end +0.1s</Typography>
+            <Typography variant="caption" display="block">D: 분할점 토글 (더블클릭도 가능)</Typography>
             <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
             <Typography variant="caption" display="block">⌘Z: 되돌리기</Typography>
             <Typography variant="caption" display="block">⌘S: 저장</Typography>
@@ -521,35 +571,52 @@ const TimestampEditorScreen: React.FC = () => {
         <Paper elevation={3} sx={{ flex: 1, overflow: 'auto', maxHeight: { xs: 300, md: 'calc(100vh - 380px)' } }}>
           <List dense disablePadding>
             {sentences.map((s, i) => (
-              <ListItem key={s.index} disablePadding>
-                <ListItemButton
-                  selected={i === selectedIndex}
-                  onClick={() => handleSelectSentence(i)}
-                  sx={{
-                    borderLeft: i === selectedIndex ? `3px solid ${theme.palette.primary.main}` : '3px solid transparent',
-                  }}
-                >
-                  <ListItemText
-                    primary={
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          fontWeight: i === selectedIndex ? 600 : 400,
-                          fontSize: '0.85rem',
-                        }}
-                      >
-                        [{s.index}] {s.text}
-                      </Typography>
-                    }
-                    secondary={
-                      <Typography variant="caption" color="text.secondary">
-                        {(s.start ?? 0).toFixed(2)}s — {(s.end ?? 0).toFixed(2)}s
-                        ({((s.end ?? 0) - (s.start ?? 0)).toFixed(2)}s)
-                      </Typography>
-                    }
+              <React.Fragment key={s.index}>
+                <ListItem disablePadding>
+                  <ListItemButton
+                    selected={i === selectedIndex}
+                    onClick={() => handleSelectSentence(i)}
+                    onDoubleClick={() => toggleSplitMarker(i)}
+                    sx={{
+                      borderLeft: i === selectedIndex ? `3px solid ${theme.palette.primary.main}` : '3px solid transparent',
+                    }}
+                  >
+                    <ListItemText
+                      primary={
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            fontWeight: i === selectedIndex ? 600 : 400,
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          [{s.index}] {s.text}
+                        </Typography>
+                      }
+                      secondary={
+                        <Typography variant="caption" color="text.secondary">
+                          {(s.start ?? 0).toFixed(2)}s — {(s.end ?? 0).toFixed(2)}s
+                          ({((s.end ?? 0) - (s.start ?? 0)).toFixed(2)}s)
+                        </Typography>
+                      }
+                    />
+                  </ListItemButton>
+                </ListItem>
+                {splitMarkers.has(i) && (
+                  <Box
+                    sx={{
+                      height: 3,
+                      backgroundColor: theme.palette.info.main,
+                      mx: 1,
+                      borderRadius: 1,
+                      cursor: 'pointer',
+                      '&:hover': { backgroundColor: theme.palette.info.dark },
+                    }}
+                    onClick={() => toggleSplitMarker(i)}
+                    title="분할점 — 클릭하여 제거"
                   />
-                </ListItemButton>
-              </ListItem>
+                )}
+              </React.Fragment>
             ))}
           </List>
         </Paper>

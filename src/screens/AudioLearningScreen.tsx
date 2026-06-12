@@ -50,6 +50,7 @@ const AudioLearningScreen: React.FC = () => {
   } = useLearningStore();
 
   const [article, setArticle] = useState<AudioArticle | null>(null);
+  const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
   const [displayText, setDisplayText] = useState<string>('');
   const [highlightIndex, setHighlightIndex] = useState<number>(-1);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
@@ -57,11 +58,19 @@ const AudioLearningScreen: React.FC = () => {
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
 
-  const loadArticle = React.useCallback(async (articleId: string) => {
+  const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }) => {
     try {
       const loaded = await localDB.getAudioArticleById(articleId);
       if (loaded) {
-        setArticle(loaded);
+        // If subdeck range, slice sentences and re-index
+        if (range) {
+          const sliced = loaded.sentences
+            .slice(range.start, range.end)
+            .map((s, i) => ({ ...s, index: i + 1 }));
+          setArticle({ ...loaded, sentences: sliced });
+        } else {
+          setArticle(loaded);
+        }
 
         // Create blob URL from stored blob and load audio
         if (loaded.audioBlob) {
@@ -80,15 +89,29 @@ const AudioLearningScreen: React.FC = () => {
 
   useEffect(() => {
     if (id) {
-      loadArticle(id);
-
       const params = new URLSearchParams(window.location.search);
+      const startParam = params.get('start');
+      const endParam = params.get('end');
       const sentenceParam = params.get('sentence');
-      if (sentenceParam) {
-        const sentenceIndex = parseInt(sentenceParam, 10);
-        if (!isNaN(sentenceIndex)) {
-          setCurrentIndex(sentenceIndex);
-          setIsCumulative(false);
+
+      if (startParam && endParam) {
+        const start = parseInt(startParam, 10);
+        const end = parseInt(endParam, 10);
+        if (!isNaN(start) && !isNaN(end)) {
+          setSubDeckRange({ start, end });
+          loadArticle(id, { start, end });
+          setCurrentIndex(1);
+        } else {
+          loadArticle(id);
+        }
+      } else {
+        loadArticle(id);
+        if (sentenceParam) {
+          const sentenceIndex = parseInt(sentenceParam, 10);
+          if (!isNaN(sentenceIndex)) {
+            setCurrentIndex(sentenceIndex);
+            setIsCumulative(false);
+          }
         }
       }
     }

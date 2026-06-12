@@ -35,6 +35,9 @@ import {
   DeleteSweep,
   PlayArrow,
   Upload as UploadIcon,
+
+  DoneAll as DoneAllIcon,
+  CloudSync as CloudSyncIcon,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
@@ -47,6 +50,7 @@ export const HomeScreen: React.FC = () => {
   const {
     articles,
     audioArticles,
+    subDecks,
     isLoading,
     error,
     googleSheetsConfig,
@@ -64,9 +68,16 @@ export const HomeScreen: React.FC = () => {
     setLoading,
     setError,
     logout,
+    markReviewDone,
+    cycleReviewInterval,
+    loadSubDecks,
+    deleteSubDeck,
+    isSyncing,
+    lastSyncedAt,
+    syncError,
+    syncDrive,
   } = useAppStore();
 
-  const [sheetsConfigDialogOpen, setSheetsConfigDialogOpen] = useState(false);
   const [spreadsheetId, setSpreadsheetId] = useState('');
   const [range, setRange] = useState('Sheet1!A:E');
   const [hasHeader, setHasHeader] = useState(true);
@@ -80,8 +91,10 @@ export const HomeScreen: React.FC = () => {
   const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
   const [lengthFilter, setLengthFilter] = useState<string>('all');
   const [fetchModeDialogOpen, setFetchModeDialogOpen] = useState(false);
-  const [ttsApiKeyDialogOpen, setTtsApiKeyDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [ttsApiKey, setTtsApiKey] = useState('');
+  const [driveFolderName, setDriveFolderName] = useState('eng-trainer');
+  const [sheetTabs, setSheetTabs] = useState<string[]>([]);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadMp3File, setUploadMp3File] = useState<File | null>(null);
   const [uploadJsonFile, setUploadJsonFile] = useState<File | null>(null);
@@ -95,20 +108,28 @@ export const HomeScreen: React.FC = () => {
     onError: () => {
       console.error('Login Failed');
     },
-    scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+    scope: 'https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.file',
   });
 
   useEffect(() => {
     loadGoogleSheetsConfig();
     loadArticles();
     loadAudioArticles();
+    loadSubDecks();
 
-    // Google Cloud TTS API 키 로드
+    // Load saved settings
     const savedKey = localStorage.getItem('google_cloud_tts_api_key');
-    if (savedKey) {
-      setTtsApiKey(savedKey);
-    }
+    if (savedKey) setTtsApiKey(savedKey);
+    const savedFolder = localStorage.getItem('drive_folder_name');
+    if (savedFolder) setDriveFolderName(savedFolder);
   }, [loadArticles, loadAudioArticles, loadGoogleSheetsConfig]);
+
+  // Auto-sync on login
+  useEffect(() => {
+    if (isAuthenticated && accessToken) {
+      syncDrive();
+    }
+  }, [isAuthenticated]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (currentTab === 2) {
@@ -116,14 +137,37 @@ export const HomeScreen: React.FC = () => {
     }
   }, [currentTab]);
 
-  const handleSaveTtsApiKey = () => {
+  const handleSaveAllSettings = () => {
+    // TTS API key
     if (ttsApiKey.trim()) {
       googleCloudTtsService.setApiKey(ttsApiKey);
       localStorage.setItem('google_cloud_tts_api_key', ttsApiKey);
-      setTtsApiKeyDialogOpen(false);
-      alert('Google Cloud TTS API 키가 저장되었습니다!');
-    } else {
-      alert('API 키를 입력해주세요.');
+    }
+    // Drive folder name
+    if (driveFolderName.trim()) {
+      localStorage.setItem('drive_folder_name', driveFolderName);
+    }
+    // Sheets config
+    if (spreadsheetId && range) {
+      setGoogleSheetsConfig({ spreadsheetId, range, hasHeader });
+    }
+    setSettingsDialogOpen(false);
+  };
+
+  const handleFetchSheetTabs = async () => {
+    if (!spreadsheetId.trim() || !accessToken) return;
+    try {
+      const res = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      const tabs = (data.sheets || []).map((s: any) => s.properties.title);
+      setSheetTabs(tabs);
+    } catch (e) {
+      console.error('Failed to fetch sheet tabs:', e);
+      setSheetTabs([]);
     }
   };
 
@@ -160,6 +204,8 @@ export const HomeScreen: React.FC = () => {
         audioBlob,
         sentences,
         source: uploadSource.trim() || undefined,
+        nextReviewDate: null,
+        reviewInterval: 0,
         createdAt: new Date(),
         lastAccessed: new Date(),
       };
@@ -187,6 +233,11 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleLearnAudioArticle = async (id: string) => {
+    // Set initial review schedule on first learning
+    const aa = audioArticles.find(a => a.id === id);
+    if (aa && !aa.nextReviewDate && !aa.reviewInterval) {
+      await cycleReviewInterval('audio', id);
+    }
     await localDB.updateAudioArticleLastAccessed(id);
     navigate(`/learn-audio/${id}`);
   };
@@ -211,12 +262,28 @@ export const HomeScreen: React.FC = () => {
     }
   }, [googleSheetsConfig]);
 
-  // Filter articles based on difficulty and length
+  // Helper: check if an article is due for review
+  const isDue = (nextReviewDate: Date | null | undefined): boolean => {
+    if (!nextReviewDate) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const review = new Date(nextReviewDate);
+    review.setHours(0, 0, 0, 0);
+    return review <= today;
+  };
+
+  // Filter articles based on difficulty and length, sort due to top
   const filteredArticles = React.useMemo(() => {
-    return articles.filter((article) => {
+    const filtered = articles.filter((article) => {
       const difficultyMatch = difficultyFilter === 'all' || article.difficulty === difficultyFilter;
       const lengthMatch = lengthFilter === 'all' || article.length === lengthFilter;
       return difficultyMatch && lengthMatch;
+    });
+    return filtered.sort((a, b) => {
+      const aDue = isDue(a.nextReviewDate) ? 0 : 1;
+      const bDue = isDue(b.nextReviewDate) ? 0 : 1;
+      if (aDue !== bDue) return aDue - bDue;
+      return new Date(b.lastAccessed).getTime() - new Date(a.lastAccessed).getTime();
     });
   }, [articles, difficultyFilter, lengthFilter]);
 
@@ -231,20 +298,13 @@ export const HomeScreen: React.FC = () => {
     return Array.from(unique).sort();
   }, [articles]);
 
-  const handleSaveSheetsConfig = () => {
-    if (spreadsheetId && range) {
-      setGoogleSheetsConfig({ spreadsheetId, range, hasHeader });
-      setSheetsConfigDialogOpen(false);
-    }
-  };
-
   const handleFetchArticles = async (mode: 'full-refresh' | 'upsert') => {
     if (!isAuthenticated) {
       login();
       return;
     }
     if (!googleSheetsConfig) {
-      setSheetsConfigDialogOpen(true);
+      setSettingsDialogOpen(true);
       return;
     }
 
@@ -331,6 +391,8 @@ export const HomeScreen: React.FC = () => {
             id: existing.id, // Keep original ID
             createdAt: existing.createdAt, // Keep original creation date
             lastAccessed: existing.lastAccessed, // Keep last accessed
+            nextReviewDate: existing.nextReviewDate, // Keep review state
+            reviewInterval: existing.reviewInterval, // Keep review state
             sheetName, // Add sheet name
           };
           await localDB.saveArticle(updatedArticle);
@@ -354,7 +416,7 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleOpenSettings = () => {
-    setSheetsConfigDialogOpen(true);
+    setSettingsDialogOpen(true);
   };
 
   const handleLogout = () => {
@@ -368,6 +430,11 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleLearnArticle = async (id: string) => {
+    // Set initial review schedule on first learning
+    const article = articles.find(a => a.id === id);
+    if (article && !article.nextReviewDate && !article.reviewInterval) {
+      await cycleReviewInterval('article', id);
+    }
     await updateLastAccessed(id);
     navigate(`/learn/${id}`);
   };
@@ -488,17 +555,28 @@ export const HomeScreen: React.FC = () => {
               Google 로그인
             </Button>
           )}
-          <IconButton
-            color="primary"
-            onClick={() => setTtsApiKeyDialogOpen(true)}
-            title="Google Cloud TTS API 키 설정"
-          >
-            <SettingsIcon />
-          </IconButton>
+          {isAuthenticated && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <IconButton
+                color={syncError ? 'error' : 'primary'}
+                onClick={syncDrive}
+                disabled={isSyncing}
+                title={syncError ? `Sync error: ${syncError}` : 'Drive 동기화'}
+                size="small"
+              >
+                {isSyncing ? <CircularProgress size={20} /> : <CloudSyncIcon />}
+              </IconButton>
+              {lastSyncedAt && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: { xs: 'none', sm: 'block' } }}>
+                  {new Date(lastSyncedAt).toLocaleTimeString()}
+                </Typography>
+              )}
+            </Box>
+          )}
           <IconButton
             color="primary"
             onClick={handleOpenSettings}
-            title="Google Sheets 설정"
+            title="설정"
           >
             <SettingsIcon />
           </IconButton>
@@ -545,7 +623,7 @@ export const HomeScreen: React.FC = () => {
       </Box>
 
       <Tabs value={currentTab} onChange={handleTabChange} sx={{ mb: 3 }}>
-        <Tab label="Main" />
+        <Tab label="Text" />
         <Tab label="Audio" />
         <Tab label="Saved" />
       </Tabs>
@@ -667,8 +745,8 @@ export const HomeScreen: React.FC = () => {
             <Card
               key={article.id}
               sx={{
-                border: managementMode && selectedArticles.has(article.id) ? 2 : 0,
-                borderColor: 'primary.main',
+                border: managementMode && selectedArticles.has(article.id) ? 2 : isDue(article.nextReviewDate) ? 2 : 0,
+                borderColor: managementMode && selectedArticles.has(article.id) ? 'primary.main' : isDue(article.nextReviewDate) ? 'error.main' : 'transparent',
                 position: 'relative',
               }}
             >
@@ -707,15 +785,40 @@ export const HomeScreen: React.FC = () => {
                 <Typography variant="caption" color="text.secondary">
                   최근 접근: {new Date(article.lastAccessed).toLocaleDateString()}
                 </Typography>
+                {article.nextReviewDate && (
+                  <Box sx={{ mt: 0.5 }}>
+                    <Chip
+                      label={isDue(article.nextReviewDate) ? '복습 필요' : `다음 복습: ${new Date(article.nextReviewDate).toLocaleDateString()}`}
+                      size="small"
+                      color={isDue(article.nextReviewDate) ? 'error' : 'default'}
+                      variant={isDue(article.nextReviewDate) ? 'filled' : 'outlined'}
+                    />
+                  </Box>
+                )}
               </CardContent>
               {!managementMode && (
-                <CardActions>
+                <CardActions sx={{ flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
                   <Button
                     size="small"
                     color="primary"
                     onClick={() => handleLearnArticle(article.id)}
                   >
                     학습하기
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => cycleReviewInterval('article', article.id)}
+                  >
+                    {article.reviewInterval || 0}일
+                  </Button>
+                  <Button
+                    size="small"
+                    color="success"
+                    startIcon={<DoneAllIcon />}
+                    onClick={() => markReviewDone('article', article.id)}
+                  >
+                    완료
                   </Button>
                   <IconButton
                     size="small"
@@ -763,8 +866,19 @@ export const HomeScreen: React.FC = () => {
                 gap: 3,
               }}
             >
-              {audioArticles.map((aa) => (
-                <Card key={aa.id}>
+              {[...audioArticles].sort((a, b) => {
+                const aDue = isDue(a.nextReviewDate) ? 0 : 1;
+                const bDue = isDue(b.nextReviewDate) ? 0 : 1;
+                if (aDue !== bDue) return aDue - bDue;
+                return new Date(b.lastAccessed).getTime() - new Date(a.lastAccessed).getTime();
+              }).map((aa) => (
+                <Card
+                  key={aa.id}
+                  sx={{
+                    border: isDue(aa.nextReviewDate) ? 2 : 0,
+                    borderColor: isDue(aa.nextReviewDate) ? 'error.main' : 'transparent',
+                  }}
+                >
                   <CardContent>
                     <Typography variant="h6" gutterBottom noWrap>
                       {aa.title}
@@ -781,14 +895,39 @@ export const HomeScreen: React.FC = () => {
                     <Typography variant="caption" color="text.secondary">
                       최근 접근: {new Date(aa.lastAccessed).toLocaleDateString()}
                     </Typography>
+                    {aa.nextReviewDate && (
+                      <Box sx={{ mt: 0.5 }}>
+                        <Chip
+                          label={isDue(aa.nextReviewDate) ? '복습 필요' : `다음 복습: ${new Date(aa.nextReviewDate).toLocaleDateString()}`}
+                          size="small"
+                          color={isDue(aa.nextReviewDate) ? 'error' : 'default'}
+                          variant={isDue(aa.nextReviewDate) ? 'filled' : 'outlined'}
+                        />
+                      </Box>
+                    )}
                   </CardContent>
-                  <CardActions>
+                  <CardActions sx={{ flexWrap: 'wrap', gap: 0.5 }}>
                     <Button
                       size="small"
                       color="primary"
                       onClick={() => handleLearnAudioArticle(aa.id)}
                     >
                       학습하기
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => cycleReviewInterval('audio', aa.id)}
+                    >
+                      {aa.reviewInterval || 0}일
+                    </Button>
+                    <Button
+                      size="small"
+                      color="success"
+                      startIcon={<DoneAllIcon />}
+                      onClick={() => markReviewDone('audio', aa.id)}
+                    >
+                      완료
                     </Button>
                     <Button
                       size="small"
@@ -806,6 +945,41 @@ export const HomeScreen: React.FC = () => {
                       <DeleteIcon fontSize="small" />
                     </IconButton>
                   </CardActions>
+                  {/* SubDecks for this audio article */}
+                  {subDecks.filter(sd => sd.parentId === aa.id).length > 0 && (
+                    <Box sx={{ px: 2, pb: 1 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
+                        Sub-Decks:
+                      </Typography>
+                      {subDecks
+                        .filter(sd => sd.parentId === aa.id)
+                        .sort((a, b) => a.startIndex - b.startIndex)
+                        .map(sd => (
+                          <Box key={sd.id} sx={{
+                            display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5,
+                            border: isDue(sd.nextReviewDate) ? '1px solid' : '1px solid transparent',
+                            borderColor: isDue(sd.nextReviewDate) ? 'error.main' : 'divider',
+                            borderRadius: 1, px: 1, py: 0.3,
+                          }}>
+                            <Typography variant="caption" sx={{ flex: 1 }}>
+                              {sd.title} ({sd.startIndex + 1}–{sd.endIndex})
+                            </Typography>
+                            <Button size="small" onClick={() => navigate(`/learn-audio/${aa.id}?start=${sd.startIndex}&end=${sd.endIndex}`)}>
+                              학습
+                            </Button>
+                            <Button size="small" variant="outlined" onClick={() => cycleReviewInterval('subdeck', sd.id)}>
+                              {sd.reviewInterval || 0}일
+                            </Button>
+                            <Button size="small" color="success" onClick={() => markReviewDone('subdeck', sd.id)}>
+                              완료
+                            </Button>
+                            <IconButton size="small" color="error" onClick={() => deleteSubDeck(sd.id)}>
+                              <DeleteIcon sx={{ fontSize: 14 }} />
+                            </IconButton>
+                          </Box>
+                        ))}
+                    </Box>
+                  )}
                 </Card>
               ))}
             </Box>
@@ -976,37 +1150,7 @@ export const HomeScreen: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Google Cloud TTS API 키 설정 다이얼로그 */}
-      <Dialog
-        open={ttsApiKeyDialogOpen}
-        onClose={() => setTtsApiKeyDialogOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Google Cloud TTS API 키 설정</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 2 }}>
-            Google Cloud Text-to-Speech API 키를 입력해주세요.
-          </Typography>
-          <TextField
-            fullWidth
-            label="API 키"
-            type="password"
-            value={ttsApiKey}
-            onChange={(e) => setTtsApiKey(e.target.value)}
-            placeholder="Google Cloud API 키"
-            variant="outlined"
-            size="small"
-            helperText="API 키는 localStorage에 안전하게 저장됩니다"
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setTtsApiKeyDialogOpen(false)}>취소</Button>
-          <Button onClick={handleSaveTtsApiKey} variant="contained">
-            저장
-          </Button>
-        </DialogActions>
-      </Dialog>
+      {/* (TTS dialog removed — merged into unified settings) */}
 
       {/* Audio Upload 다이얼로그 */}
       <Dialog
@@ -1080,42 +1224,78 @@ export const HomeScreen: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Google Sheets 설정 다이얼로그 */}
+      {/* 통합 설정 다이얼로그 */}
       <Dialog
-        open={sheetsConfigDialogOpen}
-        onClose={() => setSheetsConfigDialogOpen(false)}
+        open={settingsDialogOpen}
+        onClose={() => setSettingsDialogOpen(false)}
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Google Sheets 설정</DialogTitle>
+        <DialogTitle>설정</DialogTitle>
         <DialogContent>
-          <Alert severity="info" sx={{ mb: 2 }}>
-            <Typography variant="body2" gutterBottom>
-              <strong>Google 계정으로 로그인하면 개인 스프레드시트에 접근할 수 있습니다</strong>
-            </Typography>
-            <Typography variant="body2">
-              스프레드시트를 공개로 설정할 필요가 없습니다.
-            </Typography>
-          </Alert>
+          {/* Google Cloud TTS */}
+          <Typography variant="subtitle2" sx={{ mt: 1, mb: 1 }}>Google Cloud TTS</Typography>
+          <TextField
+            fullWidth
+            label="TTS API 키"
+            type="password"
+            value={ttsApiKey}
+            onChange={(e) => setTtsApiKey(e.target.value)}
+            placeholder="Google Cloud API 키"
+            size="small"
+            helperText="Text 탭 음성 재생용"
+          />
+
+          {/* Google Drive Sync */}
+          <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>Google Drive 동기화</Typography>
+          <TextField
+            fullWidth
+            label="Drive 폴더명"
+            value={driveFolderName}
+            onChange={(e) => setDriveFolderName(e.target.value)}
+            size="small"
+            helperText="내 Drive에 생성될 동기화 폴더"
+          />
+
+          {/* Google Sheets */}
+          <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>Google Sheets</Typography>
           <TextField
             fullWidth
             label="Spreadsheet ID"
             value={spreadsheetId}
             onChange={(e) => setSpreadsheetId(e.target.value)}
-            margin="normal"
+            margin="dense"
             helperText="스프레드시트 URL에서 /d/ 뒤의 ID"
-            placeholder="예: 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-            autoFocus
+            placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
+            size="small"
           />
-          <TextField
-            fullWidth
-            label="Range"
-            value={range}
-            onChange={(e) => setRange(e.target.value)}
-            margin="normal"
-            placeholder="Sheet1!A:E"
-            helperText="예: Sheet1!A:E (A=No, B=Topic, C=Content, D=Difficulty, E=Length)"
-          />
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start', mt: 1 }}>
+            <TextField
+              fullWidth
+              label="Range"
+              value={range}
+              onChange={(e) => setRange(e.target.value)}
+              placeholder="Sheet1!A:E"
+              helperText="탭 선택 후 자동 입력되거나 직접 입력"
+              size="small"
+              select={sheetTabs.length > 0}
+            >
+              {sheetTabs.map((tab) => (
+                <MenuItem key={tab} value={`${tab}!A:E`} onClick={() => setRange(`${tab}!A:E`)}>
+                  {tab}
+                </MenuItem>
+              ))}
+            </TextField>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={handleFetchSheetTabs}
+              disabled={!spreadsheetId.trim() || !accessToken}
+              sx={{ mt: 0.5, whiteSpace: 'nowrap' }}
+            >
+              탭 불러오기
+            </Button>
+          </Box>
           <FormControlLabel
             control={
               <Checkbox
@@ -1124,16 +1304,17 @@ export const HomeScreen: React.FC = () => {
               />
             }
             label="첫 번째 행이 헤더입니다"
-            sx={{ mt: 2 }}
+            sx={{ mt: 1 }}
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setSheetsConfigDialogOpen(false)}>취소</Button>
-          <Button onClick={handleSaveSheetsConfig} variant="contained" disabled={!spreadsheetId || !range}>
+          <Button onClick={() => setSettingsDialogOpen(false)}>취소</Button>
+          <Button onClick={handleSaveAllSettings} variant="contained">
             저장
           </Button>
         </DialogActions>
       </Dialog>
+
     </Container>
   );
 };

@@ -9,6 +9,9 @@ export interface Article {
   content: string; // 전체 영어 텍스트
   sentences: SentenceEntry[];
   sheetName?: string; // 스프레드시트 탭 이름
+  sheetRow?: number; // 1-based row index in spreadsheet (for write-back)
+  nextReviewDate: Date | null;
+  reviewInterval: number; // days
   createdAt: Date;
   lastAccessed: Date;
 }
@@ -30,6 +33,21 @@ export interface AudioArticle {
   audioUrl?: string; // blob URL (런타임 전용, 저장 안 함)
   sentences: SentenceEntry[];
   source?: string; // YouTube URL 등
+  nextReviewDate: Date | null;
+  reviewInterval: number; // days
+  createdAt: Date;
+  lastAccessed: Date;
+}
+
+// SubDeck — AudioArticle의 문장 범위 참조
+export interface SubDeck {
+  id: string;
+  parentId: string; // AudioArticle ID
+  title: string;
+  startIndex: number; // 0-based inclusive
+  endIndex: number; // 0-based exclusive
+  nextReviewDate: Date | null;
+  reviewInterval: number; // days
   createdAt: Date;
   lastAccessed: Date;
 }

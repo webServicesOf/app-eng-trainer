@@ -57,6 +57,11 @@ export class GoogleSheetsService {
             // Extract sheet name from range
             const sheetName = this.config.range.split('!')[0];
 
+            // Read review fields from columns F and G if present
+            const reviewInterval = row[5] ? parseInt(row[5], 10) || 0 : 0;
+            const nextReviewDateStr = row[6] ? row[6].trim() : null;
+            const nextReviewDate = nextReviewDateStr ? new Date(nextReviewDateStr) : null;
+
             const article: Article = {
               id: `article-${Date.now()}-${i}`,
               number: number ? parseInt(number, 10) : undefined,
@@ -67,6 +72,9 @@ export class GoogleSheetsService {
               content,
               sentences,
               sheetName,
+              sheetRow: i + 1, // 1-based row index in spreadsheet (for write-back)
+              nextReviewDate: nextReviewDate && !isNaN(nextReviewDate.getTime()) ? nextReviewDate : null,
+              reviewInterval,
               createdAt: new Date(),
               lastAccessed: new Date(),
             };
@@ -128,6 +136,37 @@ export class GoogleSheetsService {
     }
 
     return sentences;
+  }
+
+  /**
+   * Write reviewInterval and nextReviewDate back to columns F and G of the spreadsheet.
+   * Requires the article to have a sheetRow (1-based row index).
+   */
+  async syncReviewFields(article: Article): Promise<void> {
+    if (!article.sheetRow) return;
+
+    const sheetName = this.config.range.split('!')[0];
+    const range = `${sheetName}!F${article.sheetRow}:G${article.sheetRow}`;
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.spreadsheetId}/values/${range}?valueInputOption=RAW`;
+
+    const nextReviewStr = article.nextReviewDate
+      ? new Date(article.nextReviewDate).toISOString().split('T')[0]
+      : '';
+
+    await axios.put(
+      url,
+      {
+        range,
+        majorDimension: 'ROWS',
+        values: [[article.reviewInterval, nextReviewStr]],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
   }
 
   /**
