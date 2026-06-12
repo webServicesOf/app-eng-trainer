@@ -55,9 +55,7 @@ const AudioLearningScreen: React.FC = () => {
   const [article, setArticle] = useState<AudioArticle | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
-  const [displayText, setDisplayText] = useState<string>('');
   const [displaySentences, setDisplaySentences] = useState<string[]>([]);
-  const [highlightIndex, setHighlightIndex] = useState<number>(-1);
   const [activeSentenceLocalIdx, setActiveSentenceLocalIdx] = useState<number>(-1);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [isSaved, setIsSaved] = useState<boolean>(false);
@@ -154,12 +152,12 @@ const AudioLearningScreen: React.FC = () => {
         .filter((s) => s.index >= startIndex && s.index <= currentIndex);
       const texts = filtered.map((s) => s.text);
       setDisplaySentences(texts);
-      setDisplayText(texts.join(' '));
+      // displayText removed — rendering uses displaySentences
     } else {
       const sentence = article.sentences.find((s) => s.index === currentIndex);
       const text = sentence ? sentence.text : '';
       setDisplaySentences([text]);
-      setDisplayText(text);
+      // displayText removed — rendering uses displaySentences
     }
   }, [article, isCumulative, currentIndex, windowSize]);
 
@@ -222,7 +220,7 @@ const AudioLearningScreen: React.FC = () => {
         audioSeekService.playCumulative(
           sliced,
           endIdx - startIdx,
-          () => { setHighlightIndex(-1); setActiveSentenceLocalIdx(-1); },
+          () => { setActiveSentenceLocalIdx(-1); },
           (localIdx) => setActiveSentenceLocalIdx(localIdx),
         );
       }
@@ -234,7 +232,7 @@ const AudioLearningScreen: React.FC = () => {
         audioSeekService.playSentence(
           sentence.start,
           sentence.end,
-          () => { setHighlightIndex(-1); setActiveSentenceLocalIdx(-1); },
+          () => { setActiveSentenceLocalIdx(-1); },
         );
       }
     }
