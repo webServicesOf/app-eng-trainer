@@ -227,31 +227,67 @@ export const useAppStore = create<AppStore>((set, get) => ({
   // SubDeck actions
   loadSubDecks: async () => {
     try {
-      // Auto-create SubDecks from splitPoints if missing
+      // Drive splitPoints = SSOT. Reconcile local SubDecks with Drive state.
       const audioArticles = get().audioArticles;
       for (const aa of audioArticles) {
-        if (!aa.splitPoints?.length) continue;
         const existing = await localDB.getSubDecksByParent(aa.id);
-        if (existing.length > 0) continue;
-        // Reconstruct SubDecks
+
+        if (!aa.splitPoints?.length) {
+          // No splitPoints in Drive → remove any stale local SubDecks
+          for (const old of existing) {
+            await localDB.deleteSubDeck(old.id);
+          }
+          continue;
+        }
+
+        // Build expected ranges from splitPoints
         const sorted = [...aa.splitPoints].sort((a, b) => a - b);
+        const expectedRanges: { start: number; end: number }[] = [];
         let prev = 0;
         for (let i = 0; i <= sorted.length; i++) {
           const end = i < sorted.length ? sorted[i] + 1 : aa.sentences.length;
-          await localDB.saveSubDeck({
-            id: `${aa.id}_${prev}_${end}_${Date.now()}_${i}`,
-            parentId: aa.id,
-            title: `${aa.title} Part ${i + 1}`,
-            startIndex: prev,
-            endIndex: end,
-            nextReviewDate: null,
-            reviewInterval: 0,
-            createdAt: new Date(),
-            lastAccessed: new Date(),
-          });
+          expectedRanges.push({ start: prev, end });
           prev = end;
         }
+
+        // Check if existing SubDecks match expected ranges
+        const matches = existing.length === expectedRanges.length &&
+          expectedRanges.every((r, i) => existing[i].startIndex === r.start && existing[i].endIndex === r.end);
+
+        if (matches) continue; // Already in sync
+
+        // Mismatch → rebuild. Preserve review state where ranges match.
+        const reviewMap = new Map(existing.map(d => [`${d.startIndex}_${d.endIndex}`, d]));
+        for (const old of existing) {
+          await localDB.deleteSubDeck(old.id);
+        }
+
+        for (let i = 0; i < expectedRanges.length; i++) {
+          const r = expectedRanges[i];
+          const preserved = reviewMap.get(`${r.start}_${r.end}`);
+          await localDB.saveSubDeck({
+            id: `${aa.id}_${r.start}_${r.end}_${Date.now()}_${i}`,
+            parentId: aa.id,
+            title: `${aa.title} Part ${i + 1}`,
+            startIndex: r.start,
+            endIndex: r.end,
+            nextReviewDate: preserved?.nextReviewDate ?? null,
+            reviewInterval: preserved?.reviewInterval ?? 0,
+            createdAt: preserved?.createdAt ?? new Date(),
+            lastAccessed: preserved?.lastAccessed ?? new Date(),
+          });
+        }
       }
+
+      // Also clean up orphaned SubDecks (parent deleted from Drive)
+      const allSubDecks = await localDB.getSubDecks();
+      const audioIds = new Set(audioArticles.map(a => a.id));
+      for (const sd of allSubDecks) {
+        if (!audioIds.has(sd.parentId)) {
+          await localDB.deleteSubDeck(sd.id);
+        }
+      }
+
       const subDecks = await localDB.getSubDecks();
       set({ subDecks });
     } catch (error) {
