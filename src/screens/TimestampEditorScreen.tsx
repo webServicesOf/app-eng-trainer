@@ -246,10 +246,12 @@ const TimestampEditorScreen: React.FC = () => {
     if (!s || s.start == null || s.end == null || !ws) return;
 
     if (ws.isPlaying()) {
+      const pauseAt = ws.getCurrentTime();
       ws.pause();
+      ws.setTime(pauseAt); // keep cursor at current position
       clearEndCheck();
     } else {
-      ws.setTime(s.start); // snap to exact start
+      ws.setTime(s.start);
       ws.play();
       startEndCheck(s.end);
     }
