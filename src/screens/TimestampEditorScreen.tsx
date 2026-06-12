@@ -51,7 +51,8 @@ const TimestampEditorScreen: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [hasChanges, setHasChanges] = useState(false);
   const [zoom, setZoom] = useState(50);
-  const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set()); // sentence indices where splits occur (after this index)
+  const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set());
+  const [splitMode, setSplitMode] = useState(false); // word-pick split mode
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
 
@@ -303,27 +304,27 @@ const TimestampEditorScreen: React.FC = () => {
     setHasChanges(true);
   }, [sentences, selectedIndex, pushUndo]);
 
-  const handleSplitSentence = useCallback(() => {
+  const handleSplitSentenceAt = useCallback((wordIndex: number) => {
     const current = sentences[selectedIndex];
-    if (!current?.text || !current.start || !current.end) return;
+    if (!current?.text || current.start == null || current.end == null) return;
 
     const words = current.text.split(/\s+/);
-    if (words.length < 2) return; // can't split 1 word
+    if (wordIndex < 1 || wordIndex >= words.length) return;
 
     pushUndo();
-    const midWord = Math.ceil(words.length / 2);
-    const midTime = (current.start + current.end) / 2;
+    const ratio = wordIndex / words.length;
+    const splitTime = current.start + (current.end - current.start) * ratio;
 
     const first: SentenceEntry = {
       index: current.index,
-      text: words.slice(0, midWord).join(' '),
+      text: words.slice(0, wordIndex).join(' '),
       start: current.start,
-      end: midTime,
+      end: splitTime,
     };
     const second: SentenceEntry = {
       index: current.index + 1,
-      text: words.slice(midWord).join(' '),
-      start: midTime,
+      text: words.slice(wordIndex).join(' '),
+      start: splitTime,
       end: current.end,
     };
 
@@ -332,6 +333,7 @@ const TimestampEditorScreen: React.FC = () => {
     const reindexed = updated.map((s, i) => ({ ...s, index: i + 1 }));
     setSentences(reindexed);
     setHasChanges(true);
+    setSplitMode(false);
   }, [sentences, selectedIndex, pushUndo]);
 
   const handleSave = useCallback(async () => {
@@ -379,6 +381,7 @@ const TimestampEditorScreen: React.FC = () => {
 
   const handleSelectSentence = useCallback((idx: number) => {
     setSelectedIndex(idx);
+    setSplitMode(false);
     const s = sentences[idx];
     if (s?.start != null && wavesurferRef.current) {
       wavesurferRef.current.setTime(s.start);
@@ -418,9 +421,9 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyD' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         toggleSplitMarker(selectedIndex);
-      } else if (code === 'KeyD') {
+      } else if (code === 'KeyD' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        handleSplitSentence();
+        setSplitMode(prev => !prev);
       } else if (code === 'KeyM') {
         e.preventDefault();
         handleMergeSentences();
@@ -447,7 +450,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleSplitSentence, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
 
   if (!article) {
     return (
@@ -548,11 +551,12 @@ const TimestampEditorScreen: React.FC = () => {
             <Box sx={{ display: 'flex', gap: 0.5 }}>
               <Button
                 size="small"
-                variant="outlined"
-                onClick={handleSplitSentence}
-                title="문장 분할 (D)"
+                variant={splitMode ? 'contained' : 'outlined'}
+                color={splitMode ? 'info' : 'primary'}
+                onClick={() => setSplitMode(prev => !prev)}
+                title="문장 분할 모드 (D)"
               >
-                분할
+                {splitMode ? '분할 취소' : '분할'}
               </Button>
               <Button
                 size="small"
@@ -566,16 +570,54 @@ const TimestampEditorScreen: React.FC = () => {
               </Button>
             </Box>
           </Stack>
-          <TextField
-            fullWidth
-            multiline
-            minRows={2}
-            maxRows={4}
-            size="small"
-            value={selected?.text ?? ''}
-            onChange={(e) => handleTextEdit(e.target.value)}
-            sx={{ mb: 2 }}
-          />
+          {splitMode ? (
+            <Box sx={{
+              mb: 2, p: 1, border: '2px solid', borderColor: 'info.main',
+              borderRadius: 1, minHeight: 60, display: 'flex', flexWrap: 'wrap',
+              alignItems: 'center', gap: 0,
+            }}>
+              <Typography variant="caption" color="info.main" sx={{ width: '100%', mb: 0.5 }}>
+                단어 사이를 클릭하여 분할 지점 선택:
+              </Typography>
+              {(selected?.text ?? '').split(/\s+/).map((word, wi, arr) => (
+                <React.Fragment key={wi}>
+                  <Typography
+                    variant="body2"
+                    component="span"
+                    sx={{ px: 0.3, py: 0.2, fontSize: '0.85rem' }}
+                  >
+                    {word}
+                  </Typography>
+                  {wi < arr.length - 1 && (
+                    <Box
+                      onClick={() => handleSplitSentenceAt(wi + 1)}
+                      sx={{
+                        width: 16, height: 28, cursor: 'pointer',
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        mx: 0.2, borderRadius: 0.5,
+                        '&:hover': { backgroundColor: 'error.light', color: 'white' },
+                        color: 'text.disabled', fontSize: '0.9rem', fontWeight: 700,
+                      }}
+                      title={`"${arr.slice(0, wi + 1).join(' ')}" | "${arr.slice(wi + 1).join(' ')}"`}
+                    >
+                      |
+                    </Box>
+                  )}
+                </React.Fragment>
+              ))}
+            </Box>
+          ) : (
+            <TextField
+              fullWidth
+              multiline
+              minRows={2}
+              maxRows={4}
+              size="small"
+              value={selected?.text ?? ''}
+              onChange={(e) => handleTextEdit(e.target.value)}
+              sx={{ mb: 2 }}
+            />
+          )}
 
           {/* Playback */}
           <Stack direction="row" spacing={1} sx={{ mb: 2 }} justifyContent="center">
