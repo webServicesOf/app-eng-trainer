@@ -187,68 +187,56 @@ export class GoogleDriveService {
 
   // ── sync logic ─────────────────────────────────────────
 
-  /** Upload all local audioArticles to Drive (create / update) */
-  async syncUp(): Promise<{ uploaded: number; skipped: number }> {
+  private articleToMeta(article: AudioArticle): AudioArticleMeta {
+    return {
+      id: article.id,
+      title: article.title,
+      sentences: article.sentences,
+      splitPoints: article.splitPoints,
+      source: article.source,
+      nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
+      reviewInterval: article.reviewInterval || 0,
+      createdAt: new Date(article.createdAt).toISOString(),
+      lastAccessed: new Date(article.lastAccessed).toISOString(),
+    };
+  }
+
+  /** Upload a single article to Drive (called immediately after local save) */
+  async uploadArticle(article: AudioArticle): Promise<void> {
     const remoteFiles = await this.listFiles();
     const remoteMap = new Map(remoteFiles.map((f) => [f.name, f]));
 
-    const localArticles = await db.audioArticles.toArray();
-    let uploaded = 0;
-    let skipped = 0;
+    const jsonName = `${article.id}.json`;
+    const mp3Name = `${article.id}.mp3`;
+    const remoteJson = remoteMap.get(jsonName);
 
-    for (const article of localArticles) {
-      const jsonName = `${article.id}.json`;
-      const mp3Name = `${article.id}.mp3`;
+    // Always upload JSON (local just saved = always newest)
+    await this.uploadFile(
+      jsonName,
+      JSON.stringify(this.articleToMeta(article), null, 2),
+      'application/json',
+      remoteJson?.id,
+    );
 
-      const meta: AudioArticleMeta = {
-        id: article.id,
-        title: article.title,
-        sentences: article.sentences,
-        splitPoints: article.splitPoints,
-        source: article.source,
-        nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
-        reviewInterval: article.reviewInterval || 0,
-        createdAt: new Date(article.createdAt).toISOString(),
-        lastAccessed: new Date(article.lastAccessed).toISOString(),
-      };
-
-      const remoteJson = remoteMap.get(jsonName);
-
-      // Compare timestamps — upload if local is newer or remote doesn't exist
-      if (remoteJson) {
-        const remoteTime = new Date(remoteJson.modifiedTime).getTime();
-        const localTime = new Date(article.lastAccessed).getTime();
-        if (localTime <= remoteTime) {
-          skipped++;
-          continue;
-        }
-      }
-
-      // Upload JSON metadata
-      await this.uploadFile(
-        jsonName,
-        JSON.stringify(meta, null, 2),
-        'application/json',
-        remoteJson?.id,
-      );
-
-      // Upload MP3 only if missing on remote (MP3 doesn't change, only JSON does)
-      const remoteMp3 = remoteMap.get(mp3Name);
-      if (!remoteMp3 && article.audioBlob) {
-        await this.uploadFile(
-          mp3Name,
-          article.audioBlob,
-          'audio/mpeg',
-        );
-      }
-
-      uploaded++;
+    // Upload MP3 only if missing on remote
+    const remoteMp3 = remoteMap.get(mp3Name);
+    if (!remoteMp3 && article.audioBlob) {
+      await this.uploadFile(mp3Name, article.audioBlob, 'audio/mpeg');
     }
-
-    return { uploaded, skipped };
   }
 
-  /** Download remote audioArticles that are missing or newer locally */
+  /** Upload all local audioArticles to Drive */
+  async syncUp(): Promise<{ uploaded: number }> {
+    const localArticles = await db.audioArticles.toArray();
+    let uploaded = 0;
+    for (const article of localArticles) {
+      await this.uploadArticle(article);
+      uploaded++;
+    }
+    return { uploaded };
+  }
+
+  /** Download remote audioArticles that are NOT in local (new from other devices only) */
   async syncDown(): Promise<{ downloaded: number; skipped: number }> {
     const remoteFiles = await this.listFiles();
 
@@ -265,14 +253,11 @@ export class GoogleDriveService {
     for (const jsonFile of jsonFiles) {
       const articleId = jsonFile.name.replace('.json', '');
 
+      // Skip if already exists locally (local always wins)
       const local = await db.audioArticles.get(articleId);
       if (local) {
-        const remoteTime = new Date(jsonFile.modifiedTime).getTime();
-        const localTime = new Date(local.lastAccessed).getTime();
-        if (localTime >= remoteTime) {
-          skipped++;
-          continue;
-        }
+        skipped++;
+        continue;
       }
 
       const jsonBlob = await this.downloadFile(jsonFile.id);
