@@ -178,8 +178,9 @@ export class GoogleDriveService {
     let skipped = 0;
 
     for (const article of localArticles) {
-      const jsonName = `${article.id}.json`;
-      const mp3Name = `${article.id}.mp3`;
+      const safeName = article.title.replace(/[/\\:*?"<>|]/g, '-');
+      const jsonName = `${safeName}.json`;
+      const mp3Name = `${safeName}.mp3`;
 
       const meta: AudioArticleMeta = {
         id: article.id,
@@ -233,8 +234,8 @@ export class GoogleDriveService {
   async syncDown(): Promise<{ downloaded: number; skipped: number }> {
     const remoteFiles = await this.listFiles();
 
-    // Group remote files by article ID
     const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json'));
+    // Map mp3 files by base name (without .mp3)
     const mp3Map = new Map(
       remoteFiles
         .filter((f) => f.name.endsWith('.mp3'))
@@ -245,10 +246,12 @@ export class GoogleDriveService {
     let skipped = 0;
 
     for (const jsonFile of jsonFiles) {
-      const articleId = jsonFile.name.replace('.json', '');
+      // Download JSON first to get the real article ID
+      const jsonBlob = await this.downloadFile(jsonFile.id);
+      const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
 
-      // Check local
-      const local = await db.audioArticles.get(articleId);
+      // Check local by ID (not filename)
+      const local = await db.audioArticles.get(meta.id);
       if (local) {
         const remoteTime = new Date(jsonFile.modifiedTime).getTime();
         const localTime = new Date(local.lastAccessed).getTime();
@@ -258,13 +261,10 @@ export class GoogleDriveService {
         }
       }
 
-      // Download JSON metadata
-      const jsonBlob = await this.downloadFile(jsonFile.id);
-      const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
-
-      // Download MP3 if available
+      // Download MP3 — match by same base name as JSON
       let audioBlob: Blob | undefined;
-      const remoteMp3 = mp3Map.get(articleId);
+      const baseName = jsonFile.name.replace('.json', '');
+      const remoteMp3 = mp3Map.get(baseName);
       if (remoteMp3) {
         audioBlob = await this.downloadFile(remoteMp3.id);
       }

@@ -100,6 +100,8 @@ export const HomeScreen: React.FC = () => {
   const [uploadJsonFile, setUploadJsonFile] = useState<File | null>(null);
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadSource, setUploadSource] = useState('');
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [editingTitleValue, setEditingTitleValue] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: (tokenResponse) => {
@@ -169,6 +171,16 @@ export const HomeScreen: React.FC = () => {
       console.error('Failed to fetch sheet tabs:', e);
       setSheetTabs([]);
     }
+  };
+
+  const handleRenameAudioArticle = async (id: string, newTitle: string) => {
+    if (!newTitle.trim()) return;
+    const aa = audioArticles.find(a => a.id === id);
+    if (!aa) return;
+    await localDB.saveAudioArticle({ ...aa, title: newTitle.trim() });
+    await loadAudioArticles();
+    await loadSubDecks();
+    setEditingTitleId(null);
   };
 
   const handleUploadAudioArticle = async () => {
@@ -880,9 +892,31 @@ export const HomeScreen: React.FC = () => {
                   }}
                 >
                   <CardContent>
-                    <Typography variant="h6" gutterBottom noWrap>
-                      {aa.title}
-                    </Typography>
+                    {editingTitleId === aa.id ? (
+                      <TextField
+                        fullWidth
+                        size="small"
+                        value={editingTitleValue}
+                        onChange={(e) => setEditingTitleValue(e.target.value)}
+                        onBlur={() => handleRenameAudioArticle(aa.id, editingTitleValue)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRenameAudioArticle(aa.id, editingTitleValue);
+                          if (e.key === 'Escape') setEditingTitleId(null);
+                        }}
+                        autoFocus
+                        sx={{ mb: 1 }}
+                      />
+                    ) : (
+                      <Typography
+                        variant="h6"
+                        gutterBottom
+                        noWrap
+                        sx={{ cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}
+                        onClick={() => { setEditingTitleId(aa.id); setEditingTitleValue(aa.title); }}
+                      >
+                        {aa.title}
+                      </Typography>
+                    )}
                     <Chip label="Audio" size="small" color="info" variant="outlined" sx={{ mr: 1 }} />
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                       {aa.sentences.length}개 문장
