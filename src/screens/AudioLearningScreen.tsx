@@ -50,6 +50,7 @@ const AudioLearningScreen: React.FC = () => {
   } = useLearningStore();
 
   const [article, setArticle] = useState<AudioArticle | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
   const [displayText, setDisplayText] = useState<string>('');
   const [highlightIndex, setHighlightIndex] = useState<number>(-1);

@@ -122,7 +122,7 @@ export const HomeScreen: React.FC = () => {
     if (savedKey) setTtsApiKey(savedKey);
     const savedFolder = localStorage.getItem('drive_folder_name');
     if (savedFolder) setDriveFolderName(savedFolder);
-  }, [loadArticles, loadAudioArticles, loadGoogleSheetsConfig]);
+  }, [loadArticles, loadAudioArticles, loadGoogleSheetsConfig, loadSubDecks]);
 
   // Auto-sync on login
   useEffect(() => {

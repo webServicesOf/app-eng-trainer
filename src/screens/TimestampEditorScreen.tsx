@@ -29,7 +29,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { AudioArticle, SentenceEntry, SubDeck } from '../types';
+import { AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
 
