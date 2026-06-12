@@ -178,9 +178,8 @@ export class GoogleDriveService {
     let skipped = 0;
 
     for (const article of localArticles) {
-      const safeName = article.title.replace(/[/\\:*?"<>|]/g, '-');
-      const jsonName = `${safeName}.json`;
-      const mp3Name = `${safeName}.mp3`;
+      const jsonName = `${article.id}.json`;
+      const mp3Name = `${article.id}.mp3`;
 
       const meta: AudioArticleMeta = {
         id: article.id,
@@ -204,26 +203,6 @@ export class GoogleDriveService {
           skipped++;
           continue;
         }
-      }
-
-      // Clean up old-named files for the same article ID (title may have changed)
-      for (const [name, file] of Array.from(remoteMap.entries())) {
-        if (name === jsonName || name === mp3Name) continue;
-        if (!name.endsWith('.json')) continue;
-        // Download and check if same article ID
-        try {
-          const blob = await this.downloadFile(file.id);
-          const oldMeta = JSON.parse(await blob.text());
-          if (oldMeta.id === article.id) {
-            // Delete old JSON and its MP3
-            await driveRequest(`${DRIVE_API}/files/${file.id}`, this.token, { method: 'DELETE' });
-            const oldMp3Name = name.replace('.json', '.mp3');
-            const oldMp3 = remoteMap.get(oldMp3Name);
-            if (oldMp3) {
-              await driveRequest(`${DRIVE_API}/files/${oldMp3.id}`, this.token, { method: 'DELETE' });
-            }
-          }
-        } catch { /* ignore cleanup errors */ }
       }
 
       // Upload JSON metadata
@@ -255,7 +234,6 @@ export class GoogleDriveService {
     const remoteFiles = await this.listFiles();
 
     const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json'));
-    // Map mp3 files by base name (without .mp3)
     const mp3Map = new Map(
       remoteFiles
         .filter((f) => f.name.endsWith('.mp3'))
@@ -266,12 +244,9 @@ export class GoogleDriveService {
     let skipped = 0;
 
     for (const jsonFile of jsonFiles) {
-      // Download JSON first to get the real article ID
-      const jsonBlob = await this.downloadFile(jsonFile.id);
-      const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
+      const articleId = jsonFile.name.replace('.json', '');
 
-      // Check local by ID (not filename)
-      const local = await db.audioArticles.get(meta.id);
+      const local = await db.audioArticles.get(articleId);
       if (local) {
         const remoteTime = new Date(jsonFile.modifiedTime).getTime();
         const localTime = new Date(local.lastAccessed).getTime();
@@ -281,10 +256,11 @@ export class GoogleDriveService {
         }
       }
 
-      // Download MP3 — match by same base name as JSON
+      const jsonBlob = await this.downloadFile(jsonFile.id);
+      const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
+
       let audioBlob: Blob | undefined;
-      const baseName = jsonFile.name.replace('.json', '');
-      const remoteMp3 = mp3Map.get(baseName);
+      const remoteMp3 = mp3Map.get(articleId);
       if (remoteMp3) {
         audioBlob = await this.downloadFile(remoteMp3.id);
       }
