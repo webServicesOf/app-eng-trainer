@@ -56,7 +56,9 @@ const AudioLearningScreen: React.FC = () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
   const [displayText, setDisplayText] = useState<string>('');
+  const [displaySentences, setDisplaySentences] = useState<string[]>([]);
   const [highlightIndex, setHighlightIndex] = useState<number>(-1);
+  const [activeSentenceLocalIdx, setActiveSentenceLocalIdx] = useState<number>(-1);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
@@ -148,14 +150,16 @@ const AudioLearningScreen: React.FC = () => {
         startIndex = Math.max(1, currentIndex - windowSize + 1);
       }
 
-      const text = article.sentences
-        .filter((s) => s.index >= startIndex && s.index <= currentIndex)
-        .map((s) => s.text)
-        .join(' ');
-      setDisplayText(text);
+      const filtered = article.sentences
+        .filter((s) => s.index >= startIndex && s.index <= currentIndex);
+      const texts = filtered.map((s) => s.text);
+      setDisplaySentences(texts);
+      setDisplayText(texts.join(' '));
     } else {
       const sentence = article.sentences.find((s) => s.index === currentIndex);
-      setDisplayText(sentence ? sentence.text : '');
+      const text = sentence ? sentence.text : '';
+      setDisplaySentences([text]);
+      setDisplayText(text);
     }
   }, [article, isCumulative, currentIndex, windowSize]);
 
@@ -211,22 +215,26 @@ const AudioLearningScreen: React.FC = () => {
 
       const startSentence = article.sentences[startIdx];
       const endSentence = article.sentences[endIdx];
+      const sliced = article.sentences.slice(startIdx, endIdx + 1);
 
       if (startSentence?.start != null && endSentence?.end != null) {
+        setActiveSentenceLocalIdx(0);
         audioSeekService.playCumulative(
-          article.sentences.slice(startIdx, endIdx + 1),
+          sliced,
           endIdx - startIdx,
-          () => setHighlightIndex(-1)
+          () => { setHighlightIndex(-1); setActiveSentenceLocalIdx(-1); },
+          (localIdx) => setActiveSentenceLocalIdx(localIdx),
         );
       }
     } else {
       // Single sentence
       const sentence = article.sentences.find((s) => s.index === currentIndex);
       if (sentence?.start != null && sentence?.end != null) {
+        setActiveSentenceLocalIdx(0);
         audioSeekService.playSentence(
           sentence.start,
           sentence.end,
-          () => setHighlightIndex(-1)
+          () => { setHighlightIndex(-1); setActiveSentenceLocalIdx(-1); },
         );
       }
     }
@@ -444,20 +452,22 @@ const AudioLearningScreen: React.FC = () => {
                 width: '100%',
               }}
             >
-              {displayText ? (
-                displayText.split(/\s+/).map((word, index) => (
+              {displaySentences.length > 0 ? (
+                displaySentences.map((sentenceText, sentIdx) => (
                   <span
-                    key={index}
+                    key={sentIdx}
                     style={{
-                      color: index === highlightIndex ? '#000000' : (isBlindMode ? 'transparent' : '#cccccc'),
-                      marginRight: '0.3em',
-                      transition: 'color 0.2s',
+                      color: activeSentenceLocalIdx === sentIdx
+                        ? '#000000'
+                        : activeSentenceLocalIdx >= 0
+                          ? (isBlindMode ? 'transparent' : '#aaaaaa')
+                          : (isBlindMode ? 'transparent' : '#cccccc'),
+                      transition: 'color 0.3s',
                       display: 'inline',
-                      cursor: 'pointer',
-                      textShadow: isBlindMode && index !== highlightIndex ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
+                      textShadow: isBlindMode && activeSentenceLocalIdx !== sentIdx ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
                     }}
                   >
-                    {word}
+                    {sentenceText}{sentIdx < displaySentences.length - 1 ? ' ' : ''}
                   </span>
                 ))
               ) : (
