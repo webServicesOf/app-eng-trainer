@@ -12,6 +12,7 @@ interface AudioArticleMeta {
   id: string;
   title: string;
   sentences: SentenceEntry[];
+  splitPoints?: number[];
   source?: string;
   nextReviewDate?: string | null;
   reviewInterval?: number;
@@ -184,6 +185,7 @@ export class GoogleDriveService {
         id: article.id,
         title: article.title,
         sentences: article.sentences,
+        splitPoints: article.splitPoints,
         source: article.source,
         nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
         reviewInterval: article.reviewInterval || 0,
@@ -271,6 +273,7 @@ export class GoogleDriveService {
         id: meta.id,
         title: meta.title,
         sentences: meta.sentences,
+        splitPoints: meta.splitPoints,
         source: meta.source,
         audioBlob,
         nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
@@ -280,6 +283,29 @@ export class GoogleDriveService {
       };
 
       await db.audioArticles.put(audioArticle);
+
+      // Reconstruct SubDecks from splitPoints
+      if (meta.splitPoints?.length) {
+        await db.subDecks.where('parentId').equals(meta.id).delete();
+        const sorted = [...meta.splitPoints].sort((a, b) => a - b);
+        let prev = 0;
+        for (let i = 0; i <= sorted.length; i++) {
+          const end = i < sorted.length ? sorted[i] + 1 : meta.sentences.length;
+          await db.subDecks.put({
+            id: `${meta.id}_${prev}_${end}_${Date.now()}_${i}`,
+            parentId: meta.id,
+            title: `${meta.title} Part ${i + 1}`,
+            startIndex: prev,
+            endIndex: end,
+            nextReviewDate: null,
+            reviewInterval: 0,
+            createdAt: new Date(),
+            lastAccessed: new Date(),
+          });
+          prev = end;
+        }
+      }
+
       downloaded++;
     }
 

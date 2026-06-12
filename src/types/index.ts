@@ -32,6 +32,7 @@ export interface AudioArticle {
   audioBlob?: Blob; // full mp3 (IndexedDB 저장용)
   audioUrl?: string; // blob URL (런타임 전용, 저장 안 함)
   sentences: SentenceEntry[];
+  splitPoints?: number[]; // sentence indices where splits occur (for SubDeck reconstruction)
   source?: string; // YouTube URL 등
   nextReviewDate: Date | null;
   reviewInterval: number; // days

@@ -62,6 +62,9 @@ const TimestampEditorScreen: React.FC = () => {
       if (loaded) {
         setArticle(loaded);
         setSentences([...loaded.sentences]);
+        if (loaded.splitPoints?.length) {
+          setSplitMarkers(new Set(loaded.splitPoints));
+        }
       } else {
         navigate('/');
       }
@@ -311,26 +314,25 @@ const TimestampEditorScreen: React.FC = () => {
   const handleSaveSplits = useCallback(async () => {
     if (!article || splitMarkers.size === 0) return;
 
-    // Delete existing subdecks for this article
-    await localDB.deleteSubDecksByParent(article.id);
-
-    // Create splits from markers
     const sortedMarkers = Array.from(splitMarkers).sort((a, b) => a - b);
+
+    // Save splitPoints into the article (for Drive sync)
+    const updated: AudioArticle = { ...article, sentences, splitPoints: sortedMarkers };
+    await localDB.saveAudioArticle(updated);
+    setArticle(updated);
+
+    // Recreate SubDecks from splitPoints
+    await localDB.deleteSubDecksByParent(article.id);
     let prev = 0;
     for (let i = 0; i <= sortedMarkers.length; i++) {
       const end = i < sortedMarkers.length ? sortedMarkers[i] + 1 : sentences.length;
-      const partNum = i + 1;
-      await createSubDeck(
-        article.id,
-        `${article.title} Part ${partNum}`,
-        prev,
-        end,
-      );
+      await createSubDeck(article.id, `${article.title} Part ${i + 1}`, prev, end);
       prev = end;
     }
     await loadSubDecks();
+    setHasChanges(false);
     alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
-  }, [article, sentences.length, splitMarkers, createSubDeck, loadSubDecks]);
+  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks]);
 
   const handleSelectSentence = useCallback((idx: number) => {
     setSelectedIndex(idx);
