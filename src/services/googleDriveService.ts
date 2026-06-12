@@ -267,6 +267,29 @@ export class GoogleDriveService {
     return this.downloadFile(mp3File.id);
   }
 
+  // ── Settings sync ────────────────────────────────────
+
+  /** Save app settings to Drive (excludes sensitive keys like TTS API key) */
+  async saveSettings(settings: Record<string, any>): Promise<void> {
+    const remoteFiles = await this.listFiles();
+    const existing = remoteFiles.find((f) => f.name === 'settings.json');
+    await this.uploadFile(
+      'settings.json',
+      JSON.stringify(settings, null, 2),
+      'application/json',
+      existing?.id,
+    );
+  }
+
+  /** Load app settings from Drive */
+  async loadSettings(): Promise<Record<string, any> | null> {
+    const remoteFiles = await this.listFiles();
+    const settingsFile = remoteFiles.find((f) => f.name === 'settings.json');
+    if (!settingsFile) return null;
+    const blob = await this.downloadFile(settingsFile.id);
+    return JSON.parse(await blob.text());
+  }
+
   /** Delete article JSON + MP3 from Drive */
   async deleteArticle(id: string): Promise<void> {
     const remoteFiles = await this.listFiles();

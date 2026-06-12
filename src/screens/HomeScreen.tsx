@@ -43,6 +43,7 @@ import { useAppStore } from '../stores/appStore';
 import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
+import { GoogleDriveService } from '../services/googleDriveService';
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -99,8 +100,11 @@ export const HomeScreen: React.FC = () => {
   const [editingTitleValue, setEditingTitleValue] = useState('');
 
   const login = useGoogleLogin({
-    onSuccess: (tokenResponse) => {
+    onSuccess: async (tokenResponse) => {
       setAccessToken(tokenResponse.access_token);
+      // Reload Drive-backed data after login
+      await loadAudioArticles();
+      await loadSubDecks();
     },
     onError: () => {
       console.error('Login Failed');
@@ -111,15 +115,46 @@ export const HomeScreen: React.FC = () => {
   useEffect(() => {
     loadGoogleSheetsConfig();
     loadArticles();
-    loadAudioArticles();
-    loadSubDecks();
+    // Audio articles loaded after token check below
 
     // Load saved settings
     const savedKey = localStorage.getItem('google_cloud_tts_api_key');
     if (savedKey) setTtsApiKey(savedKey);
     const savedFolder = localStorage.getItem('drive_folder_name');
     if (savedFolder) setDriveFolderName(savedFolder);
-  }, [loadArticles, loadAudioArticles, loadGoogleSheetsConfig, loadSubDecks]);
+  }, [loadArticles, loadGoogleSheetsConfig]);
+
+  // Load Drive-backed data + settings when authenticated
+  useEffect(() => {
+    if (!isAuthenticated || !accessToken) return;
+    const init = async () => {
+      // Load settings from Drive
+      try {
+        const drive = new GoogleDriveService(accessToken);
+        const settings = await drive.loadSettings();
+        if (settings) {
+          if (settings.spreadsheetId) {
+            setSpreadsheetId(settings.spreadsheetId);
+            setRange(settings.range || 'Sheet1!A:E');
+            setHasHeader(settings.hasHeader !== undefined ? settings.hasHeader : true);
+            setGoogleSheetsConfig({
+              spreadsheetId: settings.spreadsheetId,
+              range: settings.range || 'Sheet1!A:E',
+              hasHeader: settings.hasHeader !== undefined ? settings.hasHeader : true,
+            });
+          }
+          if (settings.driveFolderName) {
+            setDriveFolderName(settings.driveFolderName);
+            localStorage.setItem('drive_folder_name', settings.driveFolderName);
+          }
+        }
+      } catch { /* ignore settings load failure */ }
+      // Load audio articles + subdecks
+      await loadAudioArticles();
+      await loadSubDecks();
+    };
+    init();
+  }, [isAuthenticated, accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (currentTab === 2) {
@@ -127,8 +162,8 @@ export const HomeScreen: React.FC = () => {
     }
   }, [currentTab]);
 
-  const handleSaveAllSettings = () => {
-    // TTS API key
+  const handleSaveAllSettings = async () => {
+    // TTS API key (local only — sensitive)
     if (ttsApiKey.trim()) {
       googleCloudTtsService.setApiKey(ttsApiKey);
       localStorage.setItem('google_cloud_tts_api_key', ttsApiKey);
@@ -140,6 +175,16 @@ export const HomeScreen: React.FC = () => {
     // Sheets config
     if (spreadsheetId && range) {
       setGoogleSheetsConfig({ spreadsheetId, range, hasHeader });
+    }
+    // Sync non-sensitive settings to Drive
+    if (accessToken) {
+      const drive = new GoogleDriveService(accessToken);
+      drive.saveSettings({
+        spreadsheetId,
+        range,
+        hasHeader,
+        driveFolderName: driveFolderName.trim() || 'eng-trainer',
+      }).catch(() => {});
     }
     setSettingsDialogOpen(false);
   };
@@ -564,6 +609,16 @@ export const HomeScreen: React.FC = () => {
             >
               Google 로그인
             </Button>
+          )}
+          {isAuthenticated && (
+            <IconButton
+              color="primary"
+              onClick={async () => { await loadAudioArticles(); await loadSubDecks(); }}
+              title="Drive에서 새로고침"
+              size="small"
+            >
+              <RefreshIcon />
+            </IconButton>
           )}
           <IconButton
             color="primary"
