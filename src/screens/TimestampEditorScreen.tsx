@@ -115,18 +115,7 @@ const TimestampEditorScreen: React.FC = () => {
     });
 
     ws.on('play', () => { if (!destroyed) setIsPlaying(true); });
-    ws.on('pause', () => {
-      if (destroyed) return;
-      // Save scroll position before React re-render
-      const container = waveformRef.current?.querySelector('.scroll') as HTMLElement
-        ?? waveformRef.current?.firstElementChild as HTMLElement;
-      const scrollLeft = container?.scrollLeft ?? 0;
-      setIsPlaying(false);
-      // Restore scroll after re-render
-      requestAnimationFrame(() => {
-        if (container) container.scrollLeft = scrollLeft;
-      });
-    });
+    ws.on('pause', () => { if (!destroyed) setIsPlaying(false); });
 
     return () => {
       destroyed = true;
@@ -256,17 +245,26 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, [sentences, selectedIndex, startEndCheck, clearEndCheck]);
 
+  const pausedAtRef = useRef<number | null>(null);
+
   const handlePlaySentence = useCallback(() => {
     const ws = wavesurferRef.current;
     const s = sentences[selectedIndex];
     if (!s || s.start == null || s.end == null || !ws) return;
 
     if (ws.isPlaying()) {
+      // Save position BEFORE pause
+      pausedAtRef.current = ws.getCurrentTime();
       ws.pause();
       clearEndCheck();
-      return; // cursor stays at current position naturally
+      // Restore position AFTER pause (wavesurfer may reset it)
+      if (pausedAtRef.current != null) {
+        ws.setTime(pausedAtRef.current);
+      }
+      return;
     }
     // Play from start
+    pausedAtRef.current = null;
     ws.setTime(s.start);
     ws.play();
     startEndCheck(s.end);
