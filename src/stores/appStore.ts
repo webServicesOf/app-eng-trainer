@@ -225,6 +225,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
   // SubDeck actions
   loadSubDecks: async () => {
     try {
+      // Auto-create SubDecks from splitPoints if missing
+      const audioArticles = await localDB.getAudioArticles();
+      for (const aa of audioArticles) {
+        if (!aa.splitPoints?.length) continue;
+        const existing = await localDB.getSubDecksByParent(aa.id);
+        if (existing.length > 0) continue;
+        // Reconstruct SubDecks
+        const sorted = [...aa.splitPoints].sort((a, b) => a - b);
+        let prev = 0;
+        for (let i = 0; i <= sorted.length; i++) {
+          const end = i < sorted.length ? sorted[i] + 1 : aa.sentences.length;
+          await localDB.saveSubDeck({
+            id: `${aa.id}_${prev}_${end}_${Date.now()}_${i}`,
+            parentId: aa.id,
+            title: `${aa.title} Part ${i + 1}`,
+            startIndex: prev,
+            endIndex: end,
+            nextReviewDate: null,
+            reviewInterval: 0,
+            createdAt: new Date(),
+            lastAccessed: new Date(),
+          });
+          prev = end;
+        }
+      }
       const subDecks = await localDB.getSubDecks();
       set({ subDecks });
     } catch (error) {
