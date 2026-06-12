@@ -647,15 +647,17 @@ export const HomeScreen: React.FC = () => {
               </Button>
             </>
           ) : currentTab === 1 ? (
-            <Button
-              variant="contained"
-              startIcon={<UploadIcon />}
-              onClick={() => setUploadDialogOpen(true)}
-              disabled={isLoading}
-              size="small"
-            >
-              업로드
-            </Button>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant="outlined"
+                startIcon={<UploadIcon />}
+                onClick={() => setUploadDialogOpen(true)}
+                size="small"
+                sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
+              >
+                업로드
+              </Button>
+            </Box>
           ) : (
             <Button
               variant={savedManagementMode ? 'outlined' : 'contained'}
@@ -891,15 +893,8 @@ export const HomeScreen: React.FC = () => {
                 Audio Article이 없습니다
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                MP3 + sentences.json을 업로드하세요
+                {isAuthenticated ? 'Drive에 데이터가 없거나 로딩 중입니다' : '로그인 후 Drive에서 불러옵니다'}
               </Typography>
-              <Button
-                variant="outlined"
-                startIcon={<UploadIcon />}
-                onClick={() => setUploadDialogOpen(true)}
-              >
-                업로드
-              </Button>
             </Box>
           ) : (
             <Box
