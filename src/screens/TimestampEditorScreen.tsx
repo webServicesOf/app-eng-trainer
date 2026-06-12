@@ -49,6 +49,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const currentTimeRef = useRef(0);
   const [hasChanges, setHasChanges] = useState(false);
   const [zoom, setZoom] = useState(50);
   const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set());
@@ -88,8 +89,6 @@ const TimestampEditorScreen: React.FC = () => {
       cursorColor: '#dc004e',
       height: 128,
       normalize: true,
-      autoCenter: false,
-      autoScroll: false,
       plugins: [regions],
     });
 
@@ -108,7 +107,11 @@ const TimestampEditorScreen: React.FC = () => {
     });
 
     ws.on('timeupdate', (time: number) => {
-      if (!destroyed) setCurrentTime(Math.round(time * 100) / 100);
+      if (destroyed) return;
+      currentTimeRef.current = time;
+      // Update display at ~4fps to avoid excessive re-renders
+      const rounded = Math.round(time * 4) / 4;
+      setCurrentTime(prev => prev === rounded ? prev : rounded);
     });
 
     ws.on('play', () => { if (!destroyed) setIsPlaying(true); });
@@ -219,10 +222,10 @@ const TimestampEditorScreen: React.FC = () => {
     clearEndCheck();
     endCheckRef.current = setInterval(() => {
       const ws = wavesurferRef.current;
-      if (!ws) { clearEndCheck(); return; }
+      if (!ws || !ws.isPlaying()) { clearEndCheck(); return; }
       if (ws.getCurrentTime() >= endTime) {
         ws.pause();
-        ws.setTime(endTime); // snap to exact end
+        ws.setTime(endTime);
         clearEndCheck();
       }
     }, 16);
@@ -414,7 +417,7 @@ const TimestampEditorScreen: React.FC = () => {
       // Use e.code for IME-safe detection (한글 모드에서도 동작)
       const code = e.code;
 
-      if (code === 'Space') {
+      if (code === 'Space' && !e.repeat) {
         e.preventDefault();
         handlePlaySentence();
       } else if (code === 'KeyE') {
