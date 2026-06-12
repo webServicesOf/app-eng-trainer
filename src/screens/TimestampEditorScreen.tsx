@@ -53,6 +53,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [zoom, setZoom] = useState(50);
   const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set()); // sentence indices where splits occur (after this index)
   const undoStackRef = useRef<SentenceEntry[][]>([]);
+  const redoStackRef = useRef<SentenceEntry[][]>([]);
 
   // Load article
   useEffect(() => {
@@ -181,15 +182,26 @@ const TimestampEditorScreen: React.FC = () => {
   const pushUndo = useCallback(() => {
     undoStackRef.current.push(sentences.map(s => ({ ...s })));
     if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+    redoStackRef.current = []; // new action clears redo
   }, [sentences]);
 
   const handleUndo = useCallback(() => {
     const prev = undoStackRef.current.pop();
     if (prev) {
+      redoStackRef.current.push(sentences.map(s => ({ ...s })));
       setSentences(prev);
       setHasChanges(true);
     }
-  }, []);
+  }, [sentences]);
+
+  const handleRedo = useCallback(() => {
+    const next = redoStackRef.current.pop();
+    if (next) {
+      undoStackRef.current.push(sentences.map(s => ({ ...s })));
+      setSentences(next);
+      setHasChanges(true);
+    }
+  }, [sentences]);
 
   const endCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -355,9 +367,10 @@ const TimestampEditorScreen: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         // Only allow ⌘Z in text fields
-        if (e.key === 'z' && (e.metaKey || e.ctrlKey)) {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
           e.preventDefault();
-          handleUndo();
+          if (e.shiftKey) handleRedo();
+          else handleUndo();
         }
         return;
       }
@@ -379,7 +392,8 @@ const TimestampEditorScreen: React.FC = () => {
         handleMergeSentences();
       } else if (code === 'KeyZ' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        handleUndo();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
       } else if (code === 'KeyS' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         handleSave();
@@ -399,7 +413,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleTextEdit, toggleSplitMarker, selectedIndex]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
 
   if (!article) {
     return (
@@ -564,7 +578,7 @@ const TimestampEditorScreen: React.FC = () => {
             <Typography variant="caption" display="block">←→: start -0.1s / end +0.1s</Typography>
             <Typography variant="caption" display="block">D: 분할점 토글 (더블클릭도 가능)</Typography>
             <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
-            <Typography variant="caption" display="block">⌘Z: 되돌리기</Typography>
+            <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
             <Typography variant="caption" display="block">⌘S: 저장</Typography>
           </Box>
         </Paper>
