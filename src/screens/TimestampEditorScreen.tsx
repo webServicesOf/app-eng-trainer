@@ -38,7 +38,7 @@ const TimestampEditorScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const theme = useTheme();
-  const { createSubDeck, loadSubDecks, accessToken, audioArticles } = useAppStore();
+  const { createSubDeck, loadSubDecks, loadAudioArticles, accessToken, audioArticles } = useAppStore();
 
   const waveformRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
@@ -360,7 +360,9 @@ const TimestampEditorScreen: React.FC = () => {
     await drive.saveArticle(updated);
     setArticle(updated);
     setHasChanges(false);
-  }, [article, sentences, accessToken]);
+    // Sync appStore so HomeScreen sees fresh data
+    await loadAudioArticles();
+  }, [article, sentences, accessToken, loadAudioArticles]);
 
   const toggleSplitMarker = useCallback((idx: number) => {
     setSplitMarkers(prev => {
@@ -390,10 +392,12 @@ const TimestampEditorScreen: React.FC = () => {
       await createSubDeck(article.id, `${article.title} Part ${i + 1}`, prev, end);
       prev = end;
     }
+    // Sync appStore so HomeScreen sees fresh splitPoints + SubDecks
+    await loadAudioArticles();
     await loadSubDecks();
     setHasChanges(false);
     alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
-  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, accessToken]);
+  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, loadAudioArticles, accessToken]);
 
   const handleSelectSentence = useCallback((idx: number) => {
     setSelectedIndex(idx);
