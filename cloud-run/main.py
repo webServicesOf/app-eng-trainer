@@ -120,30 +120,36 @@ async def upload_to_drive(
 ) -> str:
     """Upload a file to Google Drive. Returns file ID."""
     import json
+    from urllib.parse import quote
     from urllib.request import Request, urlopen
 
-    # Resolve folder
-    actual_folder = folder_id
-    if not actual_folder:
-        # Find or create eng-trainer folder
-        q = "name='eng-trainer' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-        search_url = f"https://www.googleapis.com/drive/v3/files?q={q}&fields=files(id)&spaces=drive"
+    def _find_or_create(name: str, parent_id: str | None = None) -> str:
+        parent_clause = f" and '{parent_id}' in parents" if parent_id else ""
+        q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false{parent_clause}"
+        search_url = f"https://www.googleapis.com/drive/v3/files?q={quote(q)}&fields=files(id)&spaces=drive"
         req = Request(search_url, headers={"Authorization": f"Bearer {token}"})
         resp = urlopen(req)
         data = json.loads(resp.read())
         if data.get("files"):
-            actual_folder = data["files"][0]["id"]
-        else:
-            # Create folder
-            create_body = json.dumps({"name": "eng-trainer", "mimeType": "application/vnd.google-apps.folder"}).encode()
-            req = Request(
-                "https://www.googleapis.com/drive/v3/files",
-                data=create_body,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                method="POST",
-            )
-            resp = urlopen(req)
-            actual_folder = json.loads(resp.read())["id"]
+            return data["files"][0]["id"]
+        body_dict: dict = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
+        if parent_id:
+            body_dict["parents"] = [parent_id]
+        create_body = json.dumps(body_dict).encode()
+        req = Request(
+            "https://www.googleapis.com/drive/v3/files",
+            data=create_body,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        resp = urlopen(req)
+        return json.loads(resp.read())["id"]
+
+    # Resolve folder: eng-trainer/data/
+    actual_folder = folder_id
+    if not actual_folder:
+        root_id = _find_or_create("eng-trainer")
+        actual_folder = _find_or_create("data", root_id)
 
     # Multipart upload
     boundary = "-----yt2csv_boundary"
