@@ -1,4 +1,4 @@
-import { AudioArticle, SentenceEntry } from '../types';
+import { AudioArticle, SentenceEntry, SubDeckReview } from '../types';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
@@ -12,6 +12,7 @@ interface AudioArticleMeta {
   title: string;
   sentences: SentenceEntry[];
   splitPoints?: number[];
+  subDeckReviews?: SubDeckReview[];
   source?: string;
   nextReviewDate?: string | null;
   reviewInterval?: number;
@@ -199,6 +200,7 @@ export class GoogleDriveService {
       title: article.title,
       sentences: article.sentences,
       splitPoints: article.splitPoints,
+      subDeckReviews: article.subDeckReviews,
       source: article.source,
       nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
       reviewInterval: article.reviewInterval || 0,
@@ -213,6 +215,7 @@ export class GoogleDriveService {
       title: meta.title,
       sentences: meta.sentences || [],
       splitPoints: meta.splitPoints,
+      subDeckReviews: meta.subDeckReviews,
       source: meta.source,
       nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
       reviewInterval: meta.reviewInterval || 0,

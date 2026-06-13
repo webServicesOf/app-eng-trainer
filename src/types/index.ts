@@ -33,6 +33,15 @@ export interface SentenceEntry {
   memo?: string;
 }
 
+// SubDeck의 복습 상태 (Drive JSON에 포함, 크로스 디바이스 동기화)
+export interface SubDeckReview {
+  startIndex: number; // SubDeck 식별 키 (startIndex + endIndex)
+  endIndex: number;
+  nextReviewDate?: string | null;
+  reviewInterval: number;
+  lastAccessed?: string;
+}
+
 // Audio 기반 Article (full mp3 + sentences.json 업로드)
 export interface AudioArticle {
   id: string;
@@ -41,6 +50,7 @@ export interface AudioArticle {
   audioUrl?: string; // blob URL (런타임 전용, 저장 안 함)
   sentences: SentenceEntry[];
   splitPoints?: number[]; // sentence indices where splits occur (for SubDeck reconstruction)
+  subDeckReviews?: SubDeckReview[]; // SubDeck별 복습 상태 (Drive SSOT)
   source?: string; // YouTube URL 등
   nextReviewDate: Date | null;
   reviewInterval: number; // days

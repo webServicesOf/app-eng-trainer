@@ -37,6 +37,7 @@ import {
   Upload as UploadIcon,
 
   DoneAll as DoneAllIcon,
+  Save as SaveIcon,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
@@ -73,6 +74,8 @@ export const HomeScreen: React.FC = () => {
     cycleReviewInterval,
     loadSubDecks,
     deleteSubDeck,
+    dirtyAudioIds,
+    saveDirtyArticles,
   } = useAppStore();
 
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -692,6 +695,18 @@ export const HomeScreen: React.FC = () => {
               >
                 업로드
               </Button>
+              {dirtyAudioIds.size > 0 && (
+                <Button
+                  variant="contained"
+                  color="warning"
+                  startIcon={<SaveIcon />}
+                  onClick={saveDirtyArticles}
+                  size="small"
+                  disabled={isLoading}
+                >
+                  저장 ({dirtyAudioIds.size})
+                </Button>
+              )}
             </Box>
           ) : (
             <Button
