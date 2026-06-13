@@ -43,10 +43,11 @@ class AudioSeekService {
           }
           // Word-level tracking
           if (this.onWordChange && s.start != null && s.end != null) {
+            const textWordCount = s.text.split(/\s+/).length;
             let wordIdx = -1;
             if (s.words && s.words.length > 0) {
-              // Real Whisper timestamps — find word by time
-              for (let w = s.words.length - 1; w >= 0; w--) {
+              // Real Whisper timestamps — find word by time, cap to text word count
+              for (let w = Math.min(s.words.length, textWordCount) - 1; w >= 0; w--) {
                 if (t >= s.words[w].start) {
                   wordIdx = w;
                   break;
@@ -54,11 +55,11 @@ class AudioSeekService {
               }
             } else {
               // Fallback: linear interpolation
-              const words = s.text.split(/\s+/);
               const dur = s.end - s.start;
               const elapsed = t - s.start;
-              wordIdx = Math.min(Math.floor((elapsed / dur) * words.length), words.length - 1);
+              wordIdx = Math.min(Math.floor((elapsed / dur) * textWordCount), textWordCount - 1);
             }
+            wordIdx = Math.min(wordIdx, textWordCount - 1);
             if (wordIdx !== this.lastReportedWord && wordIdx >= 0) {
               this.lastReportedWord = wordIdx;
               this.onWordChange(i, wordIdx);
@@ -115,7 +116,7 @@ class AudioSeekService {
     this.clearTracking();
     const startSentence = sentences[0];
     const endSentence = sentences[upTo];
-    if (!startSentence?.start || !endSentence?.end) return;
+    if (startSentence?.start == null || endSentence?.end == null) return;
 
     this.audio.currentTime = startSentence.start;
     this.targetEndTime = endSentence.end;

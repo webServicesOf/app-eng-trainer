@@ -563,9 +563,8 @@ const AudioLearningScreen: React.FC = () => {
                 displaySentences.map((sent, sentIdx) => {
                   const isActiveSent = activeSentenceLocalIdx === sentIdx;
                   const hasActiveAnySent = activeSentenceLocalIdx >= 0;
-                  const words = sent.words?.length
-                    ? sent.words.map(w => w.word)
-                    : sent.text.split(/\s+/);
+                  // Always render from original text; words array is for highlight timing only
+                  const words = sent.text.split(/\s+/);
 
                   return (
                     <span
