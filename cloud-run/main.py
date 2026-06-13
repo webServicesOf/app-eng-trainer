@@ -205,7 +205,7 @@ async def convert(req: ConvertRequest):
             timeout=90,
         )
         if meta_result.returncode != 0:
-            raise HTTPException(400, f"yt-dlp metadata failed: {meta_result.stderr[:300]}")
+            raise HTTPException(400, f"yt-dlp metadata failed (cmd={[yt_dlp, *yt_base]}): stdout={meta_result.stdout[:200]} stderr={meta_result.stderr[:500]}")
 
         meta_line = meta_result.stdout.strip().split("\n")[0]
         parts = meta_line.split("\t", 1)
