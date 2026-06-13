@@ -29,7 +29,7 @@ import {
   VisibilityOff,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AudioArticle } from '../types';
+import { AudioArticle, SentenceEntry } from '../types';
 import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
@@ -57,7 +57,7 @@ const AudioLearningScreen: React.FC = () => {
   const [article, setArticle] = useState<AudioArticle | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
-  const [displaySentences, setDisplaySentences] = useState<string[]>([]);
+  const [displaySentences, setDisplaySentences] = useState<SentenceEntry[]>([]);
   const [activeSentenceLocalIdx, setActiveSentenceLocalIdx] = useState<number>(-1);
   const [activeWordIdx, setActiveWordIdx] = useState<number>(-1);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -154,14 +154,10 @@ const AudioLearningScreen: React.FC = () => {
 
       const filtered = article.sentences
         .filter((s) => s.index >= startIndex && s.index <= currentIndex);
-      const texts = filtered.map((s) => s.text);
-      setDisplaySentences(texts);
-      // displayText removed — rendering uses displaySentences
+      setDisplaySentences(filtered);
     } else {
       const sentence = article.sentences.find((s) => s.index === currentIndex);
-      const text = sentence ? sentence.text : '';
-      setDisplaySentences([text]);
-      // displayText removed — rendering uses displaySentences
+      setDisplaySentences(sentence ? [sentence] : []);
     }
   }, [article, isCumulative, currentIndex, windowSize]);
 
@@ -564,10 +560,12 @@ const AudioLearningScreen: React.FC = () => {
               }}
             >
               {displaySentences.length > 0 ? (
-                displaySentences.map((sentenceText, sentIdx) => {
+                displaySentences.map((sent, sentIdx) => {
                   const isActiveSent = activeSentenceLocalIdx === sentIdx;
                   const hasActiveAnySent = activeSentenceLocalIdx >= 0;
-                  const words = sentenceText.split(/\s+/);
+                  const words = sent.words?.length
+                    ? sent.words.map(w => w.word)
+                    : sent.text.split(/\s+/);
 
                   return (
                     <span

@@ -41,12 +41,24 @@ class AudioSeekService {
             this.lastReportedWord = -1;
             if (this.onSentenceChange) this.onSentenceChange(i);
           }
-          // Word-level: linear interpolation within sentence
+          // Word-level tracking
           if (this.onWordChange && s.start != null && s.end != null) {
-            const words = s.text.split(/\s+/);
-            const dur = s.end - s.start;
-            const elapsed = t - s.start;
-            const wordIdx = Math.min(Math.floor((elapsed / dur) * words.length), words.length - 1);
+            let wordIdx = -1;
+            if (s.words && s.words.length > 0) {
+              // Real Whisper timestamps — find word by time
+              for (let w = s.words.length - 1; w >= 0; w--) {
+                if (t >= s.words[w].start) {
+                  wordIdx = w;
+                  break;
+                }
+              }
+            } else {
+              // Fallback: linear interpolation
+              const words = s.text.split(/\s+/);
+              const dur = s.end - s.start;
+              const elapsed = t - s.start;
+              wordIdx = Math.min(Math.floor((elapsed / dur) * words.length), words.length - 1);
+            }
             if (wordIdx !== this.lastReportedWord && wordIdx >= 0) {
               this.lastReportedWord = wordIdx;
               this.onWordChange(i, wordIdx);

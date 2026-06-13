@@ -16,12 +16,20 @@ export interface Article {
   lastAccessed: Date;
 }
 
+// 단어 타임스탬프 (Whisper word alignment)
+export interface WordTimestamp {
+  word: string;
+  start: number;
+  end: number;
+}
+
 // 문장 엔트리
 export interface SentenceEntry {
   index: number;
   text: string; // 영어 문장
   start?: number; // seconds (audio seek용, 자동 추정 → 에디터에서 수정)
   end?: number; // seconds
+  words?: WordTimestamp[]; // Whisper word-level timestamps (optional)
   memo?: string;
 }
 
