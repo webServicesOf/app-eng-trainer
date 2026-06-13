@@ -9,7 +9,7 @@ import whisper
 def align_words(
     mp3_path: str,
     sentences: list[dict],
-    model_name: str = "base.en",
+    model_name: str = "small.en",
 ) -> list[dict]:
     """Add word-level timestamps to each sentence.
 
