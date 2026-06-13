@@ -574,16 +574,13 @@ const AudioLearningScreen: React.FC = () => {
                     >
                       {words.map((word, wIdx) => {
                         const isActiveWord = isActiveSent && activeWordIdx === wIdx;
-                        const isPastWord = isActiveSent && activeWordIdx > wIdx;
+                        // During playback: only active word is black, everything else is blurred
+                        const duringPlayback = hasActiveAnySent;
                         let color: string;
                         if (isActiveWord) {
                           color = '#000000';
-                        } else if (isPastWord) {
-                          color = '#555555';
-                        } else if (isActiveSent) {
-                          color = isBlindMode ? 'transparent' : '#bbbbbb';
-                        } else if (hasActiveAnySent) {
-                          color = isBlindMode ? 'transparent' : '#dddddd';
+                        } else if (duringPlayback) {
+                          color = 'transparent';
                         } else {
                           color = isBlindMode ? 'transparent' : '#cccccc';
                         }
@@ -596,7 +593,7 @@ const AudioLearningScreen: React.FC = () => {
                               transition: 'color 0.15s',
                               display: 'inline',
                               fontWeight: isActiveWord ? 700 : 400,
-                              textShadow: isBlindMode && !isActiveWord ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
+                              textShadow: !isActiveWord && duringPlayback ? '0 0 8px rgba(0,0,0,0.3)' : (isBlindMode && !isActiveWord ? '0 0 8px rgba(0,0,0,0.3)' : 'none'),
                             }}
                           >
                             {word}
