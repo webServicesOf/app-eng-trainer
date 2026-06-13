@@ -574,15 +574,22 @@ const AudioLearningScreen: React.FC = () => {
                     >
                       {words.map((word, wIdx) => {
                         const isActiveWord = isActiveSent && activeWordIdx === wIdx;
-                        // During playback: only active word is black, everything else is blurred
                         const duringPlayback = hasActiveAnySent;
                         let color: string;
                         if (isActiveWord) {
                           color = '#000000';
-                        } else if (duringPlayback) {
+                        } else if (isBlindMode && duringPlayback) {
+                          // Blind mode + playing: blur everything except active word
                           color = 'transparent';
+                        } else if (isBlindMode) {
+                          // Blind mode + not playing: all blurred
+                          color = 'transparent';
+                        } else if (duringPlayback) {
+                          // Normal mode + playing: all visible, active word bold
+                          color = '#cccccc';
                         } else {
-                          color = isBlindMode ? 'transparent' : '#cccccc';
+                          // Normal mode + not playing
+                          color = '#cccccc';
                         }
                         return (
                           <span
@@ -593,7 +600,7 @@ const AudioLearningScreen: React.FC = () => {
                               transition: 'color 0.15s',
                               display: 'inline',
                               fontWeight: isActiveWord ? 700 : 400,
-                              textShadow: !isActiveWord && duringPlayback ? '0 0 8px rgba(0,0,0,0.3)' : (isBlindMode && !isActiveWord ? '0 0 8px rgba(0,0,0,0.3)' : 'none'),
+                              textShadow: isBlindMode && !isActiveWord ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
                             }}
                           >
                             {word}
