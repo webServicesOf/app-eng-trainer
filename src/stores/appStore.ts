@@ -328,25 +328,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  // Review actions
+  // Review actions — optimistic update (state first, Drive in background)
   markReviewDone: async (type: 'article' | 'audio' | 'subdeck', id: string) => {
     try {
       if (type === 'audio') {
-        // Audio: update in Drive
-        const drive = getDriveService(get().accessToken);
-        if (!drive) return;
         const article = get().audioArticles.find(a => a.id === id);
         if (!article) return;
         const interval = article.reviewInterval || 1;
         const next = new Date();
         next.setDate(next.getDate() + interval);
         const updated: AudioArticle = { ...article, reviewInterval: interval, nextReviewDate: next, lastAccessed: new Date() };
-        await drive.saveArticle(updated);
-        await get().loadAudioArticles();
+        // Optimistic: update state immediately
+        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+        // Background: save to Drive
+        const drive = getDriveService(get().accessToken);
+        if (drive) drive.saveArticle(updated).catch(e => console.warn('Drive sync failed:', e));
       } else if (type === 'article') {
         await localDB.markReviewDone('article', id);
         await get().loadArticles();
-        // Reverse-sync review fields back to Google Sheets
         const article = await localDB.getArticleById(id);
         if (article?.sheetRow) {
           const token = get().accessToken;
@@ -357,8 +356,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
           }
         }
       } else {
+        // SubDeck: optimistic local update
+        const deck = get().subDecks.find(d => d.id === id);
+        if (!deck) return;
+        const interval = deck.reviewInterval || 1;
+        const next = new Date();
+        next.setDate(next.getDate() + interval);
+        const updated = { ...deck, reviewInterval: interval, nextReviewDate: next, lastAccessed: new Date() };
+        set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d) });
         await localDB.markReviewDone('subdeck', id);
-        await get().loadSubDecks();
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to mark review done';
@@ -369,9 +375,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
   cycleReviewInterval: async (type: 'article' | 'audio' | 'subdeck', id: string) => {
     try {
       if (type === 'audio') {
-        // Audio: update in Drive
-        const drive = getDriveService(get().accessToken);
-        if (!drive) return;
         const article = get().audioArticles.find(a => a.id === id);
         if (!article) return;
         const newInterval = localDB.cycleInterval(article.reviewInterval || 0);
@@ -381,15 +384,16 @@ export const useAppStore = create<AppStore>((set, get) => ({
           nextReviewDate.setDate(nextReviewDate.getDate() + newInterval);
         }
         const updated: AudioArticle = { ...article, reviewInterval: newInterval, nextReviewDate, lastAccessed: new Date() };
-        await drive.saveArticle(updated);
-        await get().loadAudioArticles();
+        // Optimistic update
+        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+        const drive = getDriveService(get().accessToken);
+        if (drive) drive.saveArticle(updated).catch(e => console.warn('Drive sync failed:', e));
       } else if (type === 'article') {
         const record = await localDB.getArticleById(id);
         if (!record) return;
         const newInterval = localDB.cycleInterval(record.reviewInterval || 0);
         await localDB.setReviewInterval('article', id, newInterval);
         await get().loadArticles();
-        // Reverse-sync review fields back to Google Sheets
         const article = await localDB.getArticleById(id);
         if (article?.sheetRow) {
           const token = get().accessToken;
@@ -400,12 +404,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
           }
         }
       } else {
-        const decks = await localDB.getSubDecks();
-        const record = decks.find(d => d.id === id);
-        if (!record) return;
-        const newInterval = localDB.cycleInterval(record.reviewInterval || 0);
+        // SubDeck: optimistic
+        const deck = get().subDecks.find(d => d.id === id);
+        if (!deck) return;
+        const newInterval = localDB.cycleInterval(deck.reviewInterval || 0);
+        let nextReviewDate: Date | null = null;
+        if (newInterval > 0) {
+          nextReviewDate = new Date();
+          nextReviewDate.setDate(nextReviewDate.getDate() + newInterval);
+        }
+        const updated = { ...deck, reviewInterval: newInterval, nextReviewDate };
+        set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d) });
         await localDB.setReviewInterval('subdeck', id, newInterval);
-        await get().loadSubDecks();
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to cycle review interval';

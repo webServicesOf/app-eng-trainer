@@ -1060,9 +1060,15 @@ export const HomeScreen: React.FC = () => {
                             borderColor: isDue(sd.nextReviewDate) ? 'error.main' : 'divider',
                             borderRadius: 1, px: 1, py: 0.3,
                           }}>
-                            <Typography variant="caption" sx={{ flex: 1 }}>
-                              {sd.title} ({sd.startIndex + 1}–{sd.endIndex})
-                            </Typography>
+                            <Box sx={{ flex: 1 }}>
+                              <Typography variant="caption" display="block">
+                                {sd.title} ({sd.startIndex + 1}–{sd.endIndex})
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
+                                {sd.lastAccessed ? `최근: ${new Date(sd.lastAccessed).toLocaleDateString()}` : ''}
+                                {sd.nextReviewDate ? ` · 복습: ${new Date(sd.nextReviewDate).toLocaleDateString()}` : ''}
+                              </Typography>
+                            </Box>
                             <Button size="small" onClick={() => navigate(`/learn-audio/${aa.id}?start=${sd.startIndex}&end=${sd.endIndex}`)}>
                               학습
                             </Button>
