@@ -19,7 +19,9 @@ import {
   ArrowDownward,
   ArrowBack,
   ArrowForward,
-  VolumeUp,
+  PlayArrow,
+  Pause,
+  Replay,
   Home,
   Bookmark,
   BookmarkBorder,
@@ -57,6 +59,8 @@ const AudioLearningScreen: React.FC = () => {
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
   const [displaySentences, setDisplaySentences] = useState<string[]>([]);
   const [activeSentenceLocalIdx, setActiveSentenceLocalIdx] = useState<number>(-1);
+  const [activeWordIdx, setActiveWordIdx] = useState<number>(-1);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
@@ -188,21 +192,43 @@ const AudioLearningScreen: React.FC = () => {
     setIsCumulative(false);
   }, [setIsCumulative]);
 
+  const handleSpeakRef = React.useRef<() => void>(() => {});
+
   const handleLeftArrow = React.useCallback(() => {
+    audioSeekService.stop();
+    setIsPlaying(false);
+    setActiveSentenceLocalIdx(-1);
+    setActiveWordIdx(-1);
     goToPreviousSentence();
+    setTimeout(() => handleSpeakRef.current(), 50);
   }, [goToPreviousSentence]);
 
   const handleRightArrow = React.useCallback(() => {
     if (article) {
+      audioSeekService.stop();
+      setIsPlaying(false);
+      setActiveSentenceLocalIdx(-1);
+      setActiveWordIdx(-1);
       goToNextSentence(article.sentences.length);
+      setTimeout(() => handleSpeakRef.current(), 50);
     }
   }, [article, goToNextSentence]);
+
+  const onPlayEnd = React.useCallback(() => {
+    setActiveSentenceLocalIdx(-1);
+    setActiveWordIdx(-1);
+    setIsPlaying(false);
+  }, []);
+
+  const onWordUpdate = React.useCallback((sentIdx: number, wordIdx: number) => {
+    setActiveSentenceLocalIdx(sentIdx);
+    setActiveWordIdx(wordIdx);
+  }, []);
 
   const handleSpeak = React.useCallback(() => {
     if (!article || !audioLoaded) return;
 
     if (isCumulative) {
-      // Cumulative: play from sentence[0] to sentence[currentIndex-1]
       let startIdx: number;
       if (windowSize === 'full') {
         startIdx = 0;
@@ -217,26 +243,113 @@ const AudioLearningScreen: React.FC = () => {
 
       if (startSentence?.start != null && endSentence?.end != null) {
         setActiveSentenceLocalIdx(0);
+        setActiveWordIdx(-1);
+        setIsPlaying(true);
         audioSeekService.playCumulative(
           sliced,
           endIdx - startIdx,
-          () => { setActiveSentenceLocalIdx(-1); },
+          onPlayEnd,
           (localIdx) => setActiveSentenceLocalIdx(localIdx),
+          onWordUpdate,
         );
       }
     } else {
-      // Single sentence
       const sentence = article.sentences.find((s) => s.index === currentIndex);
       if (sentence?.start != null && sentence?.end != null) {
         setActiveSentenceLocalIdx(0);
+        setActiveWordIdx(-1);
+        setIsPlaying(true);
         audioSeekService.playSentence(
           sentence.start,
           sentence.end,
-          () => { setActiveSentenceLocalIdx(-1); },
+          onPlayEnd,
+          undefined,
+          [sentence],
+          onWordUpdate,
         );
       }
     }
-  }, [article, audioLoaded, isCumulative, currentIndex, windowSize]);
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate]);
+
+  // Keep ref in sync for arrow handlers
+  handleSpeakRef.current = handleSpeak;
+
+  const handleTogglePlay = React.useCallback(() => {
+    if (isPlaying) {
+      audioSeekService.pause();
+      setIsPlaying(false);
+    } else {
+      if (audioSeekService.getCurrentTime() > 0 && activeSentenceLocalIdx >= 0) {
+        audioSeekService.resume();
+        setIsPlaying(true);
+      } else {
+        handleSpeak();
+      }
+    }
+  }, [isPlaying, activeSentenceLocalIdx, handleSpeak]);
+
+  const handlePlayFromStart = React.useCallback(() => {
+    if (!article || !audioLoaded) return;
+    // Play from first sentence of current display range
+    let startIdx: number;
+    if (isCumulative) {
+      if (windowSize === 'full') {
+        startIdx = 0;
+      } else {
+        startIdx = Math.max(0, currentIndex - (windowSize as number));
+      }
+    } else {
+      startIdx = currentIndex - 1;
+    }
+    const endIdx = currentIndex - 1;
+    const sliced = article.sentences.slice(startIdx, endIdx + 1);
+    const startSentence = sliced[0];
+    const endSentence = sliced[sliced.length - 1];
+    if (startSentence?.start != null && endSentence?.end != null) {
+      setActiveSentenceLocalIdx(0);
+      setActiveWordIdx(-1);
+      setIsPlaying(true);
+      audioSeekService.playCumulative(
+        sliced,
+        sliced.length - 1,
+        onPlayEnd,
+        (localIdx) => setActiveSentenceLocalIdx(localIdx),
+        onWordUpdate,
+      );
+    }
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate]);
+
+  // Tap sentence to play from it
+  const handleSentenceTap = React.useCallback((sentLocalIdx: number) => {
+    if (!article || !audioLoaded) return;
+    let startIdx: number;
+    if (isCumulative) {
+      if (windowSize === 'full') {
+        startIdx = 0;
+      } else {
+        startIdx = Math.max(0, currentIndex - (windowSize as number));
+      }
+    } else {
+      startIdx = currentIndex - 1;
+    }
+    const endIdx = currentIndex - 1;
+    const sliced = article.sentences.slice(startIdx, endIdx + 1);
+    const fromSliced = sliced.slice(sentLocalIdx);
+    const startSentence = fromSliced[0];
+    const endSentence = fromSliced[fromSliced.length - 1];
+    if (startSentence?.start != null && endSentence?.end != null) {
+      setActiveSentenceLocalIdx(sentLocalIdx);
+      setActiveWordIdx(-1);
+      setIsPlaying(true);
+      audioSeekService.playCumulative(
+        fromSliced,
+        fromSliced.length - 1,
+        onPlayEnd,
+        (localIdx) => setActiveSentenceLocalIdx(sentLocalIdx + localIdx),
+        (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
+      );
+    }
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate]);
 
   const handleRateChange = (newRate: number) => {
     setPlaybackRate(newRate);
@@ -286,14 +399,14 @@ const AudioLearningScreen: React.FC = () => {
           break;
         case ' ':
           e.preventDefault();
-          handleSpeak();
+          handleTogglePlay();
           break;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleSpeak]);
+  }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleTogglePlay]);
 
   if (!article) {
     return (
@@ -350,8 +463,8 @@ const AudioLearningScreen: React.FC = () => {
                 {isSaved ? <Bookmark /> : <BookmarkBorder />}
               </IconButton>
             )}
-            <IconButton onClick={handleSpeak} color="primary" size="small">
-              <VolumeUp />
+            <IconButton onClick={handleTogglePlay} color="primary" size="small">
+              {isPlaying ? <Pause /> : <PlayArrow />}
             </IconButton>
           </Stack>
         </Box>
@@ -404,8 +517,8 @@ const AudioLearningScreen: React.FC = () => {
               {isSaved ? <Bookmark /> : <BookmarkBorder />}
             </IconButton>
           )}
-          <IconButton onClick={handleSpeak} color="primary" size="large">
-            <VolumeUp />
+          <IconButton onClick={handleTogglePlay} color="primary" size="large">
+            {isPlaying ? <Pause /> : <PlayArrow />}
           </IconButton>
         </Stack>
       </Paper>
@@ -451,23 +564,51 @@ const AudioLearningScreen: React.FC = () => {
               }}
             >
               {displaySentences.length > 0 ? (
-                displaySentences.map((sentenceText, sentIdx) => (
-                  <span
-                    key={sentIdx}
-                    style={{
-                      color: activeSentenceLocalIdx === sentIdx
-                        ? '#000000'
-                        : activeSentenceLocalIdx >= 0
-                          ? (isBlindMode ? 'transparent' : '#aaaaaa')
-                          : (isBlindMode ? 'transparent' : '#cccccc'),
-                      transition: 'color 0.3s',
-                      display: 'inline',
-                      textShadow: isBlindMode && activeSentenceLocalIdx !== sentIdx ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
-                    }}
-                  >
-                    {sentenceText}{sentIdx < displaySentences.length - 1 ? ' ' : ''}
-                  </span>
-                ))
+                displaySentences.map((sentenceText, sentIdx) => {
+                  const isActiveSent = activeSentenceLocalIdx === sentIdx;
+                  const hasActiveAnySent = activeSentenceLocalIdx >= 0;
+                  const words = sentenceText.split(/\s+/);
+
+                  return (
+                    <span
+                      key={sentIdx}
+                      onClick={() => handleSentenceTap(sentIdx)}
+                      style={{ cursor: 'pointer', display: 'inline' }}
+                    >
+                      {words.map((word, wIdx) => {
+                        const isActiveWord = isActiveSent && activeWordIdx === wIdx;
+                        const isPastWord = isActiveSent && activeWordIdx > wIdx;
+                        let color: string;
+                        if (isActiveWord) {
+                          color = '#000000';
+                        } else if (isPastWord) {
+                          color = '#555555';
+                        } else if (isActiveSent) {
+                          color = isBlindMode ? 'transparent' : '#bbbbbb';
+                        } else if (hasActiveAnySent) {
+                          color = isBlindMode ? 'transparent' : '#dddddd';
+                        } else {
+                          color = isBlindMode ? 'transparent' : '#cccccc';
+                        }
+                        return (
+                          <span
+                            key={wIdx}
+                            style={{
+                              color,
+                              marginRight: '0.3em',
+                              transition: 'color 0.15s',
+                              display: 'inline',
+                              fontWeight: isActiveWord ? 700 : 400,
+                              textShadow: isBlindMode && !isActiveWord ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
+                            }}
+                          >
+                            {word}
+                          </span>
+                        );
+                      })}
+                    </span>
+                  );
+                })
               ) : (
                 '문장을 선택하세요.'
               )}
@@ -582,7 +723,7 @@ const AudioLearningScreen: React.FC = () => {
           </IconButton>
 
           <IconButton
-            onClick={handleSpeak}
+            onClick={handleTogglePlay}
             size="small"
             color="secondary"
             sx={{
@@ -591,7 +732,7 @@ const AudioLearningScreen: React.FC = () => {
               '&:hover': { backgroundColor: theme.palette.secondary.dark },
             }}
           >
-            <VolumeUp fontSize="small" />
+            {isPlaying ? <Pause fontSize="small" /> : <PlayArrow fontSize="small" />}
           </IconButton>
 
           <IconButton
@@ -612,7 +753,17 @@ const AudioLearningScreen: React.FC = () => {
             <ArrowForward fontSize="small" />
           </IconButton>
 
-          <Box />
+          <IconButton
+            onClick={handlePlayFromStart}
+            size="small"
+            sx={{
+              backgroundColor: theme.palette.info.light,
+              color: theme.palette.common.white,
+              '&:hover': { backgroundColor: theme.palette.info.main },
+            }}
+          >
+            <Replay fontSize="small" />
+          </IconButton>
           <IconButton
             onClick={handleDownArrow}
             size="small"
@@ -642,7 +793,7 @@ const AudioLearningScreen: React.FC = () => {
           <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
             → 다음 문장
           </Typography>
-          <Typography variant="body2" sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Space 재생 (Audio Seek)</Typography>
+          <Typography variant="body2" sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Space 재생/정지</Typography>
         </Box>
       </Paper>
     </Box>

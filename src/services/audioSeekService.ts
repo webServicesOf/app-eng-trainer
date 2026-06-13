@@ -5,8 +5,10 @@ class AudioSeekService {
   private pauseTimer: number | null = null;
   private onEndCallback: (() => void) | null = null;
   private onSentenceChange: ((sentenceIndex: number) => void) | null = null;
+  private onWordChange: ((sentenceIndex: number, wordIndex: number) => void) | null = null;
   private trackingSentences: SentenceEntry[] = [];
   private lastReportedSentence: number = -1;
+  private lastReportedWord: number = -1;
 
   constructor() {
     this.audio = new Audio();
@@ -29,14 +31,26 @@ class AudioSeekService {
       return;
     }
 
-    // Track which sentence is currently playing
-    if (this.onSentenceChange && this.trackingSentences.length > 0) {
+    // Track which sentence + word is currently playing
+    if (this.trackingSentences.length > 0) {
       for (let i = this.trackingSentences.length - 1; i >= 0; i--) {
         const s = this.trackingSentences[i];
         if (s.start != null && t >= s.start) {
           if (i !== this.lastReportedSentence) {
             this.lastReportedSentence = i;
-            this.onSentenceChange(i);
+            this.lastReportedWord = -1;
+            if (this.onSentenceChange) this.onSentenceChange(i);
+          }
+          // Word-level: linear interpolation within sentence
+          if (this.onWordChange && s.start != null && s.end != null) {
+            const words = s.text.split(/\s+/);
+            const dur = s.end - s.start;
+            const elapsed = t - s.start;
+            const wordIdx = Math.min(Math.floor((elapsed / dur) * words.length), words.length - 1);
+            if (wordIdx !== this.lastReportedWord && wordIdx >= 0) {
+              this.lastReportedWord = wordIdx;
+              this.onWordChange(i, wordIdx);
+            }
           }
           break;
         }
@@ -47,7 +61,9 @@ class AudioSeekService {
   private clearTracking(): void {
     this.trackingSentences = [];
     this.lastReportedSentence = -1;
+    this.lastReportedWord = -1;
     this.onSentenceChange = null;
+    this.onWordChange = null;
   }
 
   load(blobUrl: string): void {
@@ -61,15 +77,17 @@ class AudioSeekService {
     onEnd?: () => void,
     onSentenceChange?: (index: number) => void,
     sentences?: SentenceEntry[],
+    onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
   ): Promise<void> {
     this.clearPauseTimer();
     this.clearTracking();
     this.audio.currentTime = start;
     this.targetEndTime = end;
     this.onEndCallback = onEnd || null;
-    if (onSentenceChange && sentences) {
-      this.onSentenceChange = onSentenceChange;
+    if (sentences) {
       this.trackingSentences = sentences;
+      this.onSentenceChange = onSentenceChange || null;
+      this.onWordChange = onWordChange || null;
     }
     await this.audio.play();
   }
@@ -79,6 +97,7 @@ class AudioSeekService {
     upTo: number,
     onEnd?: () => void,
     onSentenceChange?: (index: number) => void,
+    onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
   ): Promise<void> {
     this.clearPauseTimer();
     this.clearTracking();
@@ -89,10 +108,9 @@ class AudioSeekService {
     this.audio.currentTime = startSentence.start;
     this.targetEndTime = endSentence.end;
     this.onEndCallback = onEnd || null;
-    if (onSentenceChange) {
-      this.onSentenceChange = onSentenceChange;
-      this.trackingSentences = sentences;
-    }
+    this.trackingSentences = sentences;
+    this.onSentenceChange = onSentenceChange || null;
+    this.onWordChange = onWordChange || null;
     await this.audio.play();
   }
 
