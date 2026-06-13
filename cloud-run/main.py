@@ -304,3 +304,19 @@ async def convert(req: ConvertRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/debug")
+async def debug():
+    import shutil
+    node = shutil.which("node")
+    ytdlp = shutil.which("yt-dlp")
+    ffmpeg = shutil.which("ffmpeg")
+    node_ver = subprocess.run(["node", "--version"], capture_output=True, text=True).stdout.strip() if node else "not found"
+    ytdlp_ver = subprocess.run([ytdlp or "yt-dlp", "--version"], capture_output=True, text=True).stdout.strip() if ytdlp else "not found"
+    return {
+        "node": node, "node_version": node_ver,
+        "yt-dlp": ytdlp, "yt-dlp_version": ytdlp_ver,
+        "ffmpeg": ffmpeg,
+        "PATH": os.environ.get("PATH", ""),
+    }
