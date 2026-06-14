@@ -17,6 +17,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Pre-install EJS solver cache (avoids GitHub download at runtime)
 COPY ejs-solver-cache/lib.json /root/.cache/yt-dlp/challenge-solver/lib.json
 
+# yt-dlp config: enable node runtime + EJS solver
+RUN mkdir -p /root/.config/yt-dlp && \
+    echo "--js-runtimes node" > /root/.config/yt-dlp/config && \
+    echo "--remote-components ejs:github" >> /root/.config/yt-dlp/config
+
 COPY . .
 
 # Cloud Run uses PORT env var (default 8080)
