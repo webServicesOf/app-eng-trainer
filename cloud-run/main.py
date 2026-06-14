@@ -183,6 +183,10 @@ def _yt_base_args() -> list[str]:
     cookies_from = os.environ.get("YT2CSV_COOKIES_FROM", "")
     if cookies_from:
         args += ["--cookies-from-browser", cookies_from]
+    # Cloud Run: use cookies.txt file if available
+    cookies_file = os.environ.get("YT2CSV_COOKIES_FILE", "/app/cookies.txt")
+    if not cookies_from and os.path.exists(cookies_file):
+        args += ["--cookies", cookies_file]
     return args
 
 
