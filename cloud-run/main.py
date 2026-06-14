@@ -314,9 +314,35 @@ async def debug():
     ffmpeg = shutil.which("ffmpeg")
     node_ver = subprocess.run(["node", "--version"], capture_output=True, text=True).stdout.strip() if node else "not found"
     ytdlp_ver = subprocess.run([ytdlp or "yt-dlp", "--version"], capture_output=True, text=True).stdout.strip() if ytdlp else "not found"
+
+    # Test yt-dlp with node directly
+    test = subprocess.run(
+        [ytdlp or "yt-dlp", "--js-runtimes", "node", "--remote-components", "ejs:github",
+         "--skip-download", "--no-playlist", "--print", "%(id)s",
+         "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=60,
+    )
+
+    # Check config + cache
+    config_content = ""
+    try:
+        config_content = open(os.path.expanduser("~/.config/yt-dlp/config")).read()
+    except: pass
+    cache_files = []
+    cache_dir = os.path.expanduser("~/.cache/yt-dlp/challenge-solver/")
+    if os.path.isdir(cache_dir):
+        cache_files = os.listdir(cache_dir)
+
     return {
         "node": node, "node_version": node_ver,
         "yt-dlp": ytdlp, "yt-dlp_version": ytdlp_ver,
         "ffmpeg": ffmpeg,
         "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "config": config_content,
+        "cache_files": cache_files,
+        "test_rc": test.returncode,
+        "test_stdout": test.stdout[:200],
+        "test_stderr": test.stderr[:500],
     }
