@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Install ffmpeg + git
+# Install ffmpeg + git + curl
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg git curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
@@ -14,9 +14,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download yt-dlp EJS solver component at build time
-RUN yt-dlp --js-runtimes node --remote-components ejs:github \
-    --skip-download --no-playlist --print "%(id)s" "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>/dev/null || true
+# Pre-install EJS solver cache (avoids GitHub download at runtime)
+COPY ejs-solver-cache/lib.json /root/.cache/yt-dlp/challenge-solver/lib.json
 
 COPY . .
 
