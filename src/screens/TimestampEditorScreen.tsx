@@ -48,6 +48,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [sentences, setSentences] = useState<SentenceEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [wsReady, setWsReady] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [hasChanges, setHasChanges] = useState(false);
@@ -147,7 +148,10 @@ const TimestampEditorScreen: React.FC = () => {
     });
 
     ws.on('ready', () => {
-      if (!destroyed) setDuration(ws.getDuration());
+      if (!destroyed) {
+        setDuration(ws.getDuration());
+        setWsReady(true);
+      }
     });
 
     ws.on('timeupdate', (time: number) => {
@@ -159,6 +163,7 @@ const TimestampEditorScreen: React.FC = () => {
 
     return () => {
       destroyed = true;
+      setWsReady(false);
       ws.destroy();
       URL.revokeObjectURL(blobUrl);
     };
@@ -218,10 +223,11 @@ const TimestampEditorScreen: React.FC = () => {
 
   // Region drag/resize handled via per-region 'update-end' event above
 
-  // Zoom control
+  // Zoom control — guard against "No audio loaded"
   useEffect(() => {
-    if (wavesurferRef.current) {
-      wavesurferRef.current.zoom(zoom);
+    const ws = wavesurferRef.current;
+    if (ws && ws.getDuration() > 0) {
+      try { ws.zoom(zoom); } catch { /* audio not ready yet */ }
     }
   }, [zoom]);
 
@@ -258,12 +264,19 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, []);
 
-  const startEndCheck = useCallback((endTime: number) => {
+  const startEndCheck = useCallback((endTime: number, startTime?: number) => {
     clearEndCheck();
+    // Delay first check to let wavesurfer seek settle (prevents immediate pause on stale position)
+    const startMs = Date.now();
     endCheckRef.current = setInterval(() => {
       const ws = wavesurferRef.current;
       if (!ws || !ws.isPlaying()) { clearEndCheck(); return; }
-      if (ws.getCurrentTime() >= endTime) {
+      // Skip checks for first 200ms to avoid stale getCurrentTime after setTime
+      if (Date.now() - startMs < 200) return;
+      const t = ws.getCurrentTime();
+      // Also guard: if current time is before start, seek hasn't settled
+      if (startTime != null && t < startTime - 0.5) return;
+      if (t >= endTime) {
         ws.pause();
         ws.setTime(endTime);
         clearEndCheck();
@@ -278,7 +291,7 @@ const TimestampEditorScreen: React.FC = () => {
 
     if (!ws.isPlaying()) {
       ws.play();
-      if (s?.end != null) startEndCheck(s.end);
+      if (s?.end != null) startEndCheck(s.end, s?.start ?? undefined);
     } else {
       ws.pause();
       clearEndCheck();
@@ -308,7 +321,7 @@ const TimestampEditorScreen: React.FC = () => {
     }
     ws.setTime(s.start);
     ws.play();
-    startEndCheck(s.end);
+    startEndCheck(s.end, s.start);
     lastPlayedIndexRef.current = idx;
   }, [sentences, startEndCheck, clearEndCheck]);
 
@@ -318,7 +331,7 @@ const TimestampEditorScreen: React.FC = () => {
     const startAt = Math.max(s.start ?? 0, s.end - 3);
     wavesurferRef.current.setTime(startAt);
     wavesurferRef.current.play();
-    startEndCheck(s.end);
+    startEndCheck(s.end, startAt);
   }, [sentences, selectedIndex, startEndCheck]);
 
   const adjustTime = useCallback((field: 'start' | 'end', delta: number) => {
@@ -602,7 +615,14 @@ const TimestampEditorScreen: React.FC = () => {
             border-right: 2px solid #1976d2 !important;
           }
         `}</style>
-        <Box ref={waveformRef} sx={{ width: '100%', overflow: 'hidden' }} />
+        <Box sx={{ position: 'relative' }}>
+          <Box ref={waveformRef} sx={{ width: '100%', overflow: 'hidden' }} />
+          {!wsReady && (
+            <Box sx={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(255,255,255,0.8)' }}>
+              <Typography color="text.secondary">오디오 파형 로딩 중…</Typography>
+            </Box>
+          )}
+        </Box>
         <Stack direction="row" alignItems="center" spacing={2} sx={{ mt: 1 }}>
           <Typography variant="caption" color="text.secondary">
             {formatTime(currentTime)} / {formatTime(duration)}
@@ -757,8 +777,13 @@ const TimestampEditorScreen: React.FC = () => {
                 <ListItem disablePadding>
                   <ListItemButton
                     selected={i === selectedIndex}
-                    onClick={() => handleSelectSentence(i)}
+                    onClick={(e) => {
+                      handleSelectSentence(i);
+                      // Remove focus so Space goes to window keydown, not MUI click
+                      (e.currentTarget as HTMLElement).blur();
+                    }}
                     onDoubleClick={() => toggleSplitMarker(i)}
+                    tabIndex={-1}
                     sx={{
                       borderLeft: i === selectedIndex ? `3px solid ${theme.palette.primary.main}` : '3px solid transparent',
                     }}
