@@ -146,16 +146,18 @@ const SentenceLearningScreen: React.FC = () => {
   }, [setIsCumulative]);
 
   const handleLeftArrow = React.useCallback(() => {
-    // 이전 문장으로
     goToPreviousSentence();
+    autoPlayRef.current = true;
   }, [goToPreviousSentence]);
 
   const handleRightArrow = React.useCallback(() => {
-    // 다음 문장으로
     if (article) {
       goToNextSentence(article.sentences.length);
+      autoPlayRef.current = true;
     }
   }, [article, goToNextSentence]);
+
+  const autoPlayRef = React.useRef(false);
 
   const handleSpeak = React.useCallback((startFromWord?: string) => {
     // Google Cloud TTS API 키 확인
@@ -233,6 +235,14 @@ const SentenceLearningScreen: React.FC = () => {
     await localDB.saveSentence(savedSentence);
     setIsSaved(true);
   };
+
+  // Auto-play TTS after arrow navigation
+  React.useEffect(() => {
+    if (autoPlayRef.current && displayText) {
+      autoPlayRef.current = false;
+      handleSpeak();
+    }
+  }, [displayText, handleSpeak]);
 
   // 키보드 이벤트 처리
   useEffect(() => {

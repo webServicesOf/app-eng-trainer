@@ -763,17 +763,7 @@ const AudioLearningScreen: React.FC = () => {
             <ArrowForward fontSize="small" />
           </IconButton>
 
-          <IconButton
-            onClick={handlePlayFromStart}
-            size="small"
-            sx={{
-              backgroundColor: theme.palette.info.light,
-              color: theme.palette.common.white,
-              '&:hover': { backgroundColor: theme.palette.info.main },
-            }}
-          >
-            <Replay fontSize="small" />
-          </IconButton>
+          <Box />
           <IconButton
             onClick={handleDownArrow}
             size="small"
@@ -786,7 +776,17 @@ const AudioLearningScreen: React.FC = () => {
           >
             <ArrowDownward fontSize="small" />
           </IconButton>
-          <Box />
+          <IconButton
+            onClick={handlePlayFromStart}
+            size="small"
+            sx={{
+              backgroundColor: theme.palette.info.light,
+              color: theme.palette.common.white,
+              '&:hover': { backgroundColor: theme.palette.info.main },
+            }}
+          >
+            <Replay fontSize="small" />
+          </IconButton>
         </Box>
 
         {/* Control Info */}
