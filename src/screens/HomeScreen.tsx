@@ -75,6 +75,7 @@ export const HomeScreen: React.FC = () => {
     loadSubDecks,
     deleteSubDeck,
     dirtyAudioIds,
+    pendingDeleteIds,
     saveDirtyArticles,
   } = useAppStore();
 
@@ -302,9 +303,7 @@ export const HomeScreen: React.FC = () => {
 
 
   const handleDeleteAudioArticle = async (id: string) => {
-    if (window.confirm('이 Audio Article을 삭제하시겠습니까?')) {
-      await deleteAudioArticle(id);
-    }
+    await deleteAudioArticle(id); // toggles pending delete
   };
 
   const handleLearnAudioArticle = async (id: string) => {
@@ -679,7 +678,7 @@ export const HomeScreen: React.FC = () => {
               >
                 MP3 업로드
               </Button>
-              {dirtyAudioIds.size > 0 && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -688,7 +687,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size})
                 </Button>
               )}
             </Box>
@@ -951,8 +950,10 @@ export const HomeScreen: React.FC = () => {
                 <Card
                   key={aa.id}
                   sx={{
-                    border: isDue(aa.nextReviewDate) ? 2 : 0,
-                    borderColor: isDue(aa.nextReviewDate) ? 'error.main' : 'transparent',
+                    border: isDue(aa.nextReviewDate) && !pendingDeleteIds.has(aa.id) ? 2 : 0,
+                    borderColor: isDue(aa.nextReviewDate) && !pendingDeleteIds.has(aa.id) ? 'error.main' : 'transparent',
+                    opacity: pendingDeleteIds.has(aa.id) ? 0.4 : 1,
+                    bgcolor: pendingDeleteIds.has(aa.id) ? 'action.disabledBackground' : undefined,
                   }}
                 >
                   <CardContent>

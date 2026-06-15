@@ -23,6 +23,7 @@ interface AppStore extends AppState {
 
   // Dirty tracking — IDs of articles with unsaved review changes
   dirtyAudioIds: Set<string>;
+  pendingDeleteIds: Set<string>;
 
   // Actions
   setLoading: (loading: boolean) => void;
@@ -72,6 +73,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   audioArticles: [],
   subDecks: [],
   dirtyAudioIds: new Set<string>(),
+  pendingDeleteIds: new Set<string>(),
   isLoading: false,
   error: null,
   googleSheetsConfig: null,
@@ -208,25 +210,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   deleteAudioArticle: async (id: string) => {
-    const drive = getDriveService(get().accessToken);
-    try {
-      // Delete from Drive
-      if (drive) {
-        await drive.deleteArticle(id);
-      }
-      // Remove cached MP3
-      await localDB.removeCachedMp3(id);
-      // Remove SubDecks
-      await localDB.deleteSubDecksByParent(id);
-
-      const current = get().audioArticles;
-      set({ audioArticles: current.filter(a => a.id !== id) });
-      // Reload subdecks
-      await get().loadSubDecks();
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to delete audio article';
-      set({ error: errorMessage });
+    // Mark for deletion locally — actual Drive delete on "저장"
+    const pending = new Set(get().pendingDeleteIds);
+    if (pending.has(id)) {
+      // Toggle: undo delete
+      pending.delete(id);
+    } else {
+      pending.add(id);
     }
+    set({ pendingDeleteIds: pending });
   },
 
   // SubDeck actions
@@ -342,11 +334,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const drive = getDriveService(get().accessToken);
     if (!drive) return;
     const dirtyIds = get().dirtyAudioIds;
-    if (dirtyIds.size === 0) return;
+    const pendingDeletes = get().pendingDeleteIds;
+    if (dirtyIds.size === 0 && pendingDeletes.size === 0) return;
 
     try {
       set({ isLoading: true });
+
+      // 1. Process pending deletes
+      for (const deleteId of Array.from(pendingDeletes)) {
+        await drive.deleteArticle(deleteId);
+        await localDB.removeCachedMp3(deleteId);
+        await localDB.deleteSubDecksByParent(deleteId);
+      }
+      if (pendingDeletes.size > 0) {
+        const remaining = get().audioArticles.filter(a => !pendingDeletes.has(a.id));
+        set({ audioArticles: remaining, pendingDeleteIds: new Set() });
+        await get().loadSubDecks();
+      }
+
+      // 2. Save dirty articles (skip any that were just deleted)
       for (const articleId of Array.from(dirtyIds)) {
+        if (pendingDeletes.has(articleId)) continue;
         const article = get().audioArticles.find(a => a.id === articleId);
         if (!article) continue;
 
