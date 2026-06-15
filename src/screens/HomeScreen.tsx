@@ -45,7 +45,7 @@ import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
-import { convertYouTubeUrl } from '../services/ytConvertService';
+import { transcribeAudio } from '../services/whisperService';
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -102,10 +102,7 @@ export const HomeScreen: React.FC = () => {
   const [uploadSource, setUploadSource] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [editingTitleValue, setEditingTitleValue] = useState('');
-  const [ytUrlDialogOpen, setYtUrlDialogOpen] = useState(false);
-  const [ytUrl, setYtUrl] = useState('');
-  const [ytConverting, setYtConverting] = useState(false);
-  const [ytStatus, setYtStatus] = useState('');
+  const [transcribeStatus, setTranscribeStatus] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
@@ -232,26 +229,41 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleUploadAudioArticle = async () => {
-    if (!uploadMp3File || !uploadJsonFile || !uploadTitle.trim()) {
-      alert('제목, MP3 파일, JSON 파일 모두 필요합니다.');
+    if (!uploadMp3File || !uploadTitle.trim()) {
+      alert('제목과 MP3 파일이 필요합니다.');
       return;
     }
 
     try {
       setLoading(true);
 
-      // Parse sentences.json
-      const jsonText = await uploadJsonFile.text();
-      const rawSentences = JSON.parse(jsonText);
+      let sentences: SentenceEntry[];
 
-      // Validate & normalize sentences
-      const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
-        index: s.index ?? i + 1,
-        text: s.text,
-        start: s.start ?? 0,
-        end: s.end ?? 0,
-        memo: s.memo,
-      }));
+      if (uploadJsonFile) {
+        // Manual JSON provided
+        const jsonText = await uploadJsonFile.text();
+        const rawSentences = JSON.parse(jsonText);
+        sentences = rawSentences.map((s: any, i: number) => ({
+          index: s.index ?? i + 1,
+          text: s.text,
+          start: s.start ?? 0,
+          end: s.end ?? 0,
+          words: s.words,
+          memo: s.memo,
+        }));
+      } else {
+        // Auto-transcribe via Cloud Run Whisper
+        setTranscribeStatus('Cloud Run Whisper 변환 중… (1~2분 소요)');
+        const result = await transcribeAudio(uploadMp3File);
+        sentences = result.sentences.map((s) => ({
+          index: s.index,
+          text: s.text,
+          start: s.start,
+          end: s.end,
+          words: s.words,
+        }));
+        setTranscribeStatus(`변환 완료: ${result.sentenceCount}문장`);
+      }
 
       // Read mp3 as blob
       const audioBlob = new Blob([await uploadMp3File.arrayBuffer()], {
@@ -277,37 +289,17 @@ export const HomeScreen: React.FC = () => {
       setUploadJsonFile(null);
       setUploadTitle('');
       setUploadSource('');
+      setTranscribeStatus('');
       setUploadDialogOpen(false);
     } catch (error) {
       console.error('Upload failed:', error);
+      setTranscribeStatus('');
       alert('업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleYtConvert = async () => {
-    if (!ytUrl.trim() || !accessToken) return;
-    try {
-      setYtConverting(true);
-      setYtStatus('Cloud Run에서 변환 중… (1~2분 소요)');
-      const result = await convertYouTubeUrl(ytUrl.trim(), accessToken);
-      setYtStatus(`완료: "${result.title}" (${result.sentenceCount}문장)`);
-      setYtUrl('');
-      // Reload audio articles from Drive
-      await loadAudioArticles();
-      setTimeout(() => {
-        setYtUrlDialogOpen(false);
-        setYtStatus('');
-      }, 1500);
-    } catch (error) {
-      console.error('YouTube convert failed:', error);
-      setYtStatus('');
-      alert('변환 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
-    } finally {
-      setYtConverting(false);
-    }
-  };
 
   const handleDeleteAudioArticle = async (id: string) => {
     if (window.confirm('이 Audio Article을 삭제하시겠습니까?')) {
@@ -681,19 +673,11 @@ export const HomeScreen: React.FC = () => {
             <Box sx={{ display: 'flex', gap: 1 }}>
               <Button
                 variant="contained"
-                onClick={() => setYtUrlDialogOpen(true)}
-                size="small"
-              >
-                YouTube URL
-              </Button>
-              <Button
-                variant="outlined"
                 startIcon={<UploadIcon />}
                 onClick={() => setUploadDialogOpen(true)}
                 size="small"
-                sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
               >
-                업로드
+                MP3 업로드
               </Button>
               {dirtyAudioIds.size > 0 && (
                 <Button
@@ -1279,10 +1263,11 @@ export const HomeScreen: React.FC = () => {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Audio Article 업로드</DialogTitle>
+        <DialogTitle>MP3 업로드</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
-            yt2csv로 생성한 _full.mp3 + sentences.json을 업로드합니다.
+            MP3를 업로드하면 Cloud Run Whisper가 자동으로 문장+단어 타임스탬프를 생성합니다.
+            sentences.json이 있으면 직접 지정도 가능합니다.
           </Typography>
           <TextField
             fullWidth
@@ -1321,8 +1306,9 @@ export const HomeScreen: React.FC = () => {
               component="label"
               fullWidth
               sx={{ justifyContent: 'flex-start' }}
+              color={uploadJsonFile ? 'primary' : 'inherit'}
             >
-              {uploadJsonFile ? `JSON: ${uploadJsonFile.name}` : 'sentences.json 선택'}
+              {uploadJsonFile ? `JSON: ${uploadJsonFile.name}` : 'sentences.json (선택 — 없으면 자동 변환)'}
               <input
                 type="file"
                 accept=".json,application/json"
@@ -1331,59 +1317,25 @@ export const HomeScreen: React.FC = () => {
               />
             </Button>
           </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setUploadDialogOpen(false)}>취소</Button>
-          <Button
-            onClick={handleUploadAudioArticle}
-            variant="contained"
-            disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
-          >
-            업로드
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* YouTube URL 변환 다이얼로그 */}
-      <Dialog
-        open={ytUrlDialogOpen}
-        onClose={() => { if (!ytConverting) { setYtUrlDialogOpen(false); setYtStatus(''); } }}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>YouTube → Audio Article</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
-            YouTube URL을 입력하면 Cloud Run에서 자동으로 MP3 + sentences를 생성하여 Drive에 저장합니다.
-          </Typography>
-          <TextField
-            fullWidth
-            label="YouTube URL"
-            value={ytUrl}
-            onChange={(e) => setYtUrl(e.target.value)}
-            margin="normal"
-            placeholder="https://www.youtube.com/watch?v=... 또는 shorts URL"
-            autoFocus
-            disabled={ytConverting}
-          />
-          {ytStatus && (
-            <Alert severity={ytStatus.startsWith('완료') ? 'success' : 'info'} sx={{ mt: 2 }}>
-              {ytConverting && <CircularProgress size={16} sx={{ mr: 1 }} />}
-              {ytStatus}
+          {transcribeStatus && (
+            <Alert severity={transcribeStatus.startsWith('변환 완료') ? 'success' : 'info'} sx={{ mt: 2 }}>
+              {isLoading && !transcribeStatus.startsWith('변환 완료') && <CircularProgress size={16} sx={{ mr: 1 }} />}
+              {transcribeStatus}
             </Alert>
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => { setYtUrlDialogOpen(false); setYtStatus(''); }} disabled={ytConverting}>취소</Button>
+          <Button onClick={() => { setUploadDialogOpen(false); setTranscribeStatus(''); }} disabled={isLoading}>취소</Button>
           <Button
-            onClick={handleYtConvert}
+            onClick={handleUploadAudioArticle}
             variant="contained"
-            disabled={!ytUrl.trim() || ytConverting || !isAuthenticated}
+            disabled={!uploadMp3File || !uploadTitle.trim() || isLoading}
           >
-            {ytConverting ? '변환 중…' : '변환'}
+            {!uploadJsonFile ? '업로드 + 변환' : '업로드'}
           </Button>
         </DialogActions>
       </Dialog>
+
 
       {/* 통합 설정 다이얼로그 */}
       <Dialog

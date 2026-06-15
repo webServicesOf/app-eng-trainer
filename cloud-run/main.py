@@ -1,306 +1,51 @@
-"""Cloud Run API: YouTube URL → MP3 + sentences.json → Google Drive upload.
+"""Cloud Run API: MP3 → transcription with word-level timestamps.
 
-Endpoint: POST /convert
-Body: {"url": "https://...", "driveToken": "ya29...", "folderId": "optional"}
-Response: {"articleId": "...", "title": "...", "sentenceCount": N}
+Endpoint: POST /transcribe
+Body: MP3 file (multipart upload)
+Response: {"sentences": [...], "sentenceCount": N}
 """
 import os
-import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-from dedup import dedup_and_split
-from word_align import align_words
+from transcribe import transcribe_audio
 
-app = FastAPI(title="yt2csv-api")
+app = FastAPI(title="eng-trainer-api")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
+    allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Duration filters (match yt2csv.sh defaults)
-MIN_DUR = 1.0
-MAX_DUR = 15.0
-MIN_WORDS = 2
 
+@app.post("/transcribe")
+async def transcribe(file: UploadFile = File(...)):
+    """Accept MP3 upload, run Whisper, return sentences + word timestamps."""
+    if not file.filename or not file.filename.lower().endswith(".mp3"):
+        raise HTTPException(400, "Only MP3 files accepted")
 
-class ConvertRequest(BaseModel):
-    url: str
-    driveToken: str
-    folderId: str | None = None  # Drive folder ID (optional — uses default eng-trainer)
-
-
-class ConvertResponse(BaseModel):
-    articleId: str
-    title: str
-    sentenceCount: int
-
-
-def find_binary(name: str) -> str:
-    """Find yt-dlp or ffmpeg binary."""
-    path = shutil.which(name)
-    if path:
-        return path
-    raise RuntimeError(f"{name} not found in PATH")
-
-
-def parse_vtt_cues(vtt_path: str) -> list[tuple[float, float, str]]:
-    """Parse VTT file into (start_sec, end_sec, text) tuples."""
-    content = Path(vtt_path).read_text(encoding="utf-8", errors="replace")
-    blocks = re.split(r"\n\n+", content)
-
-    cues = []
-    time_re = re.compile(r"(\d+:)?(\d+):(\d+)[.,](\d+)")
-
-    def to_seconds(m: re.Match) -> float:
-        h = int(m.group(1)[:-1]) if m.group(1) else 0
-        return h * 3600 + int(m.group(2)) * 60 + int(m.group(3)) + int(m.group(4)) / 1000
-
-    prev_text = ""
-    for block in blocks:
-        lines = block.strip().split("\n")
-        timing_line = None
-        text_lines = []
-
-        for line in lines:
-            if "-->" in line:
-                timing_line = line
-            elif timing_line and not line.startswith("WEBVTT") and not line.startswith("Kind:") and not line.startswith("Language:"):
-                cleaned = re.sub(r"<[^>]*>", "", line).strip()
-                if cleaned:
-                    text_lines.append(cleaned)
-
-        if not timing_line or not text_lines:
-            continue
-
-        times = list(time_re.finditer(timing_line))
-        if len(times) < 2:
-            continue
-
-        start = to_seconds(times[0])
-        end = to_seconds(times[1])
-        text = " ".join(text_lines)
-
-        # Basic consecutive dedup
-        if text != prev_text:
-            cues.append((start, end, text))
-            prev_text = text
-
-    return cues
-
-
-def filter_sentences(
-    sentences: list[dict],
-) -> list[dict]:
-    """Apply duration/word-count filters."""
-    kept = []
-    for s in sentences:
-        dur = s["end"] - s["start"]
-        word_count = len(s["text"].split())
-        if MIN_DUR <= dur <= MAX_DUR and word_count >= MIN_WORDS:
-            kept.append(s)
-    return kept
-
-
-async def upload_to_drive(
-    token: str,
-    folder_id: str | None,
-    filename: str,
-    content: bytes,
-    mime_type: str,
-) -> str:
-    """Upload a file to Google Drive. Returns file ID."""
-    import json
-    from urllib.parse import quote
-    from urllib.request import Request, urlopen
-
-    def _find_or_create(name: str, parent_id: str | None = None) -> str:
-        parent_clause = f" and '{parent_id}' in parents" if parent_id else ""
-        q = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false{parent_clause}"
-        search_url = f"https://www.googleapis.com/drive/v3/files?q={quote(q)}&fields=files(id)&spaces=drive"
-        req = Request(search_url, headers={"Authorization": f"Bearer {token}"})
-        resp = urlopen(req)
-        data = json.loads(resp.read())
-        if data.get("files"):
-            return data["files"][0]["id"]
-        body_dict: dict = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
-        if parent_id:
-            body_dict["parents"] = [parent_id]
-        create_body = json.dumps(body_dict).encode()
-        req = Request(
-            "https://www.googleapis.com/drive/v3/files",
-            data=create_body,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        resp = urlopen(req)
-        return json.loads(resp.read())["id"]
-
-    # Resolve folder: eng-trainer/data/
-    actual_folder = folder_id
-    if not actual_folder:
-        root_id = _find_or_create("eng-trainer")
-        actual_folder = _find_or_create("data", root_id)
-
-    # Multipart upload
-    boundary = "-----yt2csv_boundary"
-    metadata = json.dumps({"name": filename, "parents": [actual_folder]})
-    body = (
-        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n"
-        f"--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n"
-    ).encode() + content + f"\r\n--{boundary}--".encode()
-
-    req = Request(
-        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": f"multipart/related; boundary={boundary}",
-        },
-        method="POST",
-    )
-    resp = urlopen(req)
-    return json.loads(resp.read())["id"]
-
-
-def _yt_base_args() -> list[str]:
-    """Common yt-dlp args: JS runtime + cookie/auth handling.
-
-    Cloud Run: no --cookies-from-browser (no local browser).
-    Local dev: uses Chrome cookies for bot-bypass.
-    Set YT2CSV_COOKIES_FROM env to override (e.g. "chrome", "firefox").
-    """
-    args = ["--js-runtimes", "node", "--remote-components", "ejs:github"]
-    cookies_from = os.environ.get("YT2CSV_COOKIES_FROM", "")
-    if cookies_from:
-        args += ["--cookies-from-browser", cookies_from]
-    # Cloud Run: use cookies.txt file if available
-    cookies_file = os.environ.get("YT2CSV_COOKIES_FILE", "/app/cookies.txt")
-    if not cookies_from and os.path.exists(cookies_file):
-        args += ["--cookies", cookies_file]
-    return args
-
-
-def _run_ytdlp(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
-    """Run yt-dlp with stdin closed (prevents Keychain hang on macOS)."""
-    return subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-
-
-@app.post("/convert", response_model=ConvertResponse)
-async def convert(req: ConvertRequest):
-    yt_dlp = find_binary("yt-dlp")
-    ffmpeg = find_binary("ffmpeg")
-    yt_base = _yt_base_args()
-
-    tmpdir = tempfile.mkdtemp(prefix="yt2csv_")
+    tmpdir = tempfile.mkdtemp(prefix="transcribe_")
     try:
-        # 1. Fetch metadata
-        meta_result = _run_ytdlp(
-            [yt_dlp, *yt_base, "--skip-download", "--no-playlist", "--print", "%(id)s\t%(title)s", req.url],
-            timeout=90,
-        )
-        if meta_result.returncode != 0:
-            raise HTTPException(400, f"yt-dlp metadata failed (rc={meta_result.returncode}): stdout={meta_result.stdout[:200]} stderr={meta_result.stderr[:800]}")
+        mp3_path = os.path.join(tmpdir, file.filename)
+        content = await file.read()
+        Path(mp3_path).write_bytes(content)
 
-        meta_line = meta_result.stdout.strip().split("\n")[0]
-        parts = meta_line.split("\t", 1)
-        if len(parts) < 2:
-            raise HTTPException(400, f"Unexpected metadata format: {meta_line[:100]}")
-        video_id, title = parts[0], parts[1]
-
-        # 2. Download audio + subtitles
-        _run_ytdlp(
-            [yt_dlp, *yt_base, "--no-playlist",
-             "-f", "bestaudio", "-x", "--audio-format", "mp3", "--audio-quality", "0",
-             "--write-sub", "--sub-lang", "en", "--sub-format", "vtt",
-             "--ffmpeg-location", ffmpeg,
-             "-o", f"{tmpdir}/%(id)s.%(ext)s", req.url],
-            timeout=180,
-        )
-
-        mp3_path = f"{tmpdir}/{video_id}.mp3"
-        vtt_path = f"{tmpdir}/{video_id}.en.vtt"
-
-        # Auto-sub fallback
-        sub_type = "manual"
-        if not os.path.exists(vtt_path):
-            sub_type = "auto"
-            _run_ytdlp(
-                [yt_dlp, *yt_base, "--no-playlist", "--skip-download",
-                 "--write-auto-sub", "--sub-lang", "en-orig,en", "--sub-format", "vtt",
-                 "-o", f"{tmpdir}/%(id)s.%(ext)s", req.url],
-                timeout=90,
-            )
-            # Check en-orig first, then en
-            for lang in ["en-orig", "en"]:
-                candidate = f"{tmpdir}/{video_id}.{lang}.vtt"
-                if os.path.exists(candidate):
-                    vtt_path = candidate
-                    break
-
-        if not os.path.exists(mp3_path):
-            raise HTTPException(500, "MP3 extraction failed")
-        if not os.path.exists(vtt_path):
-            raise HTTPException(500, "No subtitles found (manual or auto)")
-
-        # 3. Parse VTT → cues → dedup → sentences
-        cues = parse_vtt_cues(vtt_path)
-        all_sentences = dedup_and_split(cues, sub_type)
-        sentences = filter_sentences(all_sentences)
+        model_name = os.environ.get("WHISPER_MODEL", "small.en")
+        sentences = transcribe_audio(mp3_path, model_name=model_name)
 
         if not sentences:
-            raise HTTPException(400, f"No sentences survived filtering ({len(cues)} raw cues, {len(all_sentences)} after dedup)")
+            raise HTTPException(400, "No sentences found in audio")
 
-        # Add index
-        for i, s in enumerate(sentences):
-            s["index"] = i + 1
-
-        # 3.5. Whisper word-level alignment
-        try:
-            sentences = align_words(mp3_path, sentences)
-        except Exception as e:
-            # Word alignment is optional — continue without it
-            import logging
-            logging.warning(f"Whisper word alignment failed, continuing without: {e}")
-
-        # 4. Upload to Drive
-        article_id = f"audio-{video_id}"
-        import json
-        import time
-
-        # Upload MP3
-        mp3_bytes = Path(mp3_path).read_bytes()
-        await upload_to_drive(req.driveToken, req.folderId, f"{article_id}.mp3", mp3_bytes, "audio/mpeg")
-
-        # Upload metadata JSON (same schema as GoogleDriveService)
-        now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        meta_json = json.dumps({
-            "id": article_id,
-            "title": title,
+        return {
             "sentences": sentences,
-            "source": req.url,
-            "nextReviewDate": None,
-            "reviewInterval": 0,
-            "createdAt": now,
-            "lastAccessed": now,
-        }, ensure_ascii=False, indent=2)
-        await upload_to_drive(req.driveToken, req.folderId, f"{article_id}.json", meta_json.encode(), "application/json")
-
-        return ConvertResponse(
-            articleId=article_id,
-            title=title,
-            sentenceCount=len(sentences),
-        )
-
+            "sentenceCount": len(sentences),
+        }
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -308,45 +53,3 @@ async def convert(req: ConvertRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-
-@app.get("/debug")
-async def debug():
-    import shutil
-    node = shutil.which("node")
-    ytdlp = shutil.which("yt-dlp")
-    ffmpeg = shutil.which("ffmpeg")
-    node_ver = subprocess.run(["node", "--version"], capture_output=True, text=True).stdout.strip() if node else "not found"
-    ytdlp_ver = subprocess.run([ytdlp or "yt-dlp", "--version"], capture_output=True, text=True).stdout.strip() if ytdlp else "not found"
-
-    # Test yt-dlp with node directly
-    test = subprocess.run(
-        [ytdlp or "yt-dlp", "--js-runtimes", "node", "--remote-components", "ejs:github",
-         "--skip-download", "--no-playlist", "--print", "%(id)s",
-         "https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, timeout=60,
-    )
-
-    # Check config + cache
-    config_content = ""
-    try:
-        config_content = open(os.path.expanduser("~/.config/yt-dlp/config")).read()
-    except: pass
-    cache_files = []
-    cache_dir = os.path.expanduser("~/.cache/yt-dlp/challenge-solver/")
-    if os.path.isdir(cache_dir):
-        cache_files = os.listdir(cache_dir)
-
-    return {
-        "node": node, "node_version": node_ver,
-        "yt-dlp": ytdlp, "yt-dlp_version": ytdlp_ver,
-        "ffmpeg": ffmpeg,
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": os.environ.get("HOME", ""),
-        "config": config_content,
-        "cache_files": cache_files,
-        "test_rc": test.returncode,
-        "test_stdout": test.stdout[:200],
-        "test_stderr": test.stderr[:500],
-    }
