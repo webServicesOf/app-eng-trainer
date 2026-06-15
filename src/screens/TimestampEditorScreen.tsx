@@ -81,13 +81,43 @@ const TimestampEditorScreen: React.FC = () => {
 
       const loaded: AudioArticle = { ...meta, audioBlob };
       setArticle(loaded);
-      setSentences([...loaded.sentences]);
+
+      // Check for unsaved draft in localStorage
+      const draftKey = `ts-editor-draft-${id}`;
+      const draft = localStorage.getItem(draftKey);
+      if (draft) {
+        try {
+          const draftSentences = JSON.parse(draft) as SentenceEntry[];
+          const useDraft = window.confirm(
+            `미저장 편집본이 있습니다 (${draftSentences.length}문장).\n복원하시겠습니까?\n\n"취소"를 누르면 Drive 원본을 사용합니다.`
+          );
+          if (useDraft) {
+            setSentences(draftSentences);
+            setHasChanges(true);
+          } else {
+            localStorage.removeItem(draftKey);
+            setSentences([...loaded.sentences]);
+          }
+        } catch {
+          localStorage.removeItem(draftKey);
+          setSentences([...loaded.sentences]);
+        }
+      } else {
+        setSentences([...loaded.sentences]);
+      }
+
       if (loaded.splitPoints?.length) {
         setSplitMarkers(new Set(loaded.splitPoints));
       }
     };
     load();
   }, [id, navigate, accessToken, audioArticles]);
+
+  // Auto-save draft to localStorage on sentence changes
+  useEffect(() => {
+    if (!id || !hasChanges || sentences.length === 0) return;
+    localStorage.setItem(`ts-editor-draft-${id}`, JSON.stringify(sentences));
+  }, [id, sentences, hasChanges]);
 
   // Initialize WaveSurfer
   useEffect(() => {
@@ -375,14 +405,10 @@ const TimestampEditorScreen: React.FC = () => {
       };
       const drive = new GoogleDriveService(accessToken);
       await drive.saveArticle(updated);
-      console.log('[TimestampEditor] saved to Drive. sentences:', updated.sentences.length,
-        'first:', updated.sentences[0]?.text?.substring(0, 50));
-      // Verify: re-read from Drive
-      const verify = await drive.getArticle(updated.id);
-      console.log('[TimestampEditor] verify from Drive. sentences:', verify?.sentences.length,
-        'first:', verify?.sentences[0]?.text?.substring(0, 50));
       setArticle(updated);
       setHasChanges(false);
+      // Clear draft on successful save
+      if (updated.id) localStorage.removeItem(`ts-editor-draft-${updated.id}`);
       // Sync appStore so HomeScreen sees fresh data
       await loadAudioArticles();
     } catch (error) {
@@ -427,13 +453,19 @@ const TimestampEditorScreen: React.FC = () => {
   }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, loadAudioArticles, accessToken]);
 
   const handleSelectSentence = useCallback((idx: number) => {
+    const ws = wavesurferRef.current;
+    // Stop playback on navigation to prevent unwanted audio
+    if (ws?.isPlaying()) {
+      ws.pause();
+      clearEndCheck();
+    }
     setSelectedIndex(idx);
     setSplitMode(false);
     const s = sentences[idx];
-    if (s?.start != null && wavesurferRef.current) {
-      wavesurferRef.current.setTime(s.start);
+    if (s?.start != null && ws) {
+      ws.setTime(s.start);
     }
-  }, [sentences]);
+  }, [sentences, clearEndCheck]);
 
   const handlePrevSentence = useCallback(() => {
     if (selectedIndex > 0) handleSelectSentence(selectedIndex - 1);
