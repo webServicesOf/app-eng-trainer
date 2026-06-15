@@ -9,6 +9,7 @@ class AudioSeekService {
   private trackingSentences: SentenceEntry[] = [];
   private lastReportedSentence: number = -1;
   private lastReportedWord: number = -1;
+  public wordTimingOffset: number = 0; // seconds: positive = highlights earlier, negative = later
 
   constructor() {
     this.audio = new Audio();
@@ -47,8 +48,9 @@ class AudioSeekService {
             let wordIdx = -1;
             if (s.words && s.words.length > 0) {
               // Real Whisper timestamps — find word by time, cap to text word count
+              const adjustedT = t + this.wordTimingOffset;
               for (let w = Math.min(s.words.length, textWordCount) - 1; w >= 0; w--) {
-                if (t >= s.words[w].start) {
+                if (adjustedT >= s.words[w].start) {
                   wordIdx = w;
                   break;
                 }
@@ -79,9 +81,12 @@ class AudioSeekService {
     this.onWordChange = null;
   }
 
-  load(blobUrl: string): void {
-    this.audio.src = blobUrl;
-    this.audio.load();
+  load(blobUrl: string): Promise<void> {
+    return new Promise((resolve) => {
+      this.audio.addEventListener('canplaythrough', () => resolve(), { once: true });
+      this.audio.src = blobUrl;
+      this.audio.load();
+    });
   }
 
   async playSentence(

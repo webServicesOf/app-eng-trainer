@@ -1273,26 +1273,34 @@ export const HomeScreen: React.FC = () => {
               fullWidth
               sx={{ mb: 1, justifyContent: 'flex-start' }}
             >
-              {uploadMp3File ? `MP3: ${uploadMp3File.name}` : 'MP3 파일 선택'}
+              {uploadMp3File && uploadJsonFile
+                ? `📁 ${uploadMp3File.name} + ${uploadJsonFile.name}`
+                : uploadMp3File
+                ? `MP3: ${uploadMp3File.name} (JSON 없음)`
+                : '폴더 선택 (MP3 + sentences.json)'}
               <input
                 type="file"
-                accept=".mp3,audio/mpeg"
                 hidden
-                onChange={(e) => setUploadMp3File(e.target.files?.[0] || null)}
-              />
-            </Button>
-            <Button
-              variant="outlined"
-              component="label"
-              fullWidth
-              sx={{ justifyContent: 'flex-start' }}
-            >
-              {uploadJsonFile ? `JSON: ${uploadJsonFile.name}` : 'sentences.json 선택'}
-              <input
-                type="file"
-                accept=".json,application/json"
-                hidden
-                onChange={(e) => setUploadJsonFile(e.target.files?.[0] || null)}
+                {...{ webkitdirectory: '', directory: '' } as any}
+                onChange={(e) => {
+                  const files = e.target.files;
+                  if (!files) return;
+                  let mp3: File | null = null;
+                  let json: File | null = null;
+                  for (let i = 0; i < files.length; i++) {
+                    const f = files[i];
+                    if (f.name.endsWith('.mp3')) mp3 = f;
+                    if (f.name === 'sentences.json') json = f;
+                  }
+                  setUploadMp3File(mp3);
+                  setUploadJsonFile(json);
+                  // Auto-fill title from folder name
+                  if (mp3 && !uploadTitle.trim()) {
+                    const path = (mp3 as any).webkitRelativePath || mp3.name;
+                    const folder = path.split('/')[0];
+                    if (folder && folder !== mp3.name) setUploadTitle(folder);
+                  }
+                }}
               />
             </Button>
           </Box>

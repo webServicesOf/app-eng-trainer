@@ -6,6 +6,7 @@ import {
   IconButton,
   Card,
   CardContent,
+  CircularProgress,
   LinearProgress,
   Chip,
   Stack,
@@ -65,8 +66,14 @@ const AudioLearningScreen: React.FC = () => {
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
+  const [wordTimingOffset, setWordTimingOffset] = useState<number>(0);
+
+  const loadedArticleIdRef = React.useRef<string | null>(null);
 
   const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }) => {
+    // Skip if already loaded — prevents re-render loop from audioArticles changes
+    if (loadedArticleIdRef.current === articleId && audioLoaded) return;
+
     try {
       // Get metadata from store (Drive-backed)
       const meta = audioArticles.find(a => a.id === articleId);
@@ -97,14 +104,15 @@ const AudioLearningScreen: React.FC = () => {
 
       if (audioBlob) {
         const blobUrl = URL.createObjectURL(audioBlob);
-        audioSeekService.load(blobUrl);
+        await audioSeekService.load(blobUrl);
         setAudioLoaded(true);
+        loadedArticleIdRef.current = articleId;
       }
     } catch (error) {
       console.error('Failed to load audio article:', error);
       navigate('/');
     }
-  }, [navigate, audioArticles, accessToken]);
+  }, [navigate, audioArticles, accessToken, audioLoaded]);
 
   useEffect(() => {
     if (id) {
@@ -404,10 +412,11 @@ const AudioLearningScreen: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleTogglePlay]);
 
-  if (!article) {
+  if (!article || !audioLoaded) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
-        <Typography>Loading...</Typography>
+      <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', gap: 2 }}>
+        <CircularProgress />
+        <Typography>{!article ? '데이터 로딩 중…' : '오디오 로딩 중…'}</Typography>
       </Box>
     );
   }

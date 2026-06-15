@@ -255,20 +255,32 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, [sentences, selectedIndex, startEndCheck, clearEndCheck]);
 
+  const lastPlayedIndexRef = React.useRef<number>(-1);
+  const selectedIndexRef = React.useRef<number>(selectedIndex);
+  selectedIndexRef.current = selectedIndex;
+
   const handlePlaySentence = useCallback(() => {
     const ws = wavesurferRef.current;
-    const s = sentences[selectedIndex];
+    const idx = selectedIndexRef.current;
+    const s = sentences[idx];
     if (!s || s.start == null || s.end == null || !ws) return;
 
+    // Same sentence + playing → pause. Otherwise → seek to start and play.
+    if (ws.isPlaying() && lastPlayedIndexRef.current === idx) {
+      ws.pause();
+      clearEndCheck();
+      lastPlayedIndexRef.current = -1;
+      return;
+    }
     if (ws.isPlaying()) {
       ws.pause();
       clearEndCheck();
-      return;
     }
     ws.setTime(s.start);
     ws.play();
     startEndCheck(s.end);
-  }, [sentences, selectedIndex, startEndCheck, clearEndCheck]);
+    lastPlayedIndexRef.current = idx;
+  }, [sentences, startEndCheck, clearEndCheck]);
 
   const handlePlayFromEnd = useCallback(() => {
     const s = sentences[selectedIndex];
@@ -351,17 +363,32 @@ const TimestampEditorScreen: React.FC = () => {
   }, [sentences, selectedIndex, pushUndo]);
 
   const handleSave = useCallback(async () => {
-    if (!article || !accessToken) return;
-    const updated: AudioArticle = {
-      ...article,
-      sentences,
-    };
-    const drive = new GoogleDriveService(accessToken);
-    await drive.saveArticle(updated);
-    setArticle(updated);
-    setHasChanges(false);
-    // Sync appStore so HomeScreen sees fresh data
-    await loadAudioArticles();
+    if (!article) return;
+    if (!accessToken) {
+      alert('로그인 필요 — 토큰이 만료되었습니다. 홈에서 재로그인 후 다시 시도하세요.');
+      return;
+    }
+    try {
+      const updated: AudioArticle = {
+        ...article,
+        sentences,
+      };
+      const drive = new GoogleDriveService(accessToken);
+      await drive.saveArticle(updated);
+      console.log('[TimestampEditor] saved to Drive. sentences:', updated.sentences.length,
+        'first:', updated.sentences[0]?.text?.substring(0, 50));
+      // Verify: re-read from Drive
+      const verify = await drive.getArticle(updated.id);
+      console.log('[TimestampEditor] verify from Drive. sentences:', verify?.sentences.length,
+        'first:', verify?.sentences[0]?.text?.substring(0, 50));
+      setArticle(updated);
+      setHasChanges(false);
+      // Sync appStore so HomeScreen sees fresh data
+      await loadAudioArticles();
+    } catch (error) {
+      console.error('Save failed:', error);
+      alert('저장 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
   }, [article, sentences, accessToken, loadAudioArticles]);
 
   const toggleSplitMarker = useCallback((idx: number) => {
