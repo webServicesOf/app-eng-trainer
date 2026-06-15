@@ -66,7 +66,6 @@ const AudioLearningScreen: React.FC = () => {
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
-  const [wordTimingOffset, setWordTimingOffset] = useState<number>(0);
 
   const loadedArticleIdRef = React.useRef<string | null>(null);
 
