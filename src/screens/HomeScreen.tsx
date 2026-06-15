@@ -45,7 +45,6 @@ import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
-import { transcribeAudio } from '../services/whisperService';
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -103,7 +102,6 @@ export const HomeScreen: React.FC = () => {
   const [uploadSource, setUploadSource] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [editingTitleValue, setEditingTitleValue] = useState('');
-  const [transcribeStatus, setTranscribeStatus] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
@@ -230,41 +228,25 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleUploadAudioArticle = async () => {
-    if (!uploadMp3File || !uploadTitle.trim()) {
-      alert('제목과 MP3 파일이 필요합니다.');
+    if (!uploadMp3File || !uploadJsonFile || !uploadTitle.trim()) {
+      alert('제목, MP3, sentences.json 모두 필요합니다. 로컬에서 yt2mp3 실행 후 업로드하세요.');
       return;
     }
 
     try {
       setLoading(true);
 
-      let sentences: SentenceEntry[];
-
-      if (uploadJsonFile) {
-        // Manual JSON provided
-        const jsonText = await uploadJsonFile.text();
-        const rawSentences = JSON.parse(jsonText);
-        sentences = rawSentences.map((s: any, i: number) => ({
-          index: s.index ?? i + 1,
-          text: s.text,
-          start: s.start ?? 0,
-          end: s.end ?? 0,
-          words: s.words,
-          memo: s.memo,
-        }));
-      } else {
-        // Auto-transcribe via Cloud Run Whisper
-        setTranscribeStatus('Cloud Run Whisper 변환 중… (1~2분 소요)');
-        const result = await transcribeAudio(uploadMp3File);
-        sentences = result.sentences.map((s) => ({
-          index: s.index,
-          text: s.text,
-          start: s.start,
-          end: s.end,
-          words: s.words,
-        }));
-        setTranscribeStatus(`변환 완료: ${result.sentenceCount}문장`);
-      }
+      // Parse sentences.json (from yt2mp3: VTT sentences + Whisper word timestamps)
+      const jsonText = await uploadJsonFile.text();
+      const rawSentences = JSON.parse(jsonText);
+      const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
+        index: s.index ?? i + 1,
+        text: s.text,
+        start: s.start ?? 0,
+        end: s.end ?? 0,
+        words: s.words,
+        memo: s.memo,
+      }));
 
       // Read mp3 as blob
       const audioBlob = new Blob([await uploadMp3File.arrayBuffer()], {
@@ -290,11 +272,9 @@ export const HomeScreen: React.FC = () => {
       setUploadJsonFile(null);
       setUploadTitle('');
       setUploadSource('');
-      setTranscribeStatus('');
       setUploadDialogOpen(false);
     } catch (error) {
       console.error('Upload failed:', error);
-      setTranscribeStatus('');
       alert('업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
     } finally {
       setLoading(false);
@@ -1264,11 +1244,10 @@ export const HomeScreen: React.FC = () => {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>MP3 업로드</DialogTitle>
+        <DialogTitle>Audio Article 업로드</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
-            MP3를 업로드하면 Cloud Run Whisper가 자동으로 문장+단어 타임스탬프를 생성합니다.
-            sentences.json이 있으면 직접 지정도 가능합니다.
+            터미널에서 <code>yt2mp3 &lt;url&gt;</code> 실행 후 생성된 MP3 + sentences.json을 업로드합니다.
           </Typography>
           <TextField
             fullWidth
@@ -1307,9 +1286,8 @@ export const HomeScreen: React.FC = () => {
               component="label"
               fullWidth
               sx={{ justifyContent: 'flex-start' }}
-              color={uploadJsonFile ? 'primary' : 'inherit'}
             >
-              {uploadJsonFile ? `JSON: ${uploadJsonFile.name}` : 'sentences.json (선택 — 없으면 자동 변환)'}
+              {uploadJsonFile ? `JSON: ${uploadJsonFile.name}` : 'sentences.json 선택'}
               <input
                 type="file"
                 accept=".json,application/json"
@@ -1318,21 +1296,15 @@ export const HomeScreen: React.FC = () => {
               />
             </Button>
           </Box>
-          {transcribeStatus && (
-            <Alert severity={transcribeStatus.startsWith('변환 완료') ? 'success' : 'info'} sx={{ mt: 2 }}>
-              {isLoading && !transcribeStatus.startsWith('변환 완료') && <CircularProgress size={16} sx={{ mr: 1 }} />}
-              {transcribeStatus}
-            </Alert>
-          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => { setUploadDialogOpen(false); setTranscribeStatus(''); }} disabled={isLoading}>취소</Button>
+          <Button onClick={() => setUploadDialogOpen(false)} disabled={isLoading}>취소</Button>
           <Button
             onClick={handleUploadAudioArticle}
             variant="contained"
-            disabled={!uploadMp3File || !uploadTitle.trim() || isLoading}
+            disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
           >
-            {!uploadJsonFile ? '업로드 + 변환' : '업로드'}
+            업로드
           </Button>
         </DialogActions>
       </Dialog>
