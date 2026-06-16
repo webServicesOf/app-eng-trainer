@@ -380,6 +380,34 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, audioLoaded, displaySentences, onPlayEnd, onWordUpdate]);
 
+  // Tap word to play from that word's timestamp
+  const handleWordTap = React.useCallback((sentLocalIdx: number, wordIdx: number, e: React.MouseEvent) => {
+    e.stopPropagation(); // prevent sentence tap
+    if (!article || !audioLoaded) return;
+    const sent = displaySentences[sentLocalIdx];
+    if (!sent?.words || !sent.words[wordIdx] || sent.start == null || sent.end == null) {
+      // No word timestamps — fall back to sentence tap
+      handleSentenceTap(sentLocalIdx);
+      return;
+    }
+    const wordStart = sent.words[wordIdx].start;
+    // Build segments: current sentence (from word start) + remaining sentences
+    const fromDisplay = displaySentences.slice(sentLocalIdx)
+      .filter(s => s.start != null && s.end != null);
+    if (fromDisplay.length === 0) return;
+    // Override first segment's start to word's start time
+    const adjusted = [{ ...fromDisplay[0], start: wordStart }, ...fromDisplay.slice(1)];
+    setActiveSentenceLocalIdx(sentLocalIdx);
+    setActiveWordIdx(wordIdx);
+    setIsPlaying(true);
+    audioSeekService.playSegments(
+      adjusted,
+      onPlayEnd,
+      (localIdx) => setActiveSentenceLocalIdx(sentLocalIdx + localIdx),
+      (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
+    );
+  }, [article, audioLoaded, displaySentences, handleSentenceTap, onPlayEnd, onWordUpdate]);
+
   const handleRateChange = (newRate: number) => {
     setPlaybackRate(newRate);
     audioSeekService.setRate(newRate);
@@ -688,6 +716,7 @@ const AudioLearningScreen: React.FC = () => {
                         return (
                           <span
                             key={wIdx}
+                            onClick={(e) => handleWordTap(sentIdx, wIdx, e)}
                             style={{
                               color,
                               marginRight: '0.3em',
@@ -695,6 +724,7 @@ const AudioLearningScreen: React.FC = () => {
                               display: 'inline',
                               fontWeight: isActiveWord ? 700 : 400,
                               textShadow: isBlindMode && !isActiveWord ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
+                              cursor: sent.words?.[wIdx] ? 'pointer' : 'default',
                             }}
                           >
                             {word}
