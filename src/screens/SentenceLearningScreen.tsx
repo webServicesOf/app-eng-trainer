@@ -25,6 +25,7 @@ import {
   BookmarkBorder,
   Visibility,
   VisibilityOff,
+  VisibilityOffOutlined,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Article } from '../types';
@@ -96,21 +97,19 @@ const SentenceLearningScreen: React.FC = () => {
     if (!article) return;
 
     if (isCumulative) {
-      // 누적 표시: windowSize에 따라 범위 결정
       let startIndex: number;
       if (windowSize === 'full') {
-        startIndex = 1; // 전체 누적
+        startIndex = 1;
       } else {
-        startIndex = Math.max(1, currentIndex - windowSize + 1); // 윈도우 크기만큼만
+        startIndex = Math.max(1, currentIndex - windowSize + 1);
       }
 
       const text = article.sentences
-        .filter((s) => s.index >= startIndex && s.index <= currentIndex)
+        .filter((s) => s.index >= startIndex && s.index <= currentIndex && !s.hidden)
         .map((s) => s.text)
         .join(' ');
       setDisplayText(text);
     } else {
-      // 단일 표시: 현재 인덱스만
       const sentence = article.sentences.find((s) => s.index === currentIndex);
       setDisplayText(sentence ? sentence.text : '');
     }
@@ -146,16 +145,30 @@ const SentenceLearningScreen: React.FC = () => {
   }, [setIsCumulative]);
 
   const handleLeftArrow = React.useCallback(() => {
-    goToPreviousSentence();
-    autoPlayRef.current = true;
-  }, [goToPreviousSentence]);
-
-  const handleRightArrow = React.useCallback(() => {
-    if (article) {
-      goToNextSentence(article.sentences.length);
+    if (!article) return;
+    // Skip hidden sentences
+    let target = currentIndex - 1;
+    while (target >= 1 && article.sentences.find(s => s.index === target)?.hidden) {
+      target--;
+    }
+    if (target >= 1) {
+      setCurrentIndex(target);
       autoPlayRef.current = true;
     }
-  }, [article, goToNextSentence]);
+  }, [article, currentIndex, setCurrentIndex]);
+
+  const handleRightArrow = React.useCallback(() => {
+    if (!article) return;
+    // Skip hidden sentences
+    let target = currentIndex + 1;
+    while (target <= article.sentences.length && article.sentences.find(s => s.index === target)?.hidden) {
+      target++;
+    }
+    if (target <= article.sentences.length) {
+      setCurrentIndex(target);
+      autoPlayRef.current = true;
+    }
+  }, [article, currentIndex, setCurrentIndex]);
 
   const autoPlayRef = React.useRef(false);
 
@@ -219,7 +232,6 @@ const SentenceLearningScreen: React.FC = () => {
     if (!sentence) return;
 
     if (isSaved) {
-      // Already saved - no action needed (could implement unsave if desired)
       return;
     }
 
@@ -235,6 +247,16 @@ const SentenceLearningScreen: React.FC = () => {
     await localDB.saveSentence(savedSentence);
     setIsSaved(true);
   };
+
+  const handleToggleHideSentence = React.useCallback(async () => {
+    if (!article) return;
+    const updatedSentences = article.sentences.map(s =>
+      s.index === currentIndex ? { ...s, hidden: !s.hidden } : s
+    );
+    const updatedArticle = { ...article, sentences: updatedSentences };
+    setArticle(updatedArticle);
+    await localDB.saveArticle(updatedArticle);
+  }, [article, currentIndex]);
 
   // Auto-play TTS after arrow navigation
   React.useEffect(() => {
@@ -323,14 +345,24 @@ const SentenceLearningScreen: React.FC = () => {
               {isBlindMode ? <VisibilityOff /> : <Visibility />}
             </IconButton>
             {!isCumulative && (
-              <IconButton
-                onClick={handleSaveSentence}
-                color={isSaved ? 'primary' : 'default'}
-                size="small"
-                title={isSaved ? '저장됨' : '문장 저장'}
-              >
-                {isSaved ? <Bookmark /> : <BookmarkBorder />}
-              </IconButton>
+              <>
+                <IconButton
+                  onClick={handleSaveSentence}
+                  color={isSaved ? 'primary' : 'default'}
+                  size="small"
+                  title={isSaved ? '저장됨' : '문장 저장'}
+                >
+                  {isSaved ? <Bookmark /> : <BookmarkBorder />}
+                </IconButton>
+                <IconButton
+                  onClick={handleToggleHideSentence}
+                  size="small"
+                  color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
+                  title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}
+                >
+                  {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
+                </IconButton>
+              </>
             )}
             <IconButton onClick={() => handleSpeak()} color="primary" size="small">
               <VolumeUp />
@@ -398,14 +430,24 @@ const SentenceLearningScreen: React.FC = () => {
             {isBlindMode ? <VisibilityOff /> : <Visibility />}
           </IconButton>
           {!isCumulative && (
-            <IconButton
-              onClick={handleSaveSentence}
-              color={isSaved ? 'primary' : 'default'}
-              size="large"
-              title={isSaved ? '저장됨' : '문장 저장'}
-            >
-              {isSaved ? <Bookmark /> : <BookmarkBorder />}
-            </IconButton>
+            <>
+              <IconButton
+                onClick={handleSaveSentence}
+                color={isSaved ? 'primary' : 'default'}
+                size="large"
+                title={isSaved ? '저장됨' : '문장 저장'}
+              >
+                {isSaved ? <Bookmark /> : <BookmarkBorder />}
+              </IconButton>
+              <IconButton
+                onClick={handleToggleHideSentence}
+                size="large"
+                color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
+                title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}
+              >
+                {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
+              </IconButton>
+            </>
           )}
           <IconButton onClick={() => handleSpeak()} color="primary" size="large">
             <VolumeUp />

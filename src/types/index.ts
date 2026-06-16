@@ -31,6 +31,7 @@ export interface SentenceEntry {
   end?: number; // seconds
   words?: WordTimestamp[]; // Whisper word-level timestamps (optional)
   memo?: string;
+  hidden?: boolean; // 학습 모드에서 숨김 처리
 }
 
 // SubDeck의 복습 상태 (Drive JSON에 포함, 크로스 디바이스 동기화)

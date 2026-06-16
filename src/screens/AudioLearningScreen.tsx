@@ -28,6 +28,7 @@ import {
   BookmarkBorder,
   Visibility,
   VisibilityOff,
+  VisibilityOffOutlined,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { AudioArticle, SentenceEntry } from '../types';
@@ -160,10 +161,11 @@ const AudioLearningScreen: React.FC = () => {
       }
 
       const filtered = article.sentences
-        .filter((s) => s.index >= startIndex && s.index <= currentIndex);
+        .filter((s) => s.index >= startIndex && s.index <= currentIndex && !s.hidden);
       setDisplaySentences(filtered);
     } else {
       const sentence = article.sentences.find((s) => s.index === currentIndex);
+      // Show even if hidden in single mode (so user knows they're on a hidden sentence)
       setDisplaySentences(sentence ? [sentence] : []);
     }
   }, [article, isCumulative, currentIndex, windowSize]);
@@ -208,24 +210,38 @@ const AudioLearningScreen: React.FC = () => {
   }, []);
 
   const handleLeftArrow = React.useCallback(() => {
+    if (!article) return;
     audioSeekService.stop();
     setIsPlaying(false);
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
-    goToPreviousSentence();
+    // Skip hidden sentences
+    let target = currentIndex - 1;
+    while (target >= 1 && article.sentences[target - 1]?.hidden) {
+      target--;
+    }
+    if (target >= 1) {
+      setCurrentIndex(target);
+    }
     debouncedSpeak();
-  }, [goToPreviousSentence, debouncedSpeak]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak]);
 
   const handleRightArrow = React.useCallback(() => {
-    if (article) {
-      audioSeekService.stop();
-      setIsPlaying(false);
-      setActiveSentenceLocalIdx(-1);
-      setActiveWordIdx(-1);
-      goToNextSentence(article.sentences.length);
-      debouncedSpeak();
+    if (!article) return;
+    audioSeekService.stop();
+    setIsPlaying(false);
+    setActiveSentenceLocalIdx(-1);
+    setActiveWordIdx(-1);
+    // Skip hidden sentences
+    let target = currentIndex + 1;
+    while (target <= article.sentences.length && article.sentences[target - 1]?.hidden) {
+      target++;
     }
-  }, [article, goToNextSentence, debouncedSpeak]);
+    if (target <= article.sentences.length) {
+      setCurrentIndex(target);
+    }
+    debouncedSpeak();
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak]);
 
   const onPlayEnd = React.useCallback(() => {
     setActiveSentenceLocalIdx(-1);
@@ -250,17 +266,16 @@ const AudioLearningScreen: React.FC = () => {
       }
       const endIdx = currentIndex - 1;
 
-      const startSentence = article.sentences[startIdx];
-      const endSentence = article.sentences[endIdx];
-      const sliced = article.sentences.slice(startIdx, endIdx + 1);
+      const visible = article.sentences
+        .slice(startIdx, endIdx + 1)
+        .filter(s => !s.hidden && s.start != null && s.end != null);
 
-      if (startSentence?.start != null && endSentence?.end != null) {
+      if (visible.length > 0) {
         setActiveSentenceLocalIdx(0);
         setActiveWordIdx(-1);
         setIsPlaying(true);
-        audioSeekService.playCumulative(
-          sliced,
-          endIdx - startIdx,
+        audioSeekService.playSegments(
+          visible,
           onPlayEnd,
           (localIdx) => setActiveSentenceLocalIdx(localIdx),
           onWordUpdate,
@@ -315,16 +330,15 @@ const AudioLearningScreen: React.FC = () => {
       startIdx = currentIndex - 1;
     }
     const endIdx = currentIndex - 1;
-    const sliced = article.sentences.slice(startIdx, endIdx + 1);
-    const startSentence = sliced[0];
-    const endSentence = sliced[sliced.length - 1];
-    if (startSentence?.start != null && endSentence?.end != null) {
+    const visible = article.sentences
+      .slice(startIdx, endIdx + 1)
+      .filter(s => !s.hidden && s.start != null && s.end != null);
+    if (visible.length > 0) {
       setActiveSentenceLocalIdx(0);
       setActiveWordIdx(-1);
       setIsPlaying(true);
-      audioSeekService.playCumulative(
-        sliced,
-        sliced.length - 1,
+      audioSeekService.playSegments(
+        visible,
         onPlayEnd,
         (localIdx) => setActiveSentenceLocalIdx(localIdx),
         onWordUpdate,
@@ -335,34 +349,21 @@ const AudioLearningScreen: React.FC = () => {
   // Tap sentence to play from it
   const handleSentenceTap = React.useCallback((sentLocalIdx: number) => {
     if (!article || !audioLoaded) return;
-    let startIdx: number;
-    if (isCumulative) {
-      if (windowSize === 'full') {
-        startIdx = 0;
-      } else {
-        startIdx = Math.max(0, currentIndex - (windowSize as number));
-      }
-    } else {
-      startIdx = currentIndex - 1;
-    }
-    const endIdx = currentIndex - 1;
-    const sliced = article.sentences.slice(startIdx, endIdx + 1);
-    const fromSliced = sliced.slice(sentLocalIdx);
-    const startSentence = fromSliced[0];
-    const endSentence = fromSliced[fromSliced.length - 1];
-    if (startSentence?.start != null && endSentence?.end != null) {
+    // displaySentences already filtered hidden — play from tapped sentence onward
+    const fromDisplay = displaySentences.slice(sentLocalIdx)
+      .filter(s => s.start != null && s.end != null);
+    if (fromDisplay.length > 0) {
       setActiveSentenceLocalIdx(sentLocalIdx);
       setActiveWordIdx(-1);
       setIsPlaying(true);
-      audioSeekService.playCumulative(
-        fromSliced,
-        fromSliced.length - 1,
+      audioSeekService.playSegments(
+        fromDisplay,
         onPlayEnd,
         (localIdx) => setActiveSentenceLocalIdx(sentLocalIdx + localIdx),
         (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
       );
     }
-  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate]);
+  }, [article, audioLoaded, displaySentences, onPlayEnd, onWordUpdate]);
 
   const handleRateChange = (newRate: number) => {
     setPlaybackRate(newRate);
@@ -389,6 +390,21 @@ const AudioLearningScreen: React.FC = () => {
     await localDB.saveSentence(savedSentence);
     setIsSaved(true);
   };
+
+  const handleToggleHideSentence = React.useCallback(async () => {
+    if (!article || !accessToken) return;
+    const sentence = article.sentences.find((s) => s.index === currentIndex);
+    if (!sentence) return;
+
+    const updatedSentences = article.sentences.map(s =>
+      s.index === currentIndex ? { ...s, hidden: !s.hidden } : s
+    );
+    const updatedArticle = { ...article, sentences: updatedSentences };
+    setArticle(updatedArticle);
+
+    const drive = new GoogleDriveService(accessToken);
+    await drive.saveArticle(updatedArticle);
+  }, [article, accessToken, currentIndex]);
 
   // Keyboard events
   useEffect(() => {
@@ -470,13 +486,23 @@ const AudioLearningScreen: React.FC = () => {
               {isBlindMode ? <VisibilityOff /> : <Visibility />}
             </IconButton>
             {!isCumulative && (
-              <IconButton
-                onClick={handleSaveSentence}
-                color={isSaved ? 'primary' : 'default'}
-                size="small"
-              >
-                {isSaved ? <Bookmark /> : <BookmarkBorder />}
-              </IconButton>
+              <>
+                <IconButton
+                  onClick={handleSaveSentence}
+                  color={isSaved ? 'primary' : 'default'}
+                  size="small"
+                >
+                  {isSaved ? <Bookmark /> : <BookmarkBorder />}
+                </IconButton>
+                <IconButton
+                  onClick={handleToggleHideSentence}
+                  size="small"
+                  color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
+                  title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}
+                >
+                  {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
+                </IconButton>
+              </>
             )}
             <IconButton onClick={handleTogglePlay} color="primary" size="small">
               {isPlaying ? <Pause /> : <PlayArrow />}
@@ -524,13 +550,23 @@ const AudioLearningScreen: React.FC = () => {
             {isBlindMode ? <VisibilityOff /> : <Visibility />}
           </IconButton>
           {!isCumulative && (
-            <IconButton
-              onClick={handleSaveSentence}
-              color={isSaved ? 'primary' : 'default'}
-              size="large"
-            >
-              {isSaved ? <Bookmark /> : <BookmarkBorder />}
-            </IconButton>
+            <>
+              <IconButton
+                onClick={handleSaveSentence}
+                color={isSaved ? 'primary' : 'default'}
+                size="large"
+              >
+                {isSaved ? <Bookmark /> : <BookmarkBorder />}
+              </IconButton>
+              <IconButton
+                onClick={handleToggleHideSentence}
+                size="large"
+                color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
+                title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}
+              >
+                {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
+              </IconButton>
+            </>
           )}
           <IconButton onClick={handleTogglePlay} color="primary" size="large">
             {isPlaying ? <Pause /> : <PlayArrow />}
@@ -553,9 +589,14 @@ const AudioLearningScreen: React.FC = () => {
         }}
       >
         <CardContent sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
-          <Typography variant="subtitle2" color="grey.600" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            영어 ({isCumulative ? '누적' : '현재'}) — Audio Seek
-          </Typography>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="subtitle2" color="grey.600" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' }, mb: 0 }}>
+              영어 ({isCumulative ? '누적' : '현재'}) — Audio Seek
+            </Typography>
+            {!isCumulative && article.sentences.find(s => s.index === currentIndex)?.hidden && (
+              <Chip label="숨김 문장" size="small" color="warning" variant="outlined" />
+            )}
+          </Stack>
 
           <Box
             sx={{
@@ -683,13 +724,13 @@ const AudioLearningScreen: React.FC = () => {
             value={playbackRate}
             onChange={(_, newValue) => handleRateChange(newValue as number)}
             min={0.5}
-            max={2.0}
+            max={3.0}
             step={0.1}
             marks={[
               { value: 0.5, label: '0.5x' },
               { value: 1.0, label: '1.0x' },
-              { value: 1.5, label: '1.5x' },
               { value: 2.0, label: '2.0x' },
+              { value: 3.0, label: '3.0x' },
             ]}
             valueLabelDisplay="auto"
             valueLabelFormat={(value) => `${value.toFixed(1)}x`}

@@ -25,6 +25,9 @@ import {
   SkipPrevious,
   SkipNext,
   MergeType,
+  VisibilityOff,
+  Visibility,
+  FileDownload,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
@@ -540,6 +543,37 @@ const TimestampEditorScreen: React.FC = () => {
     alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
   }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, loadAudioArticles, accessToken]);
 
+  const handleHideSentence = useCallback(() => {
+    pushUndo();
+    setSentences(prev => prev.map((s, i) =>
+      i === selectedIndex ? { ...s, hidden: true } : s
+    ));
+    setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
+  const handleUnhideSentence = useCallback(() => {
+    pushUndo();
+    setSentences(prev => prev.map((s, i) =>
+      i === selectedIndex ? { ...s, hidden: false } : s
+    ));
+    setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
+  const handleExport = useCallback((visibleOnly: boolean) => {
+    const exported = visibleOnly
+      ? sentences.filter(s => !s.hidden)
+      : sentences;
+    const json = JSON.stringify(exported, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const suffix = visibleOnly ? '_visible' : '_all';
+    a.download = `${article?.title ?? 'sentences'}${suffix}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [sentences, article]);
+
   const handleSelectSentence = useCallback((idx: number) => {
     const ws = wavesurferRef.current;
     // Stop playback on navigation to prevent unwanted audio
@@ -609,15 +643,15 @@ const TimestampEditorScreen: React.FC = () => {
         handleNextSentence();
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        adjustTime('start', -0.1);
+        handleUnhideSentence();
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
-        adjustTime('end', 0.1);
+        handleHideSentence();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, adjustTime, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
 
   if (!article) {
     return (
@@ -652,6 +686,23 @@ const TimestampEditorScreen: React.FC = () => {
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           {hasChanges && <Chip label="변경됨" color="warning" size="small" />}
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<FileDownload />}
+            onClick={() => handleExport(false)}
+          >
+            전체
+          </Button>
+          <Button
+            variant="outlined"
+            color="success"
+            size="small"
+            startIcon={<FileDownload />}
+            onClick={() => handleExport(true)}
+          >
+            학습용
+          </Button>
           {splitMarkers.size > 0 && (
             <Button
               variant="outlined"
@@ -719,10 +770,23 @@ const TimestampEditorScreen: React.FC = () => {
         {/* Controls */}
         <Paper elevation={3} sx={{ p: 2, minWidth: { md: 320 } }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-            <Typography variant="subtitle2">
-              문장 {selected?.index ?? '-'} / {sentences.length}
-            </Typography>
+            <Stack direction="row" alignItems="center" spacing={0.5}>
+              <Typography variant="subtitle2">
+                문장 {selected?.index ?? '-'} / {sentences.length}
+              </Typography>
+              {selected?.hidden && (
+                <Chip label="숨김" size="small" color="default" variant="outlined" />
+              )}
+            </Stack>
             <Box sx={{ display: 'flex', gap: 0.5 }}>
+              <IconButton
+                size="small"
+                onClick={selected?.hidden ? handleUnhideSentence : handleHideSentence}
+                color={selected?.hidden ? 'default' : 'primary'}
+                title={selected?.hidden ? '숨김 해제 (←)' : '숨기기 (→)'}
+              >
+                {selected?.hidden ? <VisibilityOff /> : <Visibility />}
+              </IconButton>
               <Button
                 size="small"
                 variant={splitMode ? 'contained' : 'outlined'}
@@ -835,7 +899,7 @@ const TimestampEditorScreen: React.FC = () => {
             <Typography variant="caption" display="block">Space: 처음부터 재생</Typography>
             <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
             <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
-            <Typography variant="caption" display="block">←→: start -0.1s / end +0.1s</Typography>
+            <Typography variant="caption" display="block">→: 문장 숨기기 / ←: 숨김 해제</Typography>
             <Typography variant="caption" display="block">D: 문장 분할</Typography>
             <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
             <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
@@ -870,9 +934,11 @@ const TimestampEditorScreen: React.FC = () => {
                           sx={{
                             fontWeight: i === selectedIndex ? 600 : 400,
                             fontSize: '0.85rem',
+                            opacity: s.hidden ? 0.4 : 1,
+                            textDecoration: s.hidden ? 'line-through' : 'none',
                           }}
                         >
-                          [{s.index}] {s.text}
+                          [{s.index}] {s.hidden ? '👁️‍🗨️ ' : ''}{s.text}
                         </Typography>
                       }
                       secondary={

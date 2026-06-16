@@ -13,6 +13,11 @@ class AudioSeekService {
   private playId: number = 0; // monotonic counter to invalidate stale play calls
   private rafId: number = 0; // requestAnimationFrame handle
 
+  // Segment-chaining state (for gapped playback with hidden sentences)
+  private segments: SentenceEntry[] = [];
+  private currentSegmentIdx: number = -1;
+  private segmentMode: boolean = false;
+
   constructor() {
     this.audio = new Audio();
   }
@@ -45,7 +50,42 @@ class AudioSeekService {
   private pollTime(): void {
     const t = this.audio.currentTime;
 
-    if (this.targetEndTime > 0 && t >= this.targetEndTime) {
+    // Segment-chaining mode: check current segment end → advance to next
+    if (this.segmentMode && this.currentSegmentIdx >= 0) {
+      const seg = this.segments[this.currentSegmentIdx];
+      if (seg?.end != null && t >= seg.end) {
+        const nextIdx = this.currentSegmentIdx + 1;
+        if (nextIdx < this.segments.length) {
+          // Jump to next segment
+          this.currentSegmentIdx = nextIdx;
+          const nextSeg = this.segments[nextIdx];
+          if (nextSeg?.start != null) {
+            this.audio.currentTime = nextSeg.start;
+            this.targetEndTime = nextSeg.end ?? 0;
+            this.lastReportedSentence = -1;
+            this.lastReportedWord = -1;
+            if (this.onSentenceChange) this.onSentenceChange(nextIdx);
+          }
+          return;
+        } else {
+          // All segments done
+          this.audio.pause();
+          this.targetEndTime = 0;
+          this.segmentMode = false;
+          this.currentSegmentIdx = -1;
+          this.stopTrackingLoop();
+          this.clearTracking();
+          if (this.onEndCallback) {
+            this.onEndCallback();
+            this.onEndCallback = null;
+          }
+          return;
+        }
+      }
+    }
+
+    // Non-segment mode: original end-time check
+    if (!this.segmentMode && this.targetEndTime > 0 && t >= this.targetEndTime) {
       this.audio.pause();
       this.targetEndTime = 0;
       this.stopTrackingLoop();
@@ -58,7 +98,19 @@ class AudioSeekService {
     }
 
     // Track which sentence + word is currently playing
-    if (this.trackingSentences.length > 0) {
+    if (this.segmentMode && this.currentSegmentIdx >= 0) {
+      // In segment mode, current sentence = currentSegmentIdx
+      const i = this.currentSegmentIdx;
+      const s = this.segments[i];
+      if (s && s.start != null && s.end != null) {
+        if (i !== this.lastReportedSentence) {
+          this.lastReportedSentence = i;
+          this.lastReportedWord = -1;
+          if (this.onSentenceChange) this.onSentenceChange(i);
+        }
+        this.trackWord(s, i, t);
+      }
+    } else if (this.trackingSentences.length > 0) {
       for (let i = this.trackingSentences.length - 1; i >= 0; i--) {
         const s = this.trackingSentences[i];
         if (s.start != null && t >= s.start) {
@@ -67,33 +119,34 @@ class AudioSeekService {
             this.lastReportedWord = -1;
             if (this.onSentenceChange) this.onSentenceChange(i);
           }
-          // Word-level tracking
-          if (this.onWordChange && s.start != null && s.end != null) {
-            const textWordCount = s.text.split(/\s+/).length;
-            let wordIdx = -1;
-            if (s.words && s.words.length > 0) {
-              const adjustedT = t + this.wordTimingOffset;
-              for (let w = Math.min(s.words.length, textWordCount) - 1; w >= 0; w--) {
-                if (adjustedT >= s.words[w].start) {
-                  wordIdx = w;
-                  break;
-                }
-              }
-            } else {
-              // Fallback: linear interpolation
-              const dur = s.end - s.start;
-              const elapsed = t - s.start;
-              wordIdx = Math.min(Math.floor((elapsed / dur) * textWordCount), textWordCount - 1);
-            }
-            wordIdx = Math.min(wordIdx, textWordCount - 1);
-            if (wordIdx !== this.lastReportedWord && wordIdx >= 0) {
-              this.lastReportedWord = wordIdx;
-              this.onWordChange(i, wordIdx);
-            }
-          }
+          this.trackWord(s, i, t);
           break;
         }
       }
+    }
+  }
+
+  private trackWord(s: SentenceEntry, sentIdx: number, t: number): void {
+    if (!this.onWordChange || s.start == null || s.end == null) return;
+    const textWordCount = s.text.split(/\s+/).length;
+    let wordIdx = -1;
+    if (s.words && s.words.length > 0) {
+      const adjustedT = t + this.wordTimingOffset;
+      for (let w = Math.min(s.words.length, textWordCount) - 1; w >= 0; w--) {
+        if (adjustedT >= s.words[w].start) {
+          wordIdx = w;
+          break;
+        }
+      }
+    } else {
+      const dur = s.end - s.start;
+      const elapsed = t - s.start;
+      wordIdx = Math.min(Math.floor((elapsed / dur) * textWordCount), textWordCount - 1);
+    }
+    wordIdx = Math.min(wordIdx, textWordCount - 1);
+    if (wordIdx !== this.lastReportedWord && wordIdx >= 0) {
+      this.lastReportedWord = wordIdx;
+      this.onWordChange(sentIdx, wordIdx);
     }
   }
 
@@ -159,9 +212,12 @@ class AudioSeekService {
     this.startPlay();
   }
 
-  playCumulative(
-    sentences: SentenceEntry[],
-    upTo: number,
+  /**
+   * Play multiple sentence segments sequentially, seeking between gaps.
+   * Each sentence's [start, end] is played in order; gaps (hidden sentences) are skipped.
+   */
+  playSegments(
+    segments: SentenceEntry[],
     onEnd?: () => void,
     onSentenceChange?: (index: number) => void,
     onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
@@ -169,17 +225,33 @@ class AudioSeekService {
     this.clearPauseTimer();
     this.cancelAndPause();
     this.clearTracking();
-    const startSentence = sentences[0];
-    const endSentence = sentences[upTo];
-    if (startSentence?.start == null || endSentence?.end == null) return;
+    if (segments.length === 0) return;
 
-    this.audio.currentTime = startSentence.start;
-    this.targetEndTime = endSentence.end;
+    const firstSeg = segments[0];
+    if (firstSeg.start == null || firstSeg.end == null) return;
+
+    this.segmentMode = true;
+    this.segments = segments;
+    this.currentSegmentIdx = 0;
+    this.audio.currentTime = firstSeg.start;
+    this.targetEndTime = firstSeg.end;
     this.onEndCallback = onEnd || null;
-    this.trackingSentences = sentences;
     this.onSentenceChange = onSentenceChange || null;
     this.onWordChange = onWordChange || null;
+    if (onSentenceChange) onSentenceChange(0);
     this.startPlay();
+  }
+
+  playCumulative(
+    sentences: SentenceEntry[],
+    upTo: number,
+    onEnd?: () => void,
+    onSentenceChange?: (index: number) => void,
+    onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
+  ): void {
+    // Use segment-chaining: play each sentence's [start,end] individually
+    const segs = sentences.slice(0, upTo + 1).filter(s => s.start != null && s.end != null);
+    this.playSegments(segs, onEnd, onSentenceChange, onWordChange);
   }
 
   stop(): void {
@@ -187,16 +259,24 @@ class AudioSeekService {
     this.cancelAndPause();
     this.audio.currentTime = 0;
     this.targetEndTime = 0;
+    this.segmentMode = false;
+    this.currentSegmentIdx = -1;
+    this.segments = [];
     this.onEndCallback = null;
   }
 
   pause(): void {
     this.clearPauseTimer();
     this.cancelAndPause();
-    this.targetEndTime = 0;
+    // Keep segment state for resume
   }
 
   resume(): void {
+    // Restore targetEndTime for segment mode
+    if (this.segmentMode && this.currentSegmentIdx >= 0) {
+      const seg = this.segments[this.currentSegmentIdx];
+      if (seg?.end != null) this.targetEndTime = seg.end;
+    }
     this.startPlay();
   }
 
