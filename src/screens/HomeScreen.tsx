@@ -22,6 +22,10 @@ import {
   MenuItem,
   FormControlLabel,
   Checkbox,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
 } from '@mui/material';
 import {
   Delete as DeleteIcon,
@@ -118,6 +122,10 @@ export const HomeScreen: React.FC = () => {
   const [uploadJsonFile, setUploadJsonFile] = useState<File | null>(null);
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadSource, setUploadSource] = useState('');
+  // Batch upload state
+  const [batchFolders, setBatchFolders] = useState<{ name: string; mp3: File; json: File; skip: boolean }[]>([]);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchProgress, setBatchProgress] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [editingTitleValue, setEditingTitleValue] = useState('');
 
@@ -246,6 +254,36 @@ export const HomeScreen: React.FC = () => {
     setEditingTitleId(null);
   };
 
+  /** Upload a single article from mp3 + json + title */
+  const uploadSingleArticle = async (mp3: File, json: File, title: string, source?: string) => {
+    const jsonText = await json.text();
+    const rawSentences = JSON.parse(jsonText);
+    const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
+      index: s.index ?? i + 1,
+      text: s.text,
+      start: s.start ?? 0,
+      end: s.end ?? 0,
+      words: s.words,
+      memo: s.memo,
+    }));
+
+    const audioBlob = new Blob([await mp3.arrayBuffer()], { type: 'audio/mpeg' });
+
+    const audioArticle: AudioArticle = {
+      id: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title,
+      audioBlob,
+      sentences,
+      source: source || undefined,
+      nextReviewDate: null,
+      reviewInterval: 0,
+      createdAt: new Date(),
+      lastAccessed: new Date(),
+    };
+
+    await saveAudioArticle(audioArticle);
+  };
+
   const handleUploadAudioArticle = async () => {
     if (!uploadMp3File || !uploadJsonFile || !uploadTitle.trim()) {
       alert('제목, MP3, sentences.json 모두 필요합니다. 로컬에서 yt2mp3 실행 후 업로드하세요.');
@@ -254,39 +292,8 @@ export const HomeScreen: React.FC = () => {
 
     try {
       setLoading(true);
+      await uploadSingleArticle(uploadMp3File, uploadJsonFile, uploadTitle.trim(), uploadSource.trim());
 
-      // Parse sentences.json (from yt2mp3: VTT sentences + Whisper word timestamps)
-      const jsonText = await uploadJsonFile.text();
-      const rawSentences = JSON.parse(jsonText);
-      const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
-        index: s.index ?? i + 1,
-        text: s.text,
-        start: s.start ?? 0,
-        end: s.end ?? 0,
-        words: s.words,
-        memo: s.memo,
-      }));
-
-      // Read mp3 as blob
-      const audioBlob = new Blob([await uploadMp3File.arrayBuffer()], {
-        type: 'audio/mpeg',
-      });
-
-      const audioArticle: AudioArticle = {
-        id: `audio-${Date.now()}`,
-        title: uploadTitle.trim(),
-        audioBlob,
-        sentences,
-        source: uploadSource.trim() || undefined,
-        nextReviewDate: null,
-        reviewInterval: 0,
-        createdAt: new Date(),
-        lastAccessed: new Date(),
-      };
-
-      await saveAudioArticle(audioArticle);
-
-      // Reset form
       setUploadMp3File(null);
       setUploadJsonFile(null);
       setUploadTitle('');
@@ -297,6 +304,40 @@ export const HomeScreen: React.FC = () => {
       alert('업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleBatchUpload = async () => {
+    const toUpload = batchFolders.filter(f => !f.skip);
+    if (toUpload.length === 0) return;
+
+    try {
+      setLoading(true);
+      let uploaded = 0;
+      let failed = 0;
+      for (const folder of toUpload) {
+        try {
+          setBatchProgress(`${uploaded + 1}/${toUpload.length}: ${folder.name}`);
+          await uploadSingleArticle(folder.mp3, folder.json, folder.name);
+          uploaded++;
+        } catch (e) {
+          console.error(`Failed to upload ${folder.name}:`, e);
+          failed++;
+        }
+      }
+      const skipped = batchFolders.filter(f => f.skip).length;
+      alert(`완료: ${uploaded}개 업로드${skipped ? `, ${skipped}개 스킵 (이미 존재)` : ''}${failed ? `, ${failed}개 실패` : ''}`);
+
+      setBatchFolders([]);
+      setBatchMode(false);
+      setBatchProgress('');
+      setUploadDialogOpen(false);
+    } catch (error) {
+      console.error('Batch upload failed:', error);
+      alert('배치 업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setLoading(false);
+      setBatchProgress('');
     }
   };
 
@@ -1411,80 +1452,159 @@ export const HomeScreen: React.FC = () => {
       {/* Audio Upload 다이얼로그 */}
       <Dialog
         open={uploadDialogOpen}
-        onClose={() => setUploadDialogOpen(false)}
+        onClose={() => { if (!isLoading) { setUploadDialogOpen(false); setBatchMode(false); setBatchFolders([]); setBatchProgress(''); } }}
         maxWidth="sm"
         fullWidth
       >
         <DialogTitle>Audio Article 업로드</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 1 }}>
-            터미널에서 <code>yt2mp3 &lt;url&gt;</code> 실행 후 생성된 MP3 + sentences.json을 업로드합니다.
+            단일 폴더 또는 여러 폴더가 들어있는 상위 폴더를 선택하세요.
           </Typography>
-          <TextField
-            fullWidth
-            label="제목"
-            value={uploadTitle}
-            onChange={(e) => setUploadTitle(e.target.value)}
-            margin="normal"
-            placeholder="예: Statistical Rethinking Lecture B01"
-            autoFocus
-          />
-          <TextField
-            fullWidth
-            label="출처 (선택)"
-            value={uploadSource}
-            onChange={(e) => setUploadSource(e.target.value)}
-            margin="normal"
-            placeholder="예: https://youtube.com/watch?v=..."
-          />
-          <Box sx={{ mt: 2 }}>
+          <Box sx={{ mt: 1 }}>
             <Button
               variant="outlined"
               component="label"
               fullWidth
               sx={{ mb: 1, justifyContent: 'flex-start' }}
             >
-              {uploadMp3File && uploadJsonFile
-                ? `📁 ${uploadMp3File.name} + ${uploadJsonFile.name}`
-                : uploadMp3File
-                ? `MP3: ${uploadMp3File.name} (JSON 없음)`
-                : '폴더 선택 (MP3 + sentences.json)'}
+              {batchMode
+                ? `📁 ${batchFolders.length}개 폴더 감지`
+                : uploadMp3File && uploadJsonFile
+                  ? `📁 ${uploadMp3File.name} + ${uploadJsonFile.name}`
+                  : uploadMp3File
+                    ? `MP3: ${uploadMp3File.name} (JSON 없음)`
+                    : '폴더 선택 (MP3 + sentences.json)'}
               <input
                 type="file"
                 hidden
                 {...{ webkitdirectory: '', directory: '' } as any}
                 onChange={(e) => {
                   const files = e.target.files;
-                  if (!files) return;
-                  let mp3: File | null = null;
-                  let json: File | null = null;
+                  if (!files || files.length === 0) return;
+
+                  // Group files by subfolder
+                  const groups: Record<string, { mp3?: File; json?: File }> = {};
                   for (let i = 0; i < files.length; i++) {
                     const f = files[i];
-                    if (f.name.endsWith('.mp3')) mp3 = f;
-                    if (f.name === 'sentences.json') json = f;
+                    const parts = ((f as any).webkitRelativePath || f.name).split('/');
+                    // depth 1: "folder/file" → single, depth 2+: "parent/sub/file" → batch
+                    const key = parts.length >= 3 ? parts[1] : parts[0];
+                    if (!groups[key]) groups[key] = {};
+                    if (f.name.endsWith('.mp3')) groups[key].mp3 = f;
+                    if (f.name === 'sentences.json') groups[key].json = f;
                   }
-                  setUploadMp3File(mp3);
-                  setUploadJsonFile(json);
-                  // Auto-fill title from folder name
-                  if (mp3 && !uploadTitle.trim()) {
-                    const path = (mp3 as any).webkitRelativePath || mp3.name;
-                    const folder = path.split('/')[0];
-                    if (folder && folder !== mp3.name) setUploadTitle(folder);
+
+                  // Filter valid folders (have both mp3 + json)
+                  const validFolders = Object.entries(groups)
+                    .filter(([, g]) => g.mp3 && g.json)
+                    .map(([name, g]) => ({ name, mp3: g.mp3!, json: g.json!, skip: false }));
+
+                  if (validFolders.length === 0) {
+                    alert('MP3 + sentences.json이 있는 폴더를 찾을 수 없습니다.');
+                    return;
+                  }
+
+                  if (validFolders.length === 1) {
+                    // Single folder mode
+                    setBatchMode(false);
+                    setBatchFolders([]);
+                    setUploadMp3File(validFolders[0].mp3);
+                    setUploadJsonFile(validFolders[0].json);
+                    setUploadTitle(validFolders[0].name);
+                  } else {
+                    // Batch mode: mark existing titles as skip
+                    const existingTitles = new Set(audioArticles.map(a => a.title));
+                    const marked = validFolders.map(f => ({
+                      ...f,
+                      skip: existingTitles.has(f.name),
+                    }));
+                    setBatchMode(true);
+                    setBatchFolders(marked);
+                    setUploadMp3File(null);
+                    setUploadJsonFile(null);
+                    setUploadTitle('');
                   }
                 }}
               />
             </Button>
           </Box>
+
+          {batchMode ? (
+            /* Batch mode: folder list with skip indicators */
+            <Box sx={{ mt: 1 }}>
+              {batchProgress && (
+                <Typography variant="body2" color="primary" sx={{ mb: 1 }}>
+                  {batchProgress}
+                </Typography>
+              )}
+              <List dense sx={{ maxHeight: 300, overflow: 'auto' }}>
+                {batchFolders.map((f, i) => (
+                  <ListItem key={i} disablePadding>
+                    <ListItemButton
+                      onClick={() => {
+                        setBatchFolders(prev => prev.map((ff, j) =>
+                          j === i ? { ...ff, skip: !ff.skip } : ff
+                        ));
+                      }}
+                      sx={{ opacity: f.skip ? 0.4 : 1 }}
+                    >
+                      <ListItemText
+                        primary={f.name}
+                        secondary={f.skip ? '스킵 (이미 존재)' : `${f.mp3.name} + sentences.json`}
+                      />
+                      {f.skip && <Chip label="스킵" size="small" color="default" />}
+                    </ListItemButton>
+                  </ListItem>
+                ))}
+              </List>
+              <Typography variant="caption" color="text.secondary">
+                {batchFolders.filter(f => !f.skip).length}개 업로드 예정,{' '}
+                {batchFolders.filter(f => f.skip).length}개 스킵 (클릭으로 토글)
+              </Typography>
+            </Box>
+          ) : (
+            /* Single mode: title + source fields */
+            <>
+              <TextField
+                fullWidth
+                label="제목"
+                value={uploadTitle}
+                onChange={(e) => setUploadTitle(e.target.value)}
+                margin="normal"
+                placeholder="예: Statistical Rethinking Lecture B01"
+                autoFocus
+              />
+              <TextField
+                fullWidth
+                label="출처 (선택)"
+                value={uploadSource}
+                onChange={(e) => setUploadSource(e.target.value)}
+                margin="normal"
+                placeholder="예: https://youtube.com/watch?v=..."
+              />
+            </>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setUploadDialogOpen(false)} disabled={isLoading}>취소</Button>
-          <Button
-            onClick={handleUploadAudioArticle}
-            variant="contained"
-            disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
-          >
-            업로드
-          </Button>
+          <Button onClick={() => { setUploadDialogOpen(false); setBatchMode(false); setBatchFolders([]); setBatchProgress(''); }} disabled={isLoading}>취소</Button>
+          {batchMode ? (
+            <Button
+              onClick={handleBatchUpload}
+              variant="contained"
+              disabled={batchFolders.filter(f => !f.skip).length === 0 || isLoading}
+            >
+              {isLoading ? batchProgress || '업로드 중...' : `${batchFolders.filter(f => !f.skip).length}개 업로드`}
+            </Button>
+          ) : (
+            <Button
+              onClick={handleUploadAudioArticle}
+              variant="contained"
+              disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
+            >
+              업로드
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
 
