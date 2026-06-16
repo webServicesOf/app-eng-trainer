@@ -13,6 +13,9 @@ interface AudioArticleMeta {
   sentences: SentenceEntry[];
   splitPoints?: number[];
   subDeckReviews?: SubDeckReview[];
+  savedAsDeck?: boolean;
+  savedSentenceIndices?: number[];
+  savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null };
   source?: string;
   nextReviewDate?: string | null;
   reviewInterval?: number;
@@ -201,6 +204,9 @@ export class GoogleDriveService {
       sentences: article.sentences,
       splitPoints: article.splitPoints,
       subDeckReviews: article.subDeckReviews,
+      savedAsDeck: article.savedAsDeck,
+      savedSentenceIndices: article.savedSentenceIndices,
+      savedSentenceReview: article.savedSentenceReview,
       source: article.source,
       nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
       reviewInterval: article.reviewInterval || 0,
@@ -216,6 +222,9 @@ export class GoogleDriveService {
       sentences: meta.sentences || [],
       splitPoints: meta.splitPoints,
       subDeckReviews: meta.subDeckReviews,
+      savedAsDeck: meta.savedAsDeck,
+      savedSentenceIndices: meta.savedSentenceIndices,
+      savedSentenceReview: meta.savedSentenceReview,
       source: meta.source,
       nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
       reviewInterval: meta.reviewInterval || 0,

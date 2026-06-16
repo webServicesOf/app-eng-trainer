@@ -77,7 +77,10 @@ function snapshotArticle(a: AudioArticle): string {
     sd: a.savedAsDeck || false,
     si: (a.savedSentenceIndices || []).slice().sort(),
     sr: a.savedSentenceReview || null,
-    sdr: (a.subDeckReviews || []).map(r => ({ s: r.startIndex, e: r.endIndex, ri: r.reviewInterval, saved: r.saved || false })),
+    sdr: (a.subDeckReviews || [])
+      .filter(r => r.saved || r.reviewInterval || r.nextReviewDate) // exclude empty entries
+      .map(r => ({ s: r.startIndex, e: r.endIndex, ri: r.reviewInterval, saved: r.saved || false }))
+      .sort((a, b) => a.s - b.s || a.e - b.e),
     hidden: (a.sentences || []).filter(s => s.hidden).map(s => s.index),
   });
 }
@@ -90,7 +93,7 @@ function checkCleanAndUpdateDirty(get: () => AppStore, set: (partial: Partial<Ap
   const current = snapshotArticle(article);
   const shouldBeDirty = current !== clean;
   const isDirty = get().dirtyAudioIds.has(articleId);
-  if (shouldBeDirty === isDirty) return; // no change — skip re-render
+  if (shouldBeDirty === isDirty) return;
   const dirty = new Set(get().dirtyAudioIds);
   if (shouldBeDirty) dirty.add(articleId);
   else dirty.delete(articleId);
@@ -405,15 +408,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const article = get().audioArticles.find(a => a.id === articleId);
         if (!article) continue;
 
-        // Collect SubDeck review state into article
+        // Collect SubDeck review state into article, preserving saved flags
         const subs = get().subDecks.filter(sd => sd.parentId === articleId);
-        const subDeckReviews = subs.map(sd => ({
-          startIndex: sd.startIndex,
-          endIndex: sd.endIndex,
-          nextReviewDate: sd.nextReviewDate ? new Date(sd.nextReviewDate).toISOString() : null,
-          reviewInterval: sd.reviewInterval || 0,
-          lastAccessed: sd.lastAccessed ? new Date(sd.lastAccessed).toISOString() : undefined,
-        }));
+        const existingReviews = article.subDeckReviews || [];
+        const subDeckReviews = subs.map(sd => {
+          const existing = existingReviews.find(r => r.startIndex === sd.startIndex && r.endIndex === sd.endIndex);
+          return {
+            startIndex: sd.startIndex,
+            endIndex: sd.endIndex,
+            nextReviewDate: sd.nextReviewDate ? new Date(sd.nextReviewDate).toISOString() : null,
+            reviewInterval: sd.reviewInterval || 0,
+            lastAccessed: sd.lastAccessed ? new Date(sd.lastAccessed).toISOString() : undefined,
+            saved: existing?.saved || false,
+          };
+        });
 
         const toSave: AudioArticle = { ...article, subDeckReviews };
         await drive.saveArticle(toSave);
@@ -575,11 +583,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const sd = get().subDecks.find(s => s.id === subDeckId);
       if (!sd) return;
       const key = `${sd.startIndex}_${sd.endIndex}`;
-      let reviews = (aa.subDeckReviews || []).map(r =>
-        `${r.startIndex}_${r.endIndex}` === key ? { ...r, saved: !r.saved } : r
-      );
-      if (!reviews.find(r => `${r.startIndex}_${r.endIndex}` === key)) {
-        reviews.push({ startIndex: sd.startIndex, endIndex: sd.endIndex, reviewInterval: sd.reviewInterval || 0, saved: true });
+      const existing = (aa.subDeckReviews || []).find(r => `${r.startIndex}_${r.endIndex}` === key);
+      let reviews;
+      if (!existing) {
+        reviews = [...(aa.subDeckReviews || []), { startIndex: sd.startIndex, endIndex: sd.endIndex, reviewInterval: 0, saved: true }];
+      } else {
+        reviews = (aa.subDeckReviews || []).map(r =>
+          `${r.startIndex}_${r.endIndex}` === key ? { ...r, saved: !r.saved } : r
+        );
       }
       const updated = { ...aa, subDeckReviews: reviews };
       set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? updated : a) });
