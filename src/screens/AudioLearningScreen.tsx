@@ -29,6 +29,7 @@ import {
   Visibility,
   VisibilityOff,
   VisibilityOffOutlined,
+  Save,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { AudioArticle, SentenceEntry } from '../types';
@@ -54,7 +55,7 @@ const AudioLearningScreen: React.FC = () => {
     resetLearningState,
   } = useLearningStore();
 
-  const { audioArticles, accessToken } = useAppStore();
+  const { audioArticles, accessToken, dirtyAudioIds, saveDirtyArticles } = useAppStore();
 
   const [article, setArticle] = useState<AudioArticle | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -70,7 +71,7 @@ const AudioLearningScreen: React.FC = () => {
 
   const loadedArticleIdRef = React.useRef<string | null>(null);
 
-  const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }) => {
+  const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }, indices?: number[]) => {
     // Skip if already loaded — prevents re-render loop from audioArticles changes
     if (loadedArticleIdRef.current === articleId && audioLoaded) return;
 
@@ -82,8 +83,14 @@ const AudioLearningScreen: React.FC = () => {
         return;
       }
 
-      // If subdeck range, slice sentences and re-index
-      if (range) {
+      if (indices && indices.length > 0) {
+        // Pick specific sentences by original index, re-index sequentially
+        const indexSet = new Set(indices);
+        const picked = meta.sentences
+          .filter(s => indexSet.has(s.index))
+          .map((s, i) => ({ ...s, index: i + 1 }));
+        setArticle({ ...meta, sentences: picked });
+      } else if (range) {
         const sliced = meta.sentences
           .slice(range.start, range.end)
           .map((s, i) => ({ ...s, index: i + 1 }));
@@ -120,8 +127,18 @@ const AudioLearningScreen: React.FC = () => {
       const startParam = params.get('start');
       const endParam = params.get('end');
       const sentenceParam = params.get('sentence');
+      const sentencesParam = params.get('sentences');
 
-      if (startParam && endParam) {
+      if (sentencesParam) {
+        // Specific sentence indices (saved sentences deck)
+        const indices = sentencesParam.split(',').map(Number).filter(n => !isNaN(n));
+        if (indices.length > 0) {
+          loadArticle(id, undefined, indices);
+          setCurrentIndex(1);
+        } else {
+          loadArticle(id);
+        }
+      } else if (startParam && endParam) {
         const start = parseInt(startParam, 10);
         const end = parseInt(endParam, 10);
         if (!isNaN(start) && !isNaN(end)) {
@@ -389,10 +406,19 @@ const AudioLearningScreen: React.FC = () => {
 
     await localDB.saveSentence(savedSentence);
     setIsSaved(true);
+
+    // Sync savedSentenceIndices to store (flush on "저장")
+    if (id) {
+      const meta = useAppStore.getState().audioArticles.find(a => a.id === id);
+      if (meta) {
+        const indices = Array.from(new Set([...(meta.savedSentenceIndices || []), currentIndex]));
+        useAppStore.getState().updateSavedSentenceIndices(id, indices);
+      }
+    }
   };
 
-  const handleToggleHideSentence = React.useCallback(async () => {
-    if (!article || !accessToken) return;
+  const handleToggleHideSentence = React.useCallback(() => {
+    if (!article || !id) return;
     const sentence = article.sentences.find((s) => s.index === currentIndex);
     if (!sentence) return;
 
@@ -402,9 +428,21 @@ const AudioLearningScreen: React.FC = () => {
     const updatedArticle = { ...article, sentences: updatedSentences };
     setArticle(updatedArticle);
 
-    const drive = new GoogleDriveService(accessToken);
-    await drive.saveArticle(updatedArticle);
-  }, [article, accessToken, currentIndex]);
+    // Sync hidden state to store (flush on "저장")
+    const { audioArticles: articles } = useAppStore.getState();
+    const meta = articles.find(a => a.id === id);
+    if (meta) {
+      const updated = { ...meta, sentences: updatedSentences };
+      useAppStore.setState({
+        audioArticles: articles.map(a => a.id === id ? updated : a),
+      });
+      // Use getState to call checkClean via a dummy update
+      const store = useAppStore.getState();
+      const dirty = new Set(store.dirtyAudioIds);
+      dirty.add(id);
+      useAppStore.setState({ dirtyAudioIds: dirty });
+    }
+  }, [article, id, currentIndex]);
 
   // Keyboard events
   useEffect(() => {
@@ -473,9 +511,21 @@ const AudioLearningScreen: React.FC = () => {
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <IconButton onClick={() => navigate('/')} color="primary" size="small">
-            <Home />
-          </IconButton>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <IconButton onClick={() => navigate('/')} color="primary" size="small">
+              <Home />
+            </IconButton>
+            {dirtyAudioIds.size > 0 && (
+              <IconButton
+                onClick={() => saveDirtyArticles()}
+                color="warning"
+                size="small"
+                title="변경사항 저장"
+              >
+                <Save />
+              </IconButton>
+            )}
+          </Box>
 
           <Stack direction="row" spacing={{ xs: 0.5, sm: 1 }} sx={{ display: { xs: 'flex', md: 'none' } }}>
             <IconButton

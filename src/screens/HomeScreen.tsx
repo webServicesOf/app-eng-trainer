@@ -38,10 +38,12 @@ import {
 
   DoneAll as DoneAllIcon,
   Save as SaveIcon,
+  Bookmark,
+  BookmarkBorder,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
+import { SavedSentence, SavedDeck, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
@@ -76,6 +78,8 @@ export const HomeScreen: React.FC = () => {
     dirtyAudioIds,
     pendingDeleteIds,
     saveDirtyArticles,
+    updateSavedSentenceIndices,
+    toggleSavedDeck,
   } = useAppStore();
 
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -85,7 +89,22 @@ export const HomeScreen: React.FC = () => {
   const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set());
   const [currentTab, setCurrentTab] = useState(0);
   const [savedSentences, setSavedSentences] = useState<SavedSentence[]>([]);
+  // Derive saved deck IDs from Drive SSOT (audioArticles + subDeckReviews)
+  const savedDeckIds = React.useMemo(() => {
+    const ids = new Set<string>();
+    audioArticles.forEach(aa => {
+      if (aa.savedAsDeck) ids.add(aa.id);
+      (aa.subDeckReviews || []).forEach(r => {
+        if (r.saved) {
+          const sd = subDecks.find(s => s.parentId === aa.id && s.startIndex === r.startIndex && s.endIndex === r.endIndex);
+          if (sd) ids.add(sd.id);
+        }
+      });
+    });
+    return ids;
+  }, [audioArticles, subDecks]);
   const [loadingSaved, setLoadingSaved] = useState(false);
+  const [pendingUnsaveSentences, setPendingUnsaveSentences] = useState<Set<string>>(new Set());
   const [savedManagementMode, setSavedManagementMode] = useState(false);
   const [selectedSentences, setSelectedSentences] = useState<Set<string>>(new Set());
   const [difficultyFilter, setDifficultyFilter] = useState<string>('all');
@@ -159,6 +178,7 @@ export const HomeScreen: React.FC = () => {
     };
     init();
   }, [isAuthenticated, accessToken]); // eslint-disable-line react-hooks/exhaustive-deps
+
 
   useEffect(() => {
     if (currentTab === 2) {
@@ -301,7 +321,7 @@ export const HomeScreen: React.FC = () => {
       const saved = await localDB.getSavedSentences();
       setSavedSentences(saved);
     } catch (error) {
-      console.error('Failed to load saved sentences:', error);
+      console.error('Failed to load saved:', error);
     } finally {
       setLoadingSaved(false);
     }
@@ -314,6 +334,10 @@ export const HomeScreen: React.FC = () => {
       setHasHeader(googleSheetsConfig.hasHeader !== undefined ? googleSheetsConfig.hasHeader : true);
     }
   }, [googleSheetsConfig]);
+
+  const handleToggleSaveDeck = (id: string, _title: string, _sentenceCount: number, parentId?: string) => {
+    toggleSavedDeck(parentId || id, parentId ? id : undefined);
+  };
 
   // Helper: check if an article is due for review
   const isDue = (nextReviewDate: Date | null | undefined): boolean => {
@@ -526,11 +550,36 @@ export const HomeScreen: React.FC = () => {
     }
   };
 
-  const handleDeleteSavedSentence = async (id: string) => {
-    if (window.confirm('이 문장을 삭제하시겠습니까?')) {
-      await localDB.deleteSavedSentence(id);
-      await loadSavedSentences();
+  const handleToggleSavedSentence = (sentence: SavedSentence) => {
+    setPendingUnsaveSentences(prev => {
+      const next = new Set(prev);
+      if (next.has(sentence.id)) next.delete(sentence.id);
+      else next.add(sentence.id);
+      return next;
+    });
+  };
+
+  const applyPendingUnsaveSentences = async () => {
+    if (pendingUnsaveSentences.size === 0) return;
+    const toRemove = savedSentences.filter(s => pendingUnsaveSentences.has(s.id));
+    const byArticle = new Map<string, number[]>();
+    for (const s of toRemove) {
+      if (!byArticle.has(s.articleId)) byArticle.set(s.articleId, []);
+      byArticle.get(s.articleId)!.push(s.sentenceIndex);
     }
+    for (const id of Array.from(pendingUnsaveSentences)) {
+      await localDB.deleteSavedSentence(id);
+    }
+    for (const [articleId, removedIndices] of Array.from(byArticle.entries())) {
+      const aa = audioArticles.find(a => a.id === articleId);
+      if (aa) {
+        const removeSet = new Set(removedIndices);
+        const newIndices = (aa.savedSentenceIndices || []).filter(i => !removeSet.has(i));
+        updateSavedSentenceIndices(articleId, newIndices);
+      }
+    }
+    setPendingUnsaveSentences(new Set());
+    await loadSavedSentences();
   };
 
   const handleGoToArticle = (articleId: string, sentenceIndex: number) => {
@@ -570,9 +619,25 @@ export const HomeScreen: React.FC = () => {
 
   const handleBulkDeleteSentences = async () => {
     if (selectedSentences.size === 0) return;
-    if (window.confirm(`선택한 ${selectedSentences.size}개의 문장을 삭제하시겠습니까?`)) {
+    if (window.confirm(`선택한 ${selectedSentences.size}개의 문장을 저장 해제하시겠습니까?`)) {
+      // Group selected sentences by articleId for Drive sync
+      const toRemove = savedSentences.filter(s => selectedSentences.has(s.id));
+      const byArticle = new Map<string, number[]>();
+      for (const s of toRemove) {
+        if (!byArticle.has(s.articleId)) byArticle.set(s.articleId, []);
+        byArticle.get(s.articleId)!.push(s.sentenceIndex);
+      }
       for (const id of Array.from(selectedSentences)) {
         await localDB.deleteSavedSentence(id);
+      }
+      // Update Drive SSOT per article
+      for (const [articleId, removedIndices] of Array.from(byArticle.entries())) {
+        const aa = audioArticles.find(a => a.id === articleId);
+        if (aa) {
+          const removeSet = new Set(removedIndices);
+          const newIndices = (aa.savedSentenceIndices || []).filter(i => !removeSet.has(i));
+          updateSavedSentenceIndices(articleId, newIndices);
+        }
       }
       setSelectedSentences(new Set());
       setSavedManagementMode(false);
@@ -668,14 +733,31 @@ export const HomeScreen: React.FC = () => {
               </Button>
             </>
           ) : (
-            <Button
-              variant={savedManagementMode ? 'outlined' : 'contained'}
-              startIcon={<EditIcon />}
-              onClick={toggleSavedManagementMode}
-              size="small"
-            >
-              {savedManagementMode ? '완료' : '관리'}
-            </Button>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant={savedManagementMode ? 'outlined' : 'contained'}
+                startIcon={<EditIcon />}
+                onClick={toggleSavedManagementMode}
+                size="small"
+              >
+                {savedManagementMode ? '완료' : '관리'}
+              </Button>
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0) && (
+                <Button
+                  variant="contained"
+                  color="warning"
+                  startIcon={<SaveIcon />}
+                  onClick={async () => {
+                    await applyPendingUnsaveSentences();
+                    await saveDirtyArticles();
+                  }}
+                  size="small"
+                  disabled={isLoading}
+                >
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size})
+                </Button>
+              )}
+            </Box>
           )}
         </Box>
       </Box>
@@ -861,7 +943,7 @@ export const HomeScreen: React.FC = () => {
                     color="primary"
                     onClick={() => handleLearnArticle(article.id)}
                   >
-                    학습하기
+                    학습
                   </Button>
                   <Button
                     size="small"
@@ -870,14 +952,14 @@ export const HomeScreen: React.FC = () => {
                   >
                     {article.reviewInterval || 0}일
                   </Button>
-                  <Button
+                  <IconButton
                     size="small"
                     color="success"
-                    startIcon={<DoneAllIcon />}
                     onClick={() => markReviewDone('article', article.id)}
+                    title="복습 완료"
                   >
-                    완료
-                  </Button>
+                    <DoneAllIcon fontSize="small" />
+                  </IconButton>
                   <IconButton
                     size="small"
                     color="error"
@@ -981,35 +1063,25 @@ export const HomeScreen: React.FC = () => {
                       </Box>
                     )}
                   </CardContent>
-                  <CardActions sx={{ flexWrap: 'wrap', gap: 0.5 }}>
-                    <Button
+                  <CardActions sx={{ gap: 0.5, flexWrap: 'nowrap' }}>
+                    <IconButton
                       size="small"
-                      color="primary"
-                      onClick={() => handleLearnAudioArticle(aa.id)}
+                      color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
+                      onClick={() => handleToggleSaveDeck(aa.id, aa.title, aa.sentences?.length ?? 0)}
+                      title={savedDeckIds.has(aa.id) ? '저장 해제' : '덱 저장'}
                     >
-                      학습하기
+                      {savedDeckIds.has(aa.id) ? <Bookmark fontSize="small" /> : <BookmarkBorder fontSize="small" />}
+                    </IconButton>
+                    <Button size="small" color="primary" onClick={() => handleLearnAudioArticle(aa.id)}>
+                      학습
                     </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={() => cycleReviewInterval('audio', aa.id)}
-                    >
+                    <Button size="small" variant="outlined" onClick={() => cycleReviewInterval('audio', aa.id)}>
                       {aa.reviewInterval || 0}일
                     </Button>
-                    <Button
-                      size="small"
-                      color="success"
-                      startIcon={<DoneAllIcon />}
-                      onClick={() => markReviewDone('audio', aa.id)}
-                    >
-                      완료
-                    </Button>
-                    <Button
-                      size="small"
-                      color="secondary"
-                      startIcon={<EditIcon />}
-                      onClick={() => navigate(`/edit-timestamps/${aa.id}`)}
-                    >
+                    <IconButton size="small" color="success" onClick={() => markReviewDone('audio', aa.id)} title="복습 완료">
+                      <DoneAllIcon fontSize="small" />
+                    </IconButton>
+                    <Button size="small" color="secondary" onClick={() => navigate(`/edit-timestamps/${aa.id}`)}>
                       편집
                     </Button>
                     <IconButton
@@ -1045,15 +1117,22 @@ export const HomeScreen: React.FC = () => {
                                 {sd.nextReviewDate ? ` · 복습: ${new Date(sd.nextReviewDate).toLocaleDateString()}` : ''}
                               </Typography>
                             </Box>
+                            <IconButton
+                              size="small"
+                              color={savedDeckIds.has(sd.id) ? 'primary' : 'default'}
+                              onClick={() => handleToggleSaveDeck(sd.id, sd.title, sd.endIndex - sd.startIndex, sd.parentId)}
+                            >
+                              {savedDeckIds.has(sd.id) ? <Bookmark sx={{ fontSize: 14 }} /> : <BookmarkBorder sx={{ fontSize: 14 }} />}
+                            </IconButton>
                             <Button size="small" onClick={() => navigate(`/learn-audio/${aa.id}?start=${sd.startIndex}&end=${sd.endIndex}`)}>
                               학습
                             </Button>
                             <Button size="small" variant="outlined" onClick={() => cycleReviewInterval('subdeck', sd.id)}>
                               {sd.reviewInterval || 0}일
                             </Button>
-                            <Button size="small" color="success" onClick={() => markReviewDone('subdeck', sd.id)}>
-                              완료
-                            </Button>
+                            <IconButton size="small" color="success" onClick={() => markReviewDone('subdeck', sd.id)} title="복습 완료">
+                              <DoneAllIcon sx={{ fontSize: 14 }} />
+                            </IconButton>
                             <IconButton size="small" color="error" onClick={() => deleteSubDeck(sd.id)}>
                               <DeleteIcon sx={{ fontSize: 14 }} />
                             </IconButton>
@@ -1101,85 +1180,184 @@ export const HomeScreen: React.FC = () => {
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
               <CircularProgress />
             </Box>
-          ) : savedSentences.length === 0 ? (
-            <Box sx={{ textAlign: 'center', py: 8 }}>
-              <Typography variant="h6" color="text.secondary" gutterBottom>
-                저장된 문장이 없습니다
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                단일 모드에서 문장을 저장해보세요
-              </Typography>
-            </Box>
           ) : (
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: {
-                  xs: 'repeat(1, 1fr)',
-                  md: 'repeat(2, 1fr)',
-                },
-                gap: 3,
-              }}
-            >
-              {savedSentences.map((sentence) => (
-                <Card
-                  key={sentence.id}
-                  sx={{
-                    border: savedManagementMode && selectedSentences.has(sentence.id) ? 2 : 0,
-                    borderColor: 'primary.main',
-                    position: 'relative',
-                  }}
-                >
-                  {savedManagementMode && (
-                    <IconButton
-                      sx={{
-                        position: 'absolute',
-                        top: 8,
-                        right: 8,
-                        zIndex: 1,
-                      }}
-                      onClick={() => toggleSentenceSelection(sentence.id)}
-                    >
-                      {selectedSentences.has(sentence.id) ? (
-                        <CheckBox color="primary" />
-                      ) : (
-                        <CheckBoxOutlineBlank />
-                      )}
-                    </IconButton>
-                  )}
-                  <CardContent>
-                    <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                      {sentence.articleTitle} - 문장 {sentence.sentenceIndex}
+            <>
+              {/* Saved Decks — derived from Drive SSOT */}
+              {(() => {
+                const savedDeckItems: { id: string; title: string; sentenceCount: number; parentId?: string; reviewInterval: number; nextReviewDate: Date | null; reviewType: 'audio' | 'subdeck'; }[] = [];
+                audioArticles.forEach(aa => {
+                  if (aa.savedAsDeck) {
+                    savedDeckItems.push({ id: aa.id, title: aa.title, sentenceCount: aa.sentences?.length ?? 0, reviewInterval: aa.reviewInterval || 0, nextReviewDate: aa.nextReviewDate, reviewType: 'audio' });
+                  }
+                  (aa.subDeckReviews || []).forEach(r => {
+                    if (!r.saved) return;
+                    const sd = subDecks.find(s => s.parentId === aa.id && s.startIndex === r.startIndex && s.endIndex === r.endIndex);
+                    if (sd) {
+                      savedDeckItems.push({ id: sd.id, title: sd.title, sentenceCount: sd.endIndex - sd.startIndex, parentId: aa.id, reviewInterval: sd.reviewInterval || 0, nextReviewDate: sd.nextReviewDate, reviewType: 'subdeck' });
+                    }
+                  });
+                });
+                return (
+                  <>
+                    <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>
+                      Saved Decks ({savedDeckItems.length})
                     </Typography>
-                    <Typography variant="body1" sx={{ my: 2 }}>
-                      {sentence.text}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      저장: {new Date(sentence.savedAt).toLocaleDateString()}
-                    </Typography>
-                  </CardContent>
-                  {!savedManagementMode && (
-                    <CardActions>
-                      <Button
-                        size="small"
-                        color="primary"
-                        startIcon={<PlayArrow />}
-                        onClick={() => handleGoToArticle(sentence.articleId, sentence.sentenceIndex)}
-                      >
-                        원본 보기
-                      </Button>
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={() => handleDeleteSavedSentence(sentence.id)}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </CardActions>
-                  )}
-                </Card>
-              ))}
-            </Box>
+                    {savedDeckItems.length === 0 ? (
+                      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+                        Audio 탭에서 덱을 저장해보세요
+                      </Typography>
+                    ) : (
+                      <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        {savedDeckItems.map((deck) => {
+                          const sd = deck.parentId ? subDecks.find(s => s.id === deck.id) : null;
+                          const deckDue = isDue(deck.nextReviewDate);
+                          return (
+                            <Card key={deck.id} variant="outlined" sx={{
+                              border: deckDue ? 2 : undefined,
+                              borderColor: deckDue ? 'error.main' : undefined,
+                            }}>
+                              <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <Box>
+                                    <Typography variant="body2" sx={{ fontWeight: 500 }}>{deck.title}</Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                      {deck.sentenceCount}문장
+                                      {deck.nextReviewDate && ` · 복습: ${new Date(deck.nextReviewDate).toLocaleDateString()}`}
+                                    </Typography>
+                                  </Box>
+                                  <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                                    <Button size="small" color="primary" onClick={() => {
+                                      if (sd) navigate(`/learn-audio/${deck.parentId}?start=${sd.startIndex}&end=${sd.endIndex}`);
+                                      else navigate(`/learn-audio/${deck.id}`);
+                                    }}>학습</Button>
+                                    <Button size="small" variant="outlined" onClick={() => cycleReviewInterval(deck.reviewType, deck.id)}>
+                                      {deck.reviewInterval}일
+                                    </Button>
+                                    <IconButton size="small" color="success" onClick={() => markReviewDone(deck.reviewType, deck.id)} title="복습 완료">
+                                      <DoneAllIcon sx={{ fontSize: 14 }} />
+                                    </IconButton>
+                                    {deckDue && <Chip label="복습 필요" size="small" color="error" variant="filled" />}
+                                    <IconButton size="small" color="primary" onClick={() => handleToggleSaveDeck(deck.id, deck.title, deck.sentenceCount, deck.parentId)} title="저장 해제">
+                                      <Bookmark sx={{ fontSize: 16 }} />
+                                    </IconButton>
+                                  </Box>
+                                </Box>
+                              </CardContent>
+                            </Card>
+                          );
+                        })}
+                      </Box>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* Saved Sentences — grouped by deck */}
+              <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>
+                Saved Sentences ({savedSentences.length})
+              </Typography>
+              {savedSentences.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+                  단일 모드에서 문장을 저장해보세요
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {(() => {
+                    // Group sentences by articleTitle
+                    const groups = new Map<string, SavedSentence[]>();
+                    savedSentences.forEach(s => {
+                      const key = s.articleTitle || s.articleId;
+                      if (!groups.has(key)) groups.set(key, []);
+                      groups.get(key)!.push(s);
+                    });
+                    return Array.from(groups.entries()).map(([title, sentences]) => {
+                      const articleId = sentences[0].articleId;
+                      const aa = audioArticles.find(a => a.id === articleId);
+                      const sgReview = aa?.savedSentenceReview;
+                      const sgDue = sgReview?.nextReviewDate ? new Date(sgReview.nextReviewDate) <= new Date() : false;
+                      const sentenceIndices = sentences.map(s => s.sentenceIndex);
+                      return (
+                      <Card key={title} variant="outlined" sx={{
+                        border: sgDue ? 2 : undefined,
+                        borderColor: sgDue ? 'error.main' : undefined,
+                      }}>
+                        <CardContent sx={{ pb: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                              {title} ({sentences.length}문장)
+                            </Typography>
+                            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                              <Button
+                                size="small"
+                                color="primary"
+                                onClick={() => navigate(`/learn-audio/${articleId}?sentences=${sentenceIndices.join(',')}`)}
+                              >
+                                학습
+                              </Button>
+                              <Button size="small" variant="outlined" onClick={() => cycleReviewInterval('saved-sentences', articleId)}>
+                                {sgReview?.reviewInterval || 0}일
+                              </Button>
+                              <IconButton size="small" color="success" onClick={() => markReviewDone('saved-sentences', articleId)} title="복습 완료">
+                                <DoneAllIcon sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              {sgReview?.nextReviewDate && (
+                                <Chip
+                                  label={sgDue ? '복습 필요' : `${new Date(sgReview.nextReviewDate).toLocaleDateString()}`}
+                                  size="small"
+                                  color={sgDue ? 'error' : 'default'}
+                                  variant={sgDue ? 'filled' : 'outlined'}
+                                />
+                              )}
+                            </Box>
+                          </Box>
+                          {sentences
+                            .sort((a, b) => a.sentenceIndex - b.sentenceIndex)
+                            .map((sentence) => (
+                            <Box
+                              key={sentence.id}
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: 1,
+                                py: 0.5,
+                                borderBottom: '1px solid',
+                                borderColor: 'divider',
+                                '&:last-child': { borderBottom: 0 },
+                                opacity: pendingUnsaveSentences.has(sentence.id) ? 0.4 : (savedManagementMode && selectedSentences.has(sentence.id) ? 1 : undefined),
+                                textDecoration: pendingUnsaveSentences.has(sentence.id) ? 'line-through' : undefined,
+                                bgcolor: savedManagementMode && selectedSentences.has(sentence.id) ? 'action.selected' : undefined,
+                              }}
+                            >
+                              {savedManagementMode && (
+                                <IconButton size="small" onClick={() => toggleSentenceSelection(sentence.id)} sx={{ mt: -0.5 }}>
+                                  {selectedSentences.has(sentence.id) ? <CheckBox color="primary" fontSize="small" /> : <CheckBoxOutlineBlank fontSize="small" />}
+                                </IconButton>
+                              )}
+                              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 24, mt: 0.3 }}>
+                                {sentence.sentenceIndex}
+                              </Typography>
+                              <Typography variant="body2" sx={{ flex: 1 }}>
+                                {sentence.text}
+                              </Typography>
+                              {!savedManagementMode && (
+                                <IconButton
+                                  size="small"
+                                  color={pendingUnsaveSentences.has(sentence.id) ? 'default' : 'primary'}
+                                  onClick={() => handleToggleSavedSentence(sentence)}
+                                  title={pendingUnsaveSentences.has(sentence.id) ? '저장 해제 취소' : '저장 해제'}
+                                >
+                                  {pendingUnsaveSentences.has(sentence.id) ? <BookmarkBorder sx={{ fontSize: 16 }} /> : <Bookmark sx={{ fontSize: 16 }} />}
+                                </IconButton>
+                              )}
+                            </Box>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    );});
+                  })()}
+                </Box>
+              )}
+            </>
           )}
         </>
       )}

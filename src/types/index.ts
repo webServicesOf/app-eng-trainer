@@ -41,6 +41,7 @@ export interface SubDeckReview {
   nextReviewDate?: string | null;
   reviewInterval: number;
   lastAccessed?: string;
+  saved?: boolean; // 덱 저장 여부 (Drive SSOT)
 }
 
 // Audio 기반 Article (full mp3 + sentences.json 업로드)
@@ -52,6 +53,9 @@ export interface AudioArticle {
   sentences: SentenceEntry[];
   splitPoints?: number[]; // sentence indices where splits occur (for SubDeck reconstruction)
   subDeckReviews?: SubDeckReview[]; // SubDeck별 복습 상태 (Drive SSOT)
+  savedAsDeck?: boolean; // 전체 덱 저장 여부 (Drive SSOT)
+  savedSentenceIndices?: number[]; // 저장된 문장 인덱스 (Drive SSOT)
+  savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null }; // 저장 문장 덱 복습
   source?: string; // YouTube URL 등
   nextReviewDate: Date | null;
   reviewInterval: number; // days
@@ -106,6 +110,15 @@ export interface SavedSentence {
   articleTitle: string;
   sentenceIndex: number;
   text: string;
+  savedAt: Date;
+}
+
+// 저장된 덱 (Audio Article 또는 SubDeck)
+export interface SavedDeck {
+  id: string; // articleId or subDeckId
+  parentId?: string; // AudioArticle ID (for SubDeck)
+  title: string;
+  sentenceCount: number;
   savedAt: Date;
 }
 

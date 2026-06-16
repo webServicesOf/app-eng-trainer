@@ -57,6 +57,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [hasChanges, setHasChanges] = useState(false);
   const [zoom, setZoom] = useState(50);
   const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set());
+  const [savedSplitMarkers, setSavedSplitMarkers] = useState<Set<number>>(new Set());
   const [splitMode, setSplitMode] = useState(false); // word-pick split mode
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
@@ -114,7 +115,9 @@ const TimestampEditorScreen: React.FC = () => {
       }
 
       if (loaded.splitPoints?.length) {
-        setSplitMarkers(new Set(loaded.splitPoints));
+        const pts = new Set(loaded.splitPoints);
+        setSplitMarkers(pts);
+        setSavedSplitMarkers(new Set(pts));
       }
     };
     load();
@@ -555,6 +558,7 @@ const TimestampEditorScreen: React.FC = () => {
     await loadAudioArticles();
     await loadSubDecks();
     setHasChanges(false);
+    setSavedSplitMarkers(new Set(splitMarkers));
     alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
   }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, loadAudioArticles, accessToken]);
 
@@ -735,7 +739,7 @@ const TimestampEditorScreen: React.FC = () => {
           >
             학습용
           </Button>
-          {splitMarkers.size > 0 && (
+          {splitMarkers.size > 0 && (splitMarkers.size !== savedSplitMarkers.size || Array.from(splitMarkers).some(m => !savedSplitMarkers.has(m))) && (
             <Button
               variant="outlined"
               color="info"

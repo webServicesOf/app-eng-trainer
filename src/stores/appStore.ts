@@ -26,6 +26,7 @@ interface AppStore extends AppState {
   pendingDeleteIds: Set<string>;
   cleanAudioIntervals: Map<string, number>; // Drive-saved intervals for dirty comparison
   cleanSubDeckIntervals: Map<string, number>; // Drive-saved subdeck intervals
+  cleanAudioSnapshots: Map<string, string>; // JSON snapshot of mutable fields per article
 
   // Actions
   setLoading: (loading: boolean) => void;
@@ -49,8 +50,12 @@ interface AppStore extends AppState {
   deleteSubDeck: (id: string) => Promise<void>;
 
   // Review actions
-  markReviewDone: (type: 'article' | 'audio' | 'subdeck', id: string) => Promise<void>;
-  cycleReviewInterval: (type: 'article' | 'audio' | 'subdeck', id: string) => Promise<void>;
+  markReviewDone: (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => Promise<void>;
+  cycleReviewInterval: (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => Promise<void>;
+
+  // Saved state (Drive SSOT)
+  updateSavedSentenceIndices: (articleId: string, indices: number[]) => void;
+  toggleSavedDeck: (articleId: string, subDeckId?: string) => void;
 
   // OAuth actions
   setAccessToken: (token: string | null) => void;
@@ -61,6 +66,33 @@ interface AppStore extends AppState {
   setGoogleSheetsConfig: (config: GoogleSheetsConfig) => void;
   loadGoogleSheetsConfig: () => void;
   clearGoogleSheetsConfig: () => void;
+}
+
+/** Snapshot mutable fields of AudioArticle for dirty comparison */
+function snapshotArticle(a: AudioArticle): string {
+  return JSON.stringify({
+    ri: a.reviewInterval || 0,
+    sd: a.savedAsDeck || false,
+    si: (a.savedSentenceIndices || []).slice().sort(),
+    sr: a.savedSentenceReview || null,
+    sdr: (a.subDeckReviews || []).map(r => ({ s: r.startIndex, e: r.endIndex, ri: r.reviewInterval, saved: r.saved || false })),
+    hidden: (a.sentences || []).filter(s => s.hidden).map(s => s.index),
+  });
+}
+
+/** Check if article matches its clean snapshot; if so, remove from dirty */
+function checkCleanAndUpdateDirty(get: () => AppStore, set: (partial: Partial<AppStore>) => void, articleId: string) {
+  const article = get().audioArticles.find(a => a.id === articleId);
+  if (!article) return;
+  const clean = get().cleanAudioSnapshots.get(articleId);
+  const current = snapshotArticle(article);
+  const dirty = new Set(get().dirtyAudioIds);
+  if (current === clean) {
+    dirty.delete(articleId);
+  } else {
+    dirty.add(articleId);
+  }
+  set({ dirtyAudioIds: dirty });
 }
 
 /** Helper: get DriveService from current token, or null */
@@ -78,6 +110,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   pendingDeleteIds: new Set<string>(),
   cleanAudioIntervals: new Map<string, number>(),
   cleanSubDeckIntervals: new Map<string, number>(),
+  cleanAudioSnapshots: new Map<string, string>(),
   isLoading: false,
   error: null,
   googleSheetsConfig: null,
@@ -173,8 +206,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const audioArticles = await drive.listArticles();
       const cleanIntervals = new Map<string, number>();
-      audioArticles.forEach(a => cleanIntervals.set(a.id, a.reviewInterval || 0));
-      set({ audioArticles, cleanAudioIntervals: cleanIntervals });
+      const cleanSnapshots = new Map<string, string>();
+      audioArticles.forEach(a => {
+        cleanIntervals.set(a.id, a.reviewInterval || 0);
+        cleanSnapshots.set(a.id, snapshotArticle(a));
+      });
+      set({ audioArticles, cleanAudioIntervals: cleanIntervals, cleanAudioSnapshots: cleanSnapshots });
     } catch (error) {
       if (error instanceof DriveAuthError) {
         localDB.clearAccessToken();
@@ -381,11 +418,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       // Update clean snapshots to current saved state
       const cleanIntervals = new Map(get().cleanAudioIntervals);
+      const cleanSnapshots = new Map(get().cleanAudioSnapshots);
       for (const articleId of Array.from(dirtyIds)) {
         const article = get().audioArticles.find(a => a.id === articleId);
-        if (article) cleanIntervals.set(articleId, article.reviewInterval || 0);
+        if (article) {
+          cleanIntervals.set(articleId, article.reviewInterval || 0);
+          cleanSnapshots.set(articleId, snapshotArticle(article));
+        }
       }
-      set({ dirtyAudioIds: new Set(), cleanAudioIntervals: cleanIntervals });
+      set({ dirtyAudioIds: new Set(), cleanAudioIntervals: cleanIntervals, cleanAudioSnapshots: cleanSnapshots });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Drive 저장 실패';
       set({ error: errorMessage });
@@ -395,7 +436,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   // Review actions — local state only, marks dirty (Drive save on explicit "저장")
-  markReviewDone: async (type: 'article' | 'audio' | 'subdeck', id: string) => {
+  markReviewDone: async (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => {
     try {
       if (type === 'audio') {
         const article = get().audioArticles.find(a => a.id === id);
@@ -404,9 +445,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const next = new Date();
         next.setDate(next.getDate() + interval);
         const updated: AudioArticle = { ...article, reviewInterval: interval, nextReviewDate: next, lastAccessed: new Date() };
-        const dirty = new Set(get().dirtyAudioIds);
-        dirty.add(id);
-        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a), dirtyAudioIds: dirty });
+        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+        checkCleanAndUpdateDirty(get, set, id);
       } else if (type === 'article') {
         await localDB.markReviewDone('article', id);
         await get().loadArticles();
@@ -419,6 +459,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
             sheetsService.syncReviewFields(article).catch(() => {});
           }
         }
+      } else if (type === 'saved-sentences') {
+        const article = get().audioArticles.find(a => a.id === id);
+        if (!article) return;
+        const interval = article.savedSentenceReview?.reviewInterval || 1;
+        const next = new Date();
+        next.setDate(next.getDate() + interval);
+        const updated = { ...article, savedSentenceReview: { reviewInterval: interval, nextReviewDate: next.toISOString() } };
+        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+        checkCleanAndUpdateDirty(get, set, id);
       } else {
         // SubDeck: local state + mark parent dirty
         const deck = get().subDecks.find(d => d.id === id);
@@ -427,9 +476,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const next = new Date();
         next.setDate(next.getDate() + interval);
         const updated = { ...deck, reviewInterval: interval, nextReviewDate: next, lastAccessed: new Date() };
-        const dirty = new Set(get().dirtyAudioIds);
-        dirty.add(deck.parentId);
-        set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d), dirtyAudioIds: dirty });
+        set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d) });
+        checkCleanAndUpdateDirty(get, set, deck.parentId);
         await localDB.markReviewDone('subdeck', id);
       }
     } catch (error) {
@@ -438,26 +486,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  cycleReviewInterval: async (type: 'article' | 'audio' | 'subdeck', id: string) => {
+  cycleReviewInterval: async (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => {
     try {
       if (type === 'audio') {
         const article = get().audioArticles.find(a => a.id === id);
         if (!article) return;
         const newInterval = localDB.cycleInterval(article.reviewInterval || 0);
-        const cleanInterval = get().cleanAudioIntervals.get(id) ?? 0;
         let nextReviewDate: Date | null = null;
         if (newInterval > 0) {
           nextReviewDate = new Date();
           nextReviewDate.setDate(nextReviewDate.getDate() + newInterval);
         }
         const updated: AudioArticle = { ...article, reviewInterval: newInterval, nextReviewDate, lastAccessed: new Date() };
-        const dirty = new Set(get().dirtyAudioIds);
-        if (newInterval !== cleanInterval) {
-          dirty.add(id);
-        } else {
-          dirty.delete(id);
-        }
-        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a), dirtyAudioIds: dirty });
+        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+        checkCleanAndUpdateDirty(get, set, id);
       } else if (type === 'article') {
         const record = await localDB.getArticleById(id);
         if (!record) return;
@@ -473,38 +515,73 @@ export const useAppStore = create<AppStore>((set, get) => ({
             sheetsService.syncReviewFields(article).catch(() => {});
           }
         }
+      } else if (type === 'saved-sentences') {
+        const article = get().audioArticles.find(a => a.id === id);
+        if (!article) return;
+        const currentInterval = article.savedSentenceReview?.reviewInterval || 0;
+        const newInterval = localDB.cycleInterval(currentInterval);
+        let nextReviewDate: string | null = null;
+        if (newInterval > 0) {
+          const d = new Date(); d.setDate(d.getDate() + newInterval);
+          nextReviewDate = d.toISOString();
+        }
+        const updated = { ...article, savedSentenceReview: { reviewInterval: newInterval, nextReviewDate } };
+        set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+        checkCleanAndUpdateDirty(get, set, id);
       } else {
         // SubDeck: local state + mark parent dirty only if changed from clean
         const deck = get().subDecks.find(d => d.id === id);
         if (!deck) return;
         const newInterval = localDB.cycleInterval(deck.reviewInterval || 0);
-        const cleanInterval = get().cleanSubDeckIntervals.get(id) ?? 0;
         let nextReviewDate: Date | null = null;
         if (newInterval > 0) {
           nextReviewDate = new Date();
           nextReviewDate.setDate(nextReviewDate.getDate() + newInterval);
         }
         const updated = { ...deck, reviewInterval: newInterval, nextReviewDate };
-        const dirty = new Set(get().dirtyAudioIds);
-        if (newInterval !== cleanInterval) {
-          dirty.add(deck.parentId);
-        } else {
-          // Check if all sibling subdecks under same parent are also clean
-          const siblings = get().subDecks.filter(d => d.parentId === deck.parentId && d.id !== id);
-          const allClean = siblings.every(s => (s.reviewInterval || 0) === (get().cleanSubDeckIntervals.get(s.id) ?? 0));
-          // Also check parent audio article itself
-          const parentArticle = get().audioArticles.find(a => a.id === deck.parentId);
-          const parentClean = (parentArticle?.reviewInterval || 0) === (get().cleanAudioIntervals.get(deck.parentId) ?? 0);
-          if (allClean && parentClean) {
-            dirty.delete(deck.parentId);
-          }
-        }
-        set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d), dirtyAudioIds: dirty });
+        set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d) });
+        // SubDeck review is stored in parent article's subDeckReviews — update snapshot there
+        checkCleanAndUpdateDirty(get, set, deck.parentId);
         await localDB.setReviewInterval('subdeck', id, newInterval);
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to cycle review interval';
       set({ error: errorMessage });
+    }
+  },
+
+  updateSavedSentenceIndices: (articleId: string, indices: number[]) => {
+    const article = get().audioArticles.find(a => a.id === articleId);
+    if (!article) return;
+    const updated = { ...article, savedSentenceIndices: indices };
+    set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? updated : a) });
+    checkCleanAndUpdateDirty(get, set, articleId);
+  },
+
+  toggleSavedDeck: (articleId: string, subDeckId?: string) => {
+    if (subDeckId) {
+      // SubDeck
+      const aa = get().audioArticles.find(a => a.id === articleId);
+      if (!aa) return;
+      const sd = get().subDecks.find(s => s.id === subDeckId);
+      if (!sd) return;
+      const key = `${sd.startIndex}_${sd.endIndex}`;
+      let reviews = (aa.subDeckReviews || []).map(r =>
+        `${r.startIndex}_${r.endIndex}` === key ? { ...r, saved: !r.saved } : r
+      );
+      if (!reviews.find(r => `${r.startIndex}_${r.endIndex}` === key)) {
+        reviews.push({ startIndex: sd.startIndex, endIndex: sd.endIndex, reviewInterval: sd.reviewInterval || 0, saved: true });
+      }
+      const updated = { ...aa, subDeckReviews: reviews };
+      set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? updated : a) });
+      checkCleanAndUpdateDirty(get, set, articleId);
+    } else {
+      // AudioArticle
+      const aa = get().audioArticles.find(a => a.id === articleId);
+      if (!aa) return;
+      const updated = { ...aa, savedAsDeck: !aa.savedAsDeck };
+      set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? updated : a) });
+      checkCleanAndUpdateDirty(get, set, articleId);
     }
   },
 
