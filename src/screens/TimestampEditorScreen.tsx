@@ -266,15 +266,14 @@ const TimestampEditorScreen: React.FC = () => {
 
   const startEndCheck = useCallback((endTime: number, startTime?: number) => {
     clearEndCheck();
-    // Delay first check to let wavesurfer seek settle (prevents immediate pause on stale position)
     const startMs = Date.now();
     endCheckRef.current = setInterval(() => {
       const ws = wavesurferRef.current;
       if (!ws || !ws.isPlaying()) { clearEndCheck(); return; }
-      // Skip checks for first 200ms to avoid stale getCurrentTime after setTime
+      // Grace period for seek to settle
       if (Date.now() - startMs < 200) return;
       const t = ws.getCurrentTime();
-      // Also guard: if current time is before start, seek hasn't settled
+      // Guard: if current time is before start, seek hasn't settled
       if (startTime != null && t < startTime - 0.5) return;
       if (t >= endTime) {
         ws.pause();
@@ -290,13 +289,16 @@ const TimestampEditorScreen: React.FC = () => {
     const s = sentences[selectedIndex];
 
     if (!ws.isPlaying()) {
-      ws.play();
-      if (s?.end != null) startEndCheck(s.end, s?.start ?? undefined);
+      // Resume from current position, stop at sentence end
+      if (s?.end != null) {
+        ws.play(undefined, s.end);
+      } else {
+        ws.play();
+      }
     } else {
       ws.pause();
-      clearEndCheck();
     }
-  }, [sentences, selectedIndex, startEndCheck, clearEndCheck]);
+  }, [sentences, selectedIndex]);
 
   const lastPlayedIndexRef = React.useRef<number>(-1);
   const selectedIndexRef = React.useRef<number>(selectedIndex);
@@ -308,31 +310,27 @@ const TimestampEditorScreen: React.FC = () => {
     const s = sentences[idx];
     if (!s || s.start == null || s.end == null || !ws) return;
 
-    // Same sentence + playing → pause. Otherwise → seek to start and play.
+    // Same sentence + playing → pause. Otherwise → play(start, end).
     if (ws.isPlaying() && lastPlayedIndexRef.current === idx) {
       ws.pause();
-      clearEndCheck();
       lastPlayedIndexRef.current = -1;
       return;
     }
     if (ws.isPlaying()) {
       ws.pause();
-      clearEndCheck();
     }
-    ws.setTime(s.start);
-    ws.play();
-    startEndCheck(s.end, s.start);
+    // wavesurfer.play(start, end) — internal stopAtPosition, no interval needed
+    ws.play(s.start, s.end);
     lastPlayedIndexRef.current = idx;
-  }, [sentences, startEndCheck, clearEndCheck]);
+  }, [sentences]);
 
   const handlePlayFromEnd = useCallback(() => {
+    const ws = wavesurferRef.current;
     const s = sentences[selectedIndex];
-    if (!s || s.end == null || !wavesurferRef.current) return;
+    if (!s || s.end == null || !ws) return;
     const startAt = Math.max(s.start ?? 0, s.end - 3);
-    wavesurferRef.current.setTime(startAt);
-    wavesurferRef.current.play();
-    startEndCheck(s.end, startAt);
-  }, [sentences, selectedIndex, startEndCheck]);
+    ws.play(startAt, s.end);
+  }, [sentences, selectedIndex]);
 
   const adjustTime = useCallback((field: 'start' | 'end', delta: number) => {
     pushUndo();
