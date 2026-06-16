@@ -45,8 +45,6 @@ const SentenceLearningScreen: React.FC = () => {
     setCurrentIndex,
     setIsCumulative,
     setWindowSize,
-    goToNextSentence,
-    goToPreviousSentence,
     resetLearningState,
   } = useLearningStore();
 
@@ -148,7 +146,8 @@ const SentenceLearningScreen: React.FC = () => {
     if (!article) return;
     // Skip hidden sentences
     let target = currentIndex - 1;
-    while (target >= 1 && article.sentences.find(s => s.index === target)?.hidden) {
+    const hiddenIndicesL = new Set(article.sentences.filter(s => s.hidden).map(s => s.index));
+    while (target >= 1 && hiddenIndicesL.has(target)) {
       target--;
     }
     if (target >= 1) {
@@ -161,7 +160,8 @@ const SentenceLearningScreen: React.FC = () => {
     if (!article) return;
     // Skip hidden sentences
     let target = currentIndex + 1;
-    while (target <= article.sentences.length && article.sentences.find(s => s.index === target)?.hidden) {
+    const hiddenIndicesR = new Set(article.sentences.filter(s => s.hidden).map(s => s.index));
+    while (target <= article.sentences.length && hiddenIndicesR.has(target)) {
       target++;
     }
     if (target <= article.sentences.length) {

@@ -244,7 +244,6 @@ const TimestampEditorScreen: React.FC = () => {
       if (isCurrent) {
         region.on('update-end', () => {
           const newEnd = Math.round(region.end * 1000) / 1000;
-          const endDelta = newEnd - (s.end ?? 0);
 
           setSentences(prev => {
             const currentIdx = prev.findIndex(ss => ss.index === s.index);
@@ -329,24 +328,7 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, []);
 
-  const startEndCheck = useCallback((endTime: number, startTime?: number) => {
-    clearEndCheck();
-    const startMs = Date.now();
-    endCheckRef.current = setInterval(() => {
-      const ws = wavesurferRef.current;
-      if (!ws || !ws.isPlaying()) { clearEndCheck(); return; }
-      // Grace period for seek to settle
-      if (Date.now() - startMs < 200) return;
-      const t = ws.getCurrentTime();
-      // Guard: if current time is before start, seek hasn't settled
-      if (startTime != null && t < startTime - 0.5) return;
-      if (t >= endTime) {
-        ws.pause();
-        ws.setTime(endTime);
-        clearEndCheck();
-      }
-    }, 16);
-  }, [clearEndCheck]);
+
 
   const handlePlayPause = useCallback(() => {
     const ws = wavesurferRef.current;

@@ -33,7 +33,6 @@ import {
   CheckBoxOutlineBlank,
   SelectAll,
   DeleteSweep,
-  PlayArrow,
   Upload as UploadIcon,
 
   DoneAll as DoneAllIcon,
@@ -582,9 +581,7 @@ export const HomeScreen: React.FC = () => {
     await loadSavedSentences();
   };
 
-  const handleGoToArticle = (articleId: string, sentenceIndex: number) => {
-    navigate(`/learn/${articleId}?sentence=${sentenceIndex}`);
-  };
+
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setCurrentTab(newValue);

@@ -50,8 +50,6 @@ const AudioLearningScreen: React.FC = () => {
     setCurrentIndex,
     setIsCumulative,
     setWindowSize,
-    goToNextSentence,
-    goToPreviousSentence,
     resetLearningState,
   } = useLearningStore();
 
