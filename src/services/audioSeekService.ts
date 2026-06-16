@@ -1,42 +1,54 @@
 import { SentenceEntry } from '../types';
 
 class AudioSeekService {
-  private audio: HTMLAudioElement;
-  private pauseTimer: number | null = null;
+  private ctx: AudioContext | null = null;
+  private buffer: AudioBuffer | null = null;
+  private sourceNode: AudioBufferSourceNode | null = null;
+
+  private _isPlaying: boolean = false;
+  private _playbackRate: number = 1;
+  private startOffset: number = 0; // where in the buffer playback started
+  private startedAt: number = 0; // ctx.currentTime when playback started
+
   private onEndCallback: (() => void) | null = null;
   private onSentenceChange: ((sentenceIndex: number) => void) | null = null;
   private onWordChange: ((sentenceIndex: number, wordIndex: number) => void) | null = null;
   private trackingSentences: SentenceEntry[] = [];
   private lastReportedSentence: number = -1;
   private lastReportedWord: number = -1;
-  public wordTimingOffset: number = 0; // seconds: positive = highlights earlier, negative = later
-  private playId: number = 0; // monotonic counter to invalidate stale play calls
-  private rafId: number = 0; // requestAnimationFrame handle
+  public wordTimingOffset: number = 0;
+  private playId: number = 0;
+  private rafId: number = 0;
 
-  // Segment-chaining state (for gapped playback with hidden sentences)
+  private targetEndTime: number = 0;
+
+  // Segment-chaining state
   private segments: SentenceEntry[] = [];
   private currentSegmentIdx: number = -1;
   private segmentMode: boolean = false;
 
-  constructor() {
-    this.audio = new Audio();
+  // Pause snapshot
+  private pausedOffset: number = 0;
+
+  private ensureContext(): AudioContext {
+    if (!this.ctx || this.ctx.state === 'closed') {
+      this.ctx = new AudioContext();
+    }
+    return this.ctx;
   }
 
-  private targetEndTime: number = 0;
-
-  /** rAF-driven tracking loop — runs at ~60fps while audio is playing */
+  /** rAF-driven tracking loop */
   private trackingLoop = () => {
-    if (this.audio.paused) {
+    if (!this._isPlaying) {
       this.rafId = 0;
       return;
     }
-
     this.pollTime();
     this.rafId = requestAnimationFrame(this.trackingLoop);
   };
 
   private startTrackingLoop(): void {
-    if (this.rafId) return; // already running
+    if (this.rafId) return;
     this.rafId = requestAnimationFrame(this.trackingLoop);
   }
 
@@ -48,28 +60,28 @@ class AudioSeekService {
   }
 
   private pollTime(): void {
-    const t = this.audio.currentTime;
+    const t = this.getCurrentTime();
 
-    // Segment-chaining mode: check current segment end → advance to next
+    // Segment-chaining mode
     if (this.segmentMode && this.currentSegmentIdx >= 0) {
       const seg = this.segments[this.currentSegmentIdx];
       if (seg?.end != null && t >= seg.end) {
         const nextIdx = this.currentSegmentIdx + 1;
         if (nextIdx < this.segments.length) {
-          // Jump to next segment
           this.currentSegmentIdx = nextIdx;
           const nextSeg = this.segments[nextIdx];
           if (nextSeg?.start != null) {
-            this.audio.currentTime = nextSeg.start;
             this.targetEndTime = nextSeg.end ?? 0;
             this.lastReportedSentence = -1;
             this.lastReportedWord = -1;
             if (this.onSentenceChange) this.onSentenceChange(nextIdx);
+            this.playFromOffset(nextSeg.start);
           }
           return;
         } else {
           // All segments done
-          this.audio.pause();
+          this.stopCurrentSource();
+          this._isPlaying = false;
           this.targetEndTime = 0;
           this.segmentMode = false;
           this.currentSegmentIdx = -1;
@@ -84,9 +96,10 @@ class AudioSeekService {
       }
     }
 
-    // Non-segment mode: original end-time check
+    // Non-segment: end-time check
     if (!this.segmentMode && this.targetEndTime > 0 && t >= this.targetEndTime) {
-      this.audio.pause();
+      this.stopCurrentSource();
+      this._isPlaying = false;
       this.targetEndTime = 0;
       this.stopTrackingLoop();
       this.clearTracking();
@@ -97,9 +110,8 @@ class AudioSeekService {
       return;
     }
 
-    // Track which sentence + word is currently playing
+    // Track sentence + word
     if (this.segmentMode && this.currentSegmentIdx >= 0) {
-      // In segment mode, current sentence = currentSegmentIdx
       const i = this.currentSegmentIdx;
       const s = this.segments[i];
       if (s && s.start != null && s.end != null) {
@@ -158,36 +170,73 @@ class AudioSeekService {
     this.onWordChange = null;
   }
 
-  /** Immediately pause + invalidate any pending play() promise */
+  private stopCurrentSource(): void {
+    if (this.sourceNode) {
+      try { this.sourceNode.stop(); } catch { /* already stopped */ }
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
+    }
+  }
+
+  /** Immediately stop + invalidate any pending play */
   private cancelAndPause(): void {
     this.playId++;
-    this.audio.pause();
+    this.stopCurrentSource();
+    this._isPlaying = false;
     this.stopTrackingLoop();
   }
 
-  /** Start playback; stale plays are killed via playId check */
-  private startPlay(): void {
+  /** Core: play buffer from offset with sample-accurate seek */
+  private playFromOffset(offset: number): void {
+    const ctx = this.ensureContext();
+    if (!this.buffer) return;
+
+    this.stopCurrentSource();
+
+    const source = ctx.createBufferSource();
+    source.buffer = this.buffer;
+    source.playbackRate.value = this._playbackRate;
+    source.connect(ctx.destination);
+
+    // Handle natural end of source
+    source.onended = () => {
+      if (this.sourceNode === source) {
+        // Only handle if this is still the active source
+        // pollTime will handle end-of-segment/sentence logic
+      }
+    };
+
+    source.start(0, offset);
+    this.sourceNode = source;
+    this.startOffset = offset;
+    this.startedAt = ctx.currentTime;
+    this._isPlaying = true;
+  }
+
+  /** Start playback with playId race protection + autoplay policy */
+  private async startPlay(offset: number): Promise<void> {
+    const ctx = this.ensureContext();
     const id = ++this.playId;
-    this.audio.play().then(
-      () => {
-        if (this.playId !== id) {
-          this.audio.pause();
-        } else {
-          this.startTrackingLoop();
-        }
-      },
-      () => {
-        // AbortError from interrupted play — expected during rapid navigation
-      },
-    );
+
+    // Handle autoplay policy
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+
+    if (this.playId !== id) return; // stale
+
+    this.playFromOffset(offset);
+    this.startTrackingLoop();
   }
 
   load(blobUrl: string): Promise<void> {
-    return new Promise((resolve) => {
-      this.audio.addEventListener('canplaythrough', () => resolve(), { once: true });
-      this.audio.src = blobUrl;
-      this.audio.load();
-    });
+    const ctx = this.ensureContext();
+    return fetch(blobUrl)
+      .then(res => res.arrayBuffer())
+      .then(arrayBuf => ctx.decodeAudioData(arrayBuf))
+      .then(decoded => {
+        this.buffer = decoded;
+      });
   }
 
   playSentence(
@@ -198,10 +247,9 @@ class AudioSeekService {
     sentences?: SentenceEntry[],
     onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
   ): void {
-    this.clearPauseTimer();
     this.cancelAndPause();
     this.clearTracking();
-    this.audio.currentTime = start;
+    this.segmentMode = false;
     this.targetEndTime = end;
     this.onEndCallback = onEnd || null;
     if (sentences) {
@@ -209,20 +257,15 @@ class AudioSeekService {
       this.onSentenceChange = onSentenceChange || null;
       this.onWordChange = onWordChange || null;
     }
-    this.startPlay();
+    this.startPlay(start);
   }
 
-  /**
-   * Play multiple sentence segments sequentially, seeking between gaps.
-   * Each sentence's [start, end] is played in order; gaps (hidden sentences) are skipped.
-   */
   playSegments(
     segments: SentenceEntry[],
     onEnd?: () => void,
     onSentenceChange?: (index: number) => void,
     onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
   ): void {
-    this.clearPauseTimer();
     this.cancelAndPause();
     this.clearTracking();
     if (segments.length === 0) return;
@@ -233,13 +276,12 @@ class AudioSeekService {
     this.segmentMode = true;
     this.segments = segments;
     this.currentSegmentIdx = 0;
-    this.audio.currentTime = firstSeg.start;
     this.targetEndTime = firstSeg.end;
     this.onEndCallback = onEnd || null;
     this.onSentenceChange = onSentenceChange || null;
     this.onWordChange = onWordChange || null;
     if (onSentenceChange) onSentenceChange(0);
-    this.startPlay();
+    this.startPlay(firstSeg.start);
   }
 
   playCumulative(
@@ -249,65 +291,69 @@ class AudioSeekService {
     onSentenceChange?: (index: number) => void,
     onWordChange?: (sentenceIdx: number, wordIdx: number) => void,
   ): void {
-    // Use segment-chaining: play each sentence's [start,end] individually
     const segs = sentences.slice(0, upTo + 1).filter(s => s.start != null && s.end != null);
     this.playSegments(segs, onEnd, onSentenceChange, onWordChange);
   }
 
   stop(): void {
-    this.clearPauseTimer();
     this.cancelAndPause();
-    this.audio.currentTime = 0;
     this.targetEndTime = 0;
     this.segmentMode = false;
     this.currentSegmentIdx = -1;
     this.segments = [];
     this.onEndCallback = null;
+    this.pausedOffset = 0;
   }
 
   pause(): void {
-    this.clearPauseTimer();
-    this.cancelAndPause();
+    if (!this._isPlaying) return;
+    this.pausedOffset = this.getCurrentTime();
+    this.playId++;
+    this.stopCurrentSource();
+    this._isPlaying = false;
+    this.stopTrackingLoop();
     // Keep segment state for resume
   }
 
   resume(): void {
+    if (this._isPlaying) return;
     // Restore targetEndTime for segment mode
     if (this.segmentMode && this.currentSegmentIdx >= 0) {
       const seg = this.segments[this.currentSegmentIdx];
       if (seg?.end != null) this.targetEndTime = seg.end;
     }
-    this.startPlay();
+    this.startPlay(this.pausedOffset);
   }
 
   setRate(rate: number): void {
-    this.audio.playbackRate = rate;
-  }
-
-  getRate(): number {
-    return this.audio.playbackRate;
-  }
-
-  isPlaying(): boolean {
-    return !this.audio.paused;
-  }
-
-  getCurrentTime(): number {
-    return this.audio.currentTime;
-  }
-
-  private clearPauseTimer(): void {
-    if (this.pauseTimer !== null) {
-      clearTimeout(this.pauseTimer);
-      this.pauseTimer = null;
+    this._playbackRate = rate;
+    if (this.sourceNode) {
+      this.sourceNode.playbackRate.value = rate;
     }
   }
 
+  getRate(): number {
+    return this._playbackRate;
+  }
+
+  isPlaying(): boolean {
+    return this._isPlaying;
+  }
+
+  getCurrentTime(): number {
+    if (!this._isPlaying || !this.ctx) {
+      return this.pausedOffset;
+    }
+    return this.startOffset + (this.ctx.currentTime - this.startedAt) * this._playbackRate;
+  }
+
   dispose(): void {
-    this.clearPauseTimer();
-    this.stopTrackingLoop();
     this.cancelAndPause();
-    this.audio.src = '';
+    this.buffer = null;
+    if (this.ctx && this.ctx.state !== 'closed') {
+      this.ctx.close();
+    }
+    this.ctx = null;
   }
 }
 
