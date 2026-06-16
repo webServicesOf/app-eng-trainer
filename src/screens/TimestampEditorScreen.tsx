@@ -59,9 +59,11 @@ const TimestampEditorScreen: React.FC = () => {
   const redoStackRef = useRef<SentenceEntry[][]>([]);
 
   // Load article from Drive (metadata from store) + MP3 from cache or Drive
+  const loadedRef = useRef(false);
   useEffect(() => {
     const load = async () => {
-      if (!id) return;
+      if (!id || loadedRef.current) return;
+      loadedRef.current = true;
 
       // Get metadata from store (already loaded from Drive)
       const meta = audioArticles.find(a => a.id === id);
@@ -134,6 +136,7 @@ const TimestampEditorScreen: React.FC = () => {
       cursorColor: '#dc004e',
       height: 128,
       normalize: true,
+      backend: 'WebAudio',
       plugins: [regions],
     });
 
@@ -170,14 +173,26 @@ const TimestampEditorScreen: React.FC = () => {
   }, [article]);
 
   // Draw regions when sentences change
+  const lastRegionKeyRef = useRef('');
   useEffect(() => {
     const regions = regionsRef.current;
     if (!regions || duration === 0) return;
 
-    regions.clearRegions();
-
     // Only show prev, current, next
     const indicesToShow = [selectedIndex - 1, selectedIndex, selectedIndex + 1];
+
+    // Skip redraw if regions haven't actually changed
+    const regionKey = indicesToShow
+      .filter(i => i >= 0 && i < sentences.length)
+      .map(i => {
+        const s = sentences[i];
+        return `${i}:${s.start}:${s.end}`;
+      })
+      .join('|');
+    if (regionKey === lastRegionKeyRef.current) return;
+    lastRegionKeyRef.current = regionKey;
+
+    regions.clearRegions();
 
     indicesToShow.forEach((i) => {
       if (i < 0 || i >= sentences.length) return;
@@ -207,12 +222,41 @@ const TimestampEditorScreen: React.FC = () => {
       // Bind drag/resize update directly on current region
       if (isCurrent) {
         region.on('update-end', () => {
+          const newEnd = Math.round(region.end * 1000) / 1000;
+          const endDelta = newEnd - (s.end ?? 0);
+
           setSentences(prev => {
-            const updated = prev.map(ss =>
-              ss.index === s.index
-                ? { ...ss, start: Math.round(region.start * 1000) / 1000, end: Math.round(region.end * 1000) / 1000 }
-                : ss
-            );
+            const currentIdx = prev.findIndex(ss => ss.index === s.index);
+            const updated = [...prev];
+            const newStart = Math.round(region.start * 1000) / 1000;
+            updated[currentIdx] = { ...updated[currentIdx], start: newStart, end: newEnd };
+
+            // Trim previous sentence's end if current start overlaps it
+            if (currentIdx > 0) {
+              const prevS = updated[currentIdx - 1];
+              if ((prevS.end ?? 0) > newStart) {
+                updated[currentIdx - 1] = { ...prevS, end: newStart };
+              }
+            }
+
+            // Push out subsequent sentences only if they overlap
+            let pushBoundary = newEnd;
+            for (let i = currentIdx + 1; i < updated.length; i++) {
+              const ss = updated[i];
+              const ssStart = ss.start ?? 0;
+              const ssEnd = ss.end ?? 0;
+              if (ssStart < pushBoundary) {
+                const shift = pushBoundary - ssStart;
+                updated[i] = {
+                  ...ss,
+                  start: Math.round((ssStart + shift) * 1000) / 1000,
+                  end: Math.round((ssEnd + shift) * 1000) / 1000,
+                };
+                pushBoundary = updated[i].end!;
+              } else {
+                break;
+              }
+            }
             return updated;
           });
           setHasChanges(true);
@@ -334,11 +378,44 @@ const TimestampEditorScreen: React.FC = () => {
 
   const adjustTime = useCallback((field: 'start' | 'end', delta: number) => {
     pushUndo();
-    setSentences(prev => prev.map((s, i) => {
-      if (i !== selectedIndex) return s;
+    setSentences(prev => {
+      const updated = [...prev];
+      const s = updated[selectedIndex];
       const val = (s[field] ?? 0) + delta;
-      return { ...s, [field]: Math.max(0, Math.round(val * 1000) / 1000) };
-    }));
+      updated[selectedIndex] = { ...s, [field]: Math.max(0, Math.round(val * 1000) / 1000) };
+
+      // Trim previous sentence's end if current start overlaps it
+      if (field === 'start' && selectedIndex > 0) {
+        const prevS = updated[selectedIndex - 1];
+        const newStart = updated[selectedIndex].start!;
+        if ((prevS.end ?? 0) > newStart) {
+          updated[selectedIndex - 1] = { ...prevS, end: newStart };
+        }
+      }
+
+      // Push out subsequent sentences only if they overlap with new end
+      if (field === 'end') {
+        let pushBoundary = updated[selectedIndex].end!;
+        for (let i = selectedIndex + 1; i < updated.length; i++) {
+          const ss = updated[i];
+          const ssStart = ss.start ?? 0;
+          const ssEnd = ss.end ?? 0;
+          if (ssStart < pushBoundary) {
+            const shift = pushBoundary - ssStart;
+            updated[i] = {
+              ...ss,
+              start: Math.round((ssStart + shift) * 1000) / 1000,
+              end: Math.round((ssEnd + shift) * 1000) / 1000,
+            };
+            pushBoundary = updated[i].end!;
+          } else {
+            break;
+          }
+        }
+      }
+
+      return updated;
+    });
     setHasChanges(true);
   }, [selectedIndex, pushUndo]);
 

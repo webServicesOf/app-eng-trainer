@@ -196,6 +196,16 @@ const AudioLearningScreen: React.FC = () => {
   }, [setIsCumulative]);
 
   const handleSpeakRef = React.useRef<() => void>(() => {});
+  const speakTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Debounced speak: cancels any pending play, only the last arrow press triggers playback */
+  const debouncedSpeak = React.useCallback(() => {
+    if (speakTimerRef.current) clearTimeout(speakTimerRef.current);
+    speakTimerRef.current = setTimeout(() => {
+      speakTimerRef.current = null;
+      handleSpeakRef.current();
+    }, 50);
+  }, []);
 
   const handleLeftArrow = React.useCallback(() => {
     audioSeekService.stop();
@@ -203,8 +213,8 @@ const AudioLearningScreen: React.FC = () => {
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
     goToPreviousSentence();
-    setTimeout(() => handleSpeakRef.current(), 50);
-  }, [goToPreviousSentence]);
+    debouncedSpeak();
+  }, [goToPreviousSentence, debouncedSpeak]);
 
   const handleRightArrow = React.useCallback(() => {
     if (article) {
@@ -213,9 +223,9 @@ const AudioLearningScreen: React.FC = () => {
       setActiveSentenceLocalIdx(-1);
       setActiveWordIdx(-1);
       goToNextSentence(article.sentences.length);
-      setTimeout(() => handleSpeakRef.current(), 50);
+      debouncedSpeak();
     }
-  }, [article, goToNextSentence]);
+  }, [article, goToNextSentence, debouncedSpeak]);
 
   const onPlayEnd = React.useCallback(() => {
     setActiveSentenceLocalIdx(-1);
@@ -425,11 +435,12 @@ const AudioLearningScreen: React.FC = () => {
   return (
     <Box
       sx={{
-        minHeight: '100vh',
+        height: '100vh',
         backgroundColor: theme.palette.grey[100],
         display: 'flex',
         flexDirection: 'column',
         padding: { xs: 1, sm: 2 },
+        overflow: 'hidden',
       }}
     >
       {/* Header */}
@@ -535,8 +546,10 @@ const AudioLearningScreen: React.FC = () => {
         elevation={3}
         sx={{
           flex: 1,
+          minHeight: 0,
           mb: { xs: 2, sm: 3 },
           backgroundColor: theme.palette.grey[50],
+          overflow: 'auto',
         }}
       >
         <CardContent sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
@@ -546,7 +559,6 @@ const AudioLearningScreen: React.FC = () => {
 
           <Box
             sx={{
-              minHeight: { xs: '150px', sm: '200px' },
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -630,6 +642,7 @@ const AudioLearningScreen: React.FC = () => {
       <Paper
         elevation={3}
         sx={{
+          flexShrink: 0,
           p: { xs: 2, sm: 3 },
           display: 'flex',
           flexDirection: { xs: 'column', lg: 'row' },
