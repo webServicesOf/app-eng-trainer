@@ -1,11 +1,10 @@
 import Dexie, { Table } from 'dexie';
-import { Article, AudioArticle, SubDeck, GoogleSheetsConfig, SavedSentence, SavedDeck } from '../types';
+import { Article, AudioArticle, SubDeck, GoogleSheetsConfig, SavedSentence } from '../types';
 
 export class AppDatabase extends Dexie {
   // 테이블 정의
   articles!: Table<Article>;
   savedSentences!: Table<SavedSentence>;
-  savedDecks!: Table<SavedDeck>;
   audioArticles!: Table<AudioArticle>;
   subDecks!: Table<SubDeck>;
 
@@ -52,7 +51,7 @@ export class AppDatabase extends Dexie {
     this.version(8).stores({
       articles: 'id, title, lastAccessed, createdAt, nextReviewDate',
       savedSentences: 'id, articleId, sentenceIndex, savedAt, [articleId+sentenceIndex]',
-      savedDecks: 'id, parentId, savedAt',
+      savedDecks: null, // dropped — saved state now in Drive SSOT
       audioArticles: 'id, title, lastAccessed, createdAt, nextReviewDate',
       subDecks: 'id, parentId, title, lastAccessed, nextReviewDate'
     });
@@ -139,24 +138,6 @@ export class LocalDatabaseService {
       .where('[articleId+sentenceIndex]')
       .equals([articleId, sentenceIndex])
       .first();
-    return !!existing;
-  }
-
-  // SavedDeck 관련 메서드
-  async getSavedDecks(): Promise<SavedDeck[]> {
-    return await db.savedDecks.orderBy('savedAt').reverse().toArray();
-  }
-
-  async saveDeck(deck: SavedDeck): Promise<void> {
-    await db.savedDecks.put(deck);
-  }
-
-  async deleteSavedDeck(id: string): Promise<void> {
-    await db.savedDecks.delete(id);
-  }
-
-  async isDeckSaved(id: string): Promise<boolean> {
-    const existing = await db.savedDecks.get(id);
     return !!existing;
   }
 

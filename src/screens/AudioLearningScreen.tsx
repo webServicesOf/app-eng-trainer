@@ -425,23 +425,8 @@ const AudioLearningScreen: React.FC = () => {
     const updatedSentences = article.sentences.map(s =>
       s.index === currentIndex ? { ...s, hidden: !s.hidden } : s
     );
-    const updatedArticle = { ...article, sentences: updatedSentences };
-    setArticle(updatedArticle);
-
-    // Sync hidden state to store (flush on "저장")
-    const { audioArticles: articles } = useAppStore.getState();
-    const meta = articles.find(a => a.id === id);
-    if (meta) {
-      const updated = { ...meta, sentences: updatedSentences };
-      useAppStore.setState({
-        audioArticles: articles.map(a => a.id === id ? updated : a),
-      });
-      // Use getState to call checkClean via a dummy update
-      const store = useAppStore.getState();
-      const dirty = new Set(store.dirtyAudioIds);
-      dirty.add(id);
-      useAppStore.setState({ dirtyAudioIds: dirty });
-    }
+    setArticle({ ...article, sentences: updatedSentences });
+    useAppStore.getState().updateArticleSentences(id, updatedSentences);
   }, [article, id, currentIndex]);
 
   // Keyboard events

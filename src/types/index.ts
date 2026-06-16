@@ -83,12 +83,6 @@ export interface GoogleSheetsConfig {
   hasHeader: boolean; // 첫 번째 행이 헤더인지 여부
 }
 
-// OAuth 인증 상태
-export interface AuthState {
-  accessToken: string | null;
-  isAuthenticated: boolean;
-}
-
 // UI 상태 관련 타입들
 export interface LearningState {
   currentIndex: number;
@@ -110,15 +104,6 @@ export interface SavedSentence {
   articleTitle: string;
   sentenceIndex: number;
   text: string;
-  savedAt: Date;
-}
-
-// 저장된 덱 (Audio Article 또는 SubDeck)
-export interface SavedDeck {
-  id: string; // articleId or subDeckId
-  parentId?: string; // AudioArticle ID (for SubDeck)
-  title: string;
-  sentenceCount: number;
   savedAt: Date;
 }
 

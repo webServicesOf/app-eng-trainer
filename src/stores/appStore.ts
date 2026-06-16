@@ -3,6 +3,7 @@ import {
   GoogleSheetsConfig,
   AudioArticle,
   SubDeck,
+  SentenceEntry,
   AppState,
   LearningState
 } from '../types';
@@ -56,6 +57,7 @@ interface AppStore extends AppState {
   // Saved state (Drive SSOT)
   updateSavedSentenceIndices: (articleId: string, indices: number[]) => void;
   toggleSavedDeck: (articleId: string, subDeckId?: string) => void;
+  updateArticleSentences: (articleId: string, sentences: SentenceEntry[]) => void;
 
   // OAuth actions
   setAccessToken: (token: string | null) => void;
@@ -86,12 +88,12 @@ function checkCleanAndUpdateDirty(get: () => AppStore, set: (partial: Partial<Ap
   if (!article) return;
   const clean = get().cleanAudioSnapshots.get(articleId);
   const current = snapshotArticle(article);
+  const shouldBeDirty = current !== clean;
+  const isDirty = get().dirtyAudioIds.has(articleId);
+  if (shouldBeDirty === isDirty) return; // no change — skip re-render
   const dirty = new Set(get().dirtyAudioIds);
-  if (current === clean) {
-    dirty.delete(articleId);
-  } else {
-    dirty.add(articleId);
-  }
+  if (shouldBeDirty) dirty.add(articleId);
+  else dirty.delete(articleId);
   set({ dirtyAudioIds: dirty });
 }
 
@@ -555,6 +557,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!article) return;
     const updated = { ...article, savedSentenceIndices: indices };
     set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? updated : a) });
+    checkCleanAndUpdateDirty(get, set, articleId);
+  },
+
+  updateArticleSentences: (articleId: string, sentences: SentenceEntry[]) => {
+    const article = get().audioArticles.find(a => a.id === articleId);
+    if (!article) return;
+    set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? { ...a, sentences } : a) });
     checkCleanAndUpdateDirty(get, set, articleId);
   },
 

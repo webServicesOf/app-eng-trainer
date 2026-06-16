@@ -43,7 +43,7 @@ import {
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence, SavedDeck, AudioArticle, SentenceEntry } from '../types';
+import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
