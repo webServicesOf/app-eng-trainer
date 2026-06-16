@@ -287,12 +287,8 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleLearnAudioArticle = async (id: string) => {
-    // Set initial review schedule on first learning
     const aa = audioArticles.find(a => a.id === id);
-    if (aa && !aa.nextReviewDate && !aa.reviewInterval) {
-      await cycleReviewInterval('audio', id);
-    }
-    // Update lastAccessed in Drive (fire-and-forget)
+    // Update lastAccessed in Drive (fire-and-forget, no dirty marking)
     if (aa) {
       saveAudioArticle({ ...aa, lastAccessed: new Date() }).catch(() => {});
     }
@@ -630,25 +626,6 @@ export const HomeScreen: React.FC = () => {
             <SettingsIcon />
           </IconButton>
           {currentTab === 0 ? (
-            <>
-              <Button
-                variant={managementMode ? 'outlined' : 'contained'}
-                startIcon={<EditIcon />}
-                onClick={toggleManagementMode}
-                size="small"
-              >
-                {managementMode ? '완료' : '관리'}
-              </Button>
-              <Button
-                variant="contained"
-                startIcon={<RefreshIcon />}
-                onClick={() => setFetchModeDialogOpen(true)}
-                disabled={isLoading}
-              >
-                불러오기
-              </Button>
-            </>
-          ) : currentTab === 1 ? (
             <Box sx={{ display: 'flex', gap: 1 }}>
               <Button
                 variant="contained"
@@ -671,6 +648,25 @@ export const HomeScreen: React.FC = () => {
                 </Button>
               )}
             </Box>
+          ) : currentTab === 1 ? (
+            <>
+              <Button
+                variant={managementMode ? 'outlined' : 'contained'}
+                startIcon={<EditIcon />}
+                onClick={toggleManagementMode}
+                size="small"
+              >
+                {managementMode ? '완료' : '관리'}
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<RefreshIcon />}
+                onClick={() => setFetchModeDialogOpen(true)}
+                disabled={isLoading}
+              >
+                불러오기
+              </Button>
+            </>
           ) : (
             <Button
               variant={savedManagementMode ? 'outlined' : 'contained'}
@@ -685,12 +681,12 @@ export const HomeScreen: React.FC = () => {
       </Box>
 
       <Tabs value={currentTab} onChange={handleTabChange} sx={{ mb: 3 }}>
-        <Tab label="Text" />
         <Tab label="Audio" />
+        <Tab label="Text" />
         <Tab label="Saved" />
       </Tabs>
 
-      {currentTab === 0 && (
+      {currentTab === 1 && (
         <>
           {/* Filters */}
           {articles.length > 0 && (
@@ -757,7 +753,7 @@ export const HomeScreen: React.FC = () => {
         </>
       )}
 
-      {currentTab === 0 && (
+      {currentTab === 1 && (
         <>
           {error && (
             <Alert severity="error" sx={{ mb: 2 }}>
@@ -898,7 +894,7 @@ export const HomeScreen: React.FC = () => {
         </>
       )}
 
-      {currentTab === 1 && (
+      {currentTab === 0 && (
         <>
           {audioArticles.length === 0 ? (
             <Box sx={{ textAlign: 'center', py: 8 }}>

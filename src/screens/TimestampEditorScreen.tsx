@@ -60,6 +60,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [splitMode, setSplitMode] = useState(false); // word-pick split mode
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
+  const selectedItemRef = useRef<HTMLLIElement | null>(null);
 
   // Load article from Drive (metadata from store) + MP3 from cache or Drive
   const loadedRef = useRef(false);
@@ -185,17 +186,31 @@ const TimestampEditorScreen: React.FC = () => {
     const indicesToShow = [selectedIndex - 1, selectedIndex, selectedIndex + 1];
 
     // Skip redraw if regions haven't actually changed
-    const regionKey = indicesToShow
-      .filter(i => i >= 0 && i < sentences.length)
-      .map(i => {
-        const s = sentences[i];
-        return `${i}:${s.start}:${s.end}`;
-      })
-      .join('|');
+    const regionKey = `${selectedIndex}:${sentences.length}:${
+      indicesToShow
+        .filter(i => i >= 0 && i < sentences.length)
+        .map(i => `${i}:${sentences[i].start}:${sentences[i].end}`)
+        .join('|')
+    }`;
     if (regionKey === lastRegionKeyRef.current) return;
     lastRegionKeyRef.current = regionKey;
 
     regions.clearRegions();
+
+    // Grey background for all sentences outside focus window
+    const focusSet = new Set(indicesToShow.filter(i => i >= 0 && i < sentences.length));
+    sentences.forEach((s, i) => {
+      if (focusSet.has(i)) return;
+      if (s.start == null || s.end == null) return;
+      regions.addRegion({
+        id: `bg-${s.index}`,
+        start: s.start,
+        end: s.end,
+        color: 'rgba(0, 0, 0, 0.08)',
+        drag: false,
+        resize: false,
+      });
+    });
 
     indicesToShow.forEach((i) => {
       if (i < 0 || i >= sentences.length) return;
@@ -574,6 +589,13 @@ const TimestampEditorScreen: React.FC = () => {
     URL.revokeObjectURL(url);
   }, [sentences, article]);
 
+  // Auto-scroll selected sentence to center
+  useEffect(() => {
+    if (selectedItemRef.current) {
+      selectedItemRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [selectedIndex]);
+
   const handleSelectSentence = useCallback((idx: number) => {
     const ws = wavesurferRef.current;
     // Stop playback on navigation to prevent unwanted audio
@@ -586,8 +608,18 @@ const TimestampEditorScreen: React.FC = () => {
     const s = sentences[idx];
     if (s?.start != null && ws) {
       ws.setTime(s.start);
+      // Center waveform on sentence midpoint
+      const mid = ((s.start ?? 0) + (s.end ?? s.start ?? 0)) / 2;
+      const dur = ws.getDuration();
+      if (dur > 0 && waveformRef.current) {
+        const containerWidth = waveformRef.current.clientWidth;
+        const pxPerSec = zoom;
+        const halfViewSec = containerWidth / pxPerSec / 2;
+        const scrollTo = Math.max(0, mid - halfViewSec);
+        ws.setScrollTime(scrollTo);
+      }
     }
-  }, [sentences, clearEndCheck]);
+  }, [sentences, clearEndCheck, zoom]);
 
   const handlePrevSentence = useCallback(() => {
     if (selectedIndex > 0) handleSelectSentence(selectedIndex - 1);
@@ -913,7 +945,7 @@ const TimestampEditorScreen: React.FC = () => {
           <List dense disablePadding>
             {sentences.map((s, i) => (
               <React.Fragment key={s.index}>
-                <ListItem disablePadding>
+                <ListItem disablePadding ref={i === selectedIndex ? selectedItemRef : undefined}>
                   <ListItemButton
                     selected={i === selectedIndex}
                     onClick={(e) => {

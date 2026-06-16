@@ -24,6 +24,8 @@ interface AppStore extends AppState {
   // Dirty tracking — IDs of articles with unsaved review changes
   dirtyAudioIds: Set<string>;
   pendingDeleteIds: Set<string>;
+  cleanAudioIntervals: Map<string, number>; // Drive-saved intervals for dirty comparison
+  cleanSubDeckIntervals: Map<string, number>; // Drive-saved subdeck intervals
 
   // Actions
   setLoading: (loading: boolean) => void;
@@ -74,6 +76,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   subDecks: [],
   dirtyAudioIds: new Set<string>(),
   pendingDeleteIds: new Set<string>(),
+  cleanAudioIntervals: new Map<string, number>(),
+  cleanSubDeckIntervals: new Map<string, number>(),
   isLoading: false,
   error: null,
   googleSheetsConfig: null,
@@ -168,7 +172,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
     try {
       const audioArticles = await drive.listArticles();
-      set({ audioArticles });
+      const cleanIntervals = new Map<string, number>();
+      audioArticles.forEach(a => cleanIntervals.set(a.id, a.reviewInterval || 0));
+      set({ audioArticles, cleanAudioIntervals: cleanIntervals });
     } catch (error) {
       if (error instanceof DriveAuthError) {
         localDB.clearAccessToken();
@@ -290,7 +296,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       const subDecks = await localDB.getSubDecks();
-      set({ subDecks });
+      const cleanSdIntervals = new Map<string, number>();
+      subDecks.forEach(sd => cleanSdIntervals.set(sd.id, sd.reviewInterval || 0));
+      set({ subDecks, cleanSubDeckIntervals: cleanSdIntervals });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to load sub-decks';
       set({ error: errorMessage });
@@ -371,7 +379,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const toSave: AudioArticle = { ...article, subDeckReviews };
         await drive.saveArticle(toSave);
       }
-      set({ dirtyAudioIds: new Set() });
+      // Update clean snapshots to current saved state
+      const cleanIntervals = new Map(get().cleanAudioIntervals);
+      for (const articleId of Array.from(dirtyIds)) {
+        const article = get().audioArticles.find(a => a.id === articleId);
+        if (article) cleanIntervals.set(articleId, article.reviewInterval || 0);
+      }
+      set({ dirtyAudioIds: new Set(), cleanAudioIntervals: cleanIntervals });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Drive 저장 실패';
       set({ error: errorMessage });
@@ -430,6 +444,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const article = get().audioArticles.find(a => a.id === id);
         if (!article) return;
         const newInterval = localDB.cycleInterval(article.reviewInterval || 0);
+        const cleanInterval = get().cleanAudioIntervals.get(id) ?? 0;
         let nextReviewDate: Date | null = null;
         if (newInterval > 0) {
           nextReviewDate = new Date();
@@ -437,7 +452,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
         const updated: AudioArticle = { ...article, reviewInterval: newInterval, nextReviewDate, lastAccessed: new Date() };
         const dirty = new Set(get().dirtyAudioIds);
-        dirty.add(id);
+        if (newInterval !== cleanInterval) {
+          dirty.add(id);
+        } else {
+          dirty.delete(id);
+        }
         set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a), dirtyAudioIds: dirty });
       } else if (type === 'article') {
         const record = await localDB.getArticleById(id);
@@ -455,10 +474,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
           }
         }
       } else {
-        // SubDeck: local state + mark parent dirty
+        // SubDeck: local state + mark parent dirty only if changed from clean
         const deck = get().subDecks.find(d => d.id === id);
         if (!deck) return;
         const newInterval = localDB.cycleInterval(deck.reviewInterval || 0);
+        const cleanInterval = get().cleanSubDeckIntervals.get(id) ?? 0;
         let nextReviewDate: Date | null = null;
         if (newInterval > 0) {
           nextReviewDate = new Date();
@@ -466,7 +486,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
         const updated = { ...deck, reviewInterval: newInterval, nextReviewDate };
         const dirty = new Set(get().dirtyAudioIds);
-        dirty.add(deck.parentId);
+        if (newInterval !== cleanInterval) {
+          dirty.add(deck.parentId);
+        } else {
+          // Check if all sibling subdecks under same parent are also clean
+          const siblings = get().subDecks.filter(d => d.parentId === deck.parentId && d.id !== id);
+          const allClean = siblings.every(s => (s.reviewInterval || 0) === (get().cleanSubDeckIntervals.get(s.id) ?? 0));
+          // Also check parent audio article itself
+          const parentArticle = get().audioArticles.find(a => a.id === deck.parentId);
+          const parentClean = (parentArticle?.reviewInterval || 0) === (get().cleanAudioIntervals.get(deck.parentId) ?? 0);
+          if (allClean && parentClean) {
+            dirty.delete(deck.parentId);
+          }
+        }
         set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d), dirtyAudioIds: dirty });
         await localDB.setReviewInterval('subdeck', id, newInterval);
       }
