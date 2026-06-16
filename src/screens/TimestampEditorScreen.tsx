@@ -371,6 +371,7 @@ const TimestampEditorScreen: React.FC = () => {
         }
       });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sentences, selectedIndex, duration, wordEditMode, editingWordIndex]);
 
   // Region drag/resize handled via per-region 'update-end' event above
@@ -832,7 +833,7 @@ const TimestampEditorScreen: React.FC = () => {
     const w = s.words[editingWordIndex];
     if (!w) return;
     syncPlay(w.start, w.end);
-  }, [sentences, selectedIndex, editingWordIndex]);
+  }, [sentences, selectedIndex, editingWordIndex, syncPlay]);
 
   /** Pull all subsequent words to pack tightly after current word */
   const handlePullWords = useCallback(() => {
