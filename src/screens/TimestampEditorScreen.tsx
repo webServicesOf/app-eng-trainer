@@ -28,11 +28,12 @@ import {
   VisibilityOff,
   Visibility,
   FileDownload,
+  Replay,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { AudioArticle, SentenceEntry } from '../types';
+import { AudioArticle, SentenceEntry, WordTimestamp } from '../types';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
 import { GoogleDriveService } from '../services/googleDriveService';
@@ -59,6 +60,8 @@ const TimestampEditorScreen: React.FC = () => {
   const [splitMarkers, setSplitMarkers] = useState<Set<number>>(new Set());
   const [savedSplitMarkers, setSavedSplitMarkers] = useState<Set<number>>(new Set());
   const [splitMode, setSplitMode] = useState(false); // word-pick split mode
+  const [wordEditMode, setWordEditMode] = useState(false);
+  const [editingWordIndex, setEditingWordIndex] = useState(-1);
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
   const selectedItemRef = useRef<HTMLLIElement | null>(null);
@@ -179,22 +182,27 @@ const TimestampEditorScreen: React.FC = () => {
     };
   }, [article]);
 
-  // Draw regions when sentences change
+  // Draw regions when sentences change (+ word regions in wordEditMode)
   const lastRegionKeyRef = useRef('');
   useEffect(() => {
     const regions = regionsRef.current;
     if (!regions || duration === 0) return;
 
+    const sel = sentences[selectedIndex];
+
     // Only show prev, current, next
     const indicesToShow = [selectedIndex - 1, selectedIndex, selectedIndex + 1];
 
     // Skip redraw if regions haven't actually changed
+    const wordKey = wordEditMode && sel?.words
+      ? `:wm:${editingWordIndex}:${sel.words.map(w => `${w.start}:${w.end}`).join(',')}`
+      : '';
     const regionKey = `${selectedIndex}:${sentences.length}:${
       indicesToShow
         .filter(i => i >= 0 && i < sentences.length)
         .map(i => `${i}:${sentences[i].start}:${sentences[i].end}`)
         .join('|')
-    }`;
+    }${wordKey}`;
     if (regionKey === lastRegionKeyRef.current) return;
     lastRegionKeyRef.current = regionKey;
 
@@ -205,7 +213,7 @@ const TimestampEditorScreen: React.FC = () => {
     sentences.forEach((s, i) => {
       if (focusSet.has(i)) return;
       if (s.start == null || s.end == null) return;
-      regions.addRegion({
+      const bgR = regions.addRegion({
         id: `bg-${s.index}`,
         start: s.start,
         end: s.end,
@@ -213,77 +221,157 @@ const TimestampEditorScreen: React.FC = () => {
         drag: false,
         resize: false,
       });
+      if (bgR.element) {
+        bgR.element.style.borderRight = '1px dotted rgba(0,0,0,0.25)';
+      }
     });
 
-    indicesToShow.forEach((i) => {
-      if (i < 0 || i >= sentences.length) return;
-      const s = sentences[i];
-      if (s.start == null || s.end == null) return;
-
-      const isCurrent = i === selectedIndex;
-      const isPrev = i === selectedIndex - 1;
-      const regionColor = isCurrent
-        ? 'rgba(25, 118, 210, 0.2)'
-        : isPrev
-          ? 'rgba(255, 152, 0, 0.15)'
-          : 'rgba(244, 67, 54, 0.15)';
-      const region = regions.addRegion({
-        id: `s-${s.index}`,
-        start: s.start,
-        end: s.end,
-        color: regionColor,
-        drag: isCurrent,
-        resize: isCurrent,
+    // Word edit mode: show sentence background + individual word regions
+    if (wordEditMode && sel?.words && sel.start != null && sel.end != null) {
+      // Sentence background
+      const bgRegion = regions.addRegion({
+        id: `s-bg-${sel.index}`,
+        start: sel.start,
+        end: sel.end,
+        color: 'rgba(25, 118, 210, 0.08)',
+        drag: false,
+        resize: false,
       });
-      if (region.element) {
-        region.element.classList.add(
-          isCurrent ? 'region-current' : isPrev ? 'region-prev' : 'region-next'
-        );
+      if (bgRegion.element) {
+        bgRegion.element.style.borderRight = '2px dashed rgba(25,118,210,0.4)';
       }
-      // Bind drag/resize update directly on current region
-      if (isCurrent) {
-        region.on('update-end', () => {
-          const newEnd = Math.round(region.end * 1000) / 1000;
 
-          setSentences(prev => {
-            const currentIdx = prev.findIndex(ss => ss.index === s.index);
-            const updated = [...prev];
-            const newStart = Math.round(region.start * 1000) / 1000;
-            updated[currentIdx] = { ...updated[currentIdx], start: newStart, end: newEnd };
-
-            // Trim previous sentence's end if current start overlaps it
-            if (currentIdx > 0) {
-              const prevS = updated[currentIdx - 1];
-              if ((prevS.end ?? 0) > newStart) {
-                updated[currentIdx - 1] = { ...prevS, end: newStart };
-              }
-            }
-
-            // Push out subsequent sentences only if they overlap
-            let pushBoundary = newEnd;
-            for (let i = currentIdx + 1; i < updated.length; i++) {
-              const ss = updated[i];
-              const ssStart = ss.start ?? 0;
-              const ssEnd = ss.end ?? 0;
-              if (ssStart < pushBoundary) {
-                const shift = pushBoundary - ssStart;
-                updated[i] = {
-                  ...ss,
-                  start: Math.round((ssStart + shift) * 1000) / 1000,
-                  end: Math.round((ssEnd + shift) * 1000) / 1000,
-                };
-                pushBoundary = updated[i].end!;
-              } else {
-                break;
-              }
-            }
-            return updated;
-          });
-          setHasChanges(true);
+      // Word regions
+      sel.words.forEach((w, wi) => {
+        const isSelected = wi === editingWordIndex;
+        const wordRegion = regions.addRegion({
+          id: `w-${wi}`,
+          start: w.start,
+          end: w.end,
+          color: isSelected ? 'rgba(76, 175, 80, 0.3)' : 'rgba(156, 39, 176, 0.2)',
+          drag: isSelected,
+          resize: isSelected,
         });
-      }
-    });
-  }, [sentences, selectedIndex, duration]);
+
+        // Click to select word + border styling
+        if (wordRegion.element) {
+          if (isSelected) {
+            wordRegion.element.style.borderLeft = '3px solid rgba(76,175,80,0.9)';
+            wordRegion.element.style.borderRight = '3px solid rgba(76,175,80,0.9)';
+          } else {
+            wordRegion.element.style.borderLeft = '1px dashed rgba(156,39,176,0.35)';
+            wordRegion.element.style.borderRight = '1px dashed rgba(156,39,176,0.35)';
+          }
+          wordRegion.element.addEventListener('click', () => {
+            setEditingWordIndex(wi);
+          });
+        }
+
+        // Drag/resize cascade for selected word
+        if (isSelected) {
+          wordRegion.on('update-end', () => {
+            pushUndo();
+            const newStart = Math.round(wordRegion.start * 1000) / 1000;
+            const newEnd = Math.round(wordRegion.end * 1000) / 1000;
+            setSentences(prev => {
+              const s = prev[selectedIndex];
+              if (!s?.words) return prev;
+              const words = s.words.map(ww => ({ ...ww }));
+              words[wi] = { ...words[wi], start: newStart, end: newEnd };
+
+              // Cascade backward: trim previous words
+              for (let j = wi - 1; j >= 0; j--) {
+                if (words[j].end > words[j + 1].start) {
+                  words[j].end = words[j + 1].start;
+                  if (words[j].start > words[j].end) {
+                    words[j].start = words[j].end;
+                  }
+                } else break;
+              }
+
+              // Cascade forward: push subsequent words
+              let pushBoundary = newEnd;
+              for (let j = wi + 1; j < words.length; j++) {
+                if (words[j].start < pushBoundary) {
+                  const dur = words[j].end - words[j].start;
+                  words[j].start = Math.round(pushBoundary * 1000) / 1000;
+                  words[j].end = Math.round((words[j].start + dur) * 1000) / 1000;
+                  pushBoundary = words[j].end;
+                } else break;
+              }
+
+              return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
+            });
+            setHasChanges(true);
+          });
+        }
+      });
+    } else {
+      // Normal sentence region mode
+      indicesToShow.forEach((i) => {
+        if (i < 0 || i >= sentences.length) return;
+        const s = sentences[i];
+        if (s.start == null || s.end == null) return;
+
+        const isCurrent = i === selectedIndex;
+        const isPrev = i === selectedIndex - 1;
+        const regionColor = isCurrent
+          ? 'rgba(25, 118, 210, 0.2)'
+          : isPrev
+            ? 'rgba(255, 152, 0, 0.15)'
+            : 'rgba(244, 67, 54, 0.15)';
+        const region = regions.addRegion({
+          id: `s-${s.index}`,
+          start: s.start,
+          end: s.end,
+          color: regionColor,
+          drag: isCurrent,
+          resize: isCurrent,
+        });
+        if (region.element) {
+          region.element.classList.add(
+            isCurrent ? 'region-current' : isPrev ? 'region-prev' : 'region-next'
+          );
+        }
+        if (isCurrent) {
+          region.on('update-end', () => {
+            const newEnd = Math.round(region.end * 1000) / 1000;
+            setSentences(prev => {
+              const currentIdx = prev.findIndex(ss => ss.index === s.index);
+              const updated = [...prev];
+              const newStart = Math.round(region.start * 1000) / 1000;
+              updated[currentIdx] = { ...updated[currentIdx], start: newStart, end: newEnd };
+              if (currentIdx > 0) {
+                const prevS = updated[currentIdx - 1];
+                if ((prevS.end ?? 0) > newStart) {
+                  updated[currentIdx - 1] = { ...prevS, end: newStart };
+                }
+              }
+              let pushBoundary = newEnd;
+              for (let i = currentIdx + 1; i < updated.length; i++) {
+                const ss = updated[i];
+                const ssStart = ss.start ?? 0;
+                const ssEnd = ss.end ?? 0;
+                if (ssStart < pushBoundary) {
+                  const shift = pushBoundary - ssStart;
+                  updated[i] = {
+                    ...ss,
+                    start: Math.round((ssStart + shift) * 1000) / 1000,
+                    end: Math.round((ssEnd + shift) * 1000) / 1000,
+                  };
+                  pushBoundary = updated[i].end!;
+                } else {
+                  break;
+                }
+              }
+              return updated;
+            });
+            setHasChanges(true);
+          });
+        }
+      });
+    }
+  }, [sentences, selectedIndex, duration, wordEditMode, editingWordIndex]);
 
   // Region drag/resize handled via per-region 'update-end' event above
 
@@ -328,6 +416,30 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, []);
 
+  /**
+   * Synchronous play(start, end) — bypasses WaveSurfer's async play() chain.
+   * Directly manipulates the WebAudioPlayer to avoid race conditions
+   * where stopAtPosition gets cleared by async microtasks.
+   */
+  const syncPlay = useCallback((start: number, end: number) => {
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+    // 1. Pause (sync)
+    ws.pause();
+    // 2. Seek (sync) — sets playbackPosition, clears stopAtPosition
+    ws.setTime(start);
+    // 3. Play via WaveSurfer (will be async internally, but we set stopAtPosition after)
+    //    We need the media to actually start playing first.
+    //    Access internal media and call _play() + emit directly for sync behavior.
+    const media = (ws as any).media;
+    if (media && typeof media._play === 'function') {
+      media._play();
+      media.emit('play');
+    }
+    // 4. Set stopAtPosition AFTER play started (timer is already running from 'play' event)
+    (ws as any).stopAtPosition = end;
+  }, []);
+
 
 
   const handlePlayPause = useCallback(() => {
@@ -337,15 +449,16 @@ const TimestampEditorScreen: React.FC = () => {
 
     if (!ws.isPlaying()) {
       // Resume from current position, stop at sentence end
+      const curTime = ws.getCurrentTime();
       if (s?.end != null) {
-        ws.play(undefined, s.end);
+        syncPlay(curTime, s.end);
       } else {
         ws.play();
       }
     } else {
       ws.pause();
     }
-  }, [sentences, selectedIndex]);
+  }, [sentences, selectedIndex, syncPlay]);
 
   const lastPlayedIndexRef = React.useRef<number>(-1);
   const selectedIndexRef = React.useRef<number>(selectedIndex);
@@ -357,27 +470,17 @@ const TimestampEditorScreen: React.FC = () => {
     const s = sentences[idx];
     if (!s || s.start == null || s.end == null || !ws) return;
 
-    // Same sentence + playing → pause. Otherwise → play(start, end).
-    if (ws.isPlaying() && lastPlayedIndexRef.current === idx) {
-      ws.pause();
-      lastPlayedIndexRef.current = -1;
-      return;
-    }
-    if (ws.isPlaying()) {
-      ws.pause();
-    }
-    // wavesurfer.play(start, end) — internal stopAtPosition, no interval needed
-    ws.play(s.start, s.end);
+    syncPlay(s.start, s.end);
     lastPlayedIndexRef.current = idx;
-  }, [sentences]);
+  }, [sentences, syncPlay]);
 
   const handlePlayFromEnd = useCallback(() => {
     const ws = wavesurferRef.current;
     const s = sentences[selectedIndex];
     if (!s || s.end == null || !ws) return;
     const startAt = Math.max(s.start ?? 0, s.end - 3);
-    ws.play(startAt, s.end);
-  }, [sentences, selectedIndex]);
+    syncPlay(startAt, s.end);
+  }, [sentences, selectedIndex, syncPlay]);
 
   const adjustTime = useCallback((field: 'start' | 'end', delta: number) => {
     pushUndo();
@@ -575,6 +678,215 @@ const TimestampEditorScreen: React.FC = () => {
     URL.revokeObjectURL(url);
   }, [sentences, article]);
 
+  // --- Word Edit Mode helpers ---
+
+  const enterWordEditMode = useCallback(() => {
+    const s = sentences[selectedIndex];
+    if (!s) return;
+    setSplitMode(false);
+    setWordEditMode(true);
+    setEditingWordIndex(0);
+  }, [sentences, selectedIndex]);
+
+  const exitWordEditMode = useCallback(() => {
+    setWordEditMode(false);
+    setEditingWordIndex(-1);
+  }, []);
+
+  /** Initialize words[] for a sentence that has none (uniform distribution) */
+  const handleInitWords = useCallback(() => {
+    const s = sentences[selectedIndex];
+    if (!s || s.start == null || s.end == null) return;
+    pushUndo();
+    const textWords = s.text.split(/\s+/).filter(w => w.length > 0);
+    if (textWords.length === 0) return;
+    const dur = s.end - s.start;
+    const step = dur / textWords.length;
+    const words: WordTimestamp[] = textWords.map((w, i) => ({
+      word: w,
+      start: Math.round((s.start! + i * step) * 1000) / 1000,
+      end: Math.round((s.start! + (i + 1) * step) * 1000) / 1000,
+    }));
+    setSentences(prev => prev.map((ss, i) =>
+      i === selectedIndex ? { ...ss, words } : ss
+    ));
+    setHasChanges(true);
+  }, [sentences, selectedIndex, pushUndo]);
+
+  /** Update a word's text and sync sentence.text */
+  const handleWordTextEdit = useCallback((wordIdx: number, newWord: string) => {
+    pushUndo();
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      if (!s?.words) return prev;
+      const words = [...s.words];
+      words[wordIdx] = { ...words[wordIdx], word: newWord };
+      const text = words.map(w => w.word).join(' ');
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words, text } : ss);
+    });
+    setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
+  /** Fine-adjust word boundary by delta ms */
+  const handleWordTimeAdjust = useCallback((wordIdx: number, field: 'start' | 'end', deltaMs: number) => {
+    pushUndo();
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      if (!s?.words) return prev;
+      const words = s.words.map(w => ({ ...w }));
+      const delta = deltaMs / 1000;
+      words[wordIdx][field] = Math.round((words[wordIdx][field] + delta) * 1000) / 1000;
+
+      // Cascade backward: trim previous words
+      if (field === 'start') {
+        for (let j = wordIdx - 1; j >= 0; j--) {
+          if (words[j].end > words[j + 1].start) {
+            words[j].end = words[j + 1].start;
+            if (words[j].start > words[j].end) words[j].start = words[j].end;
+          } else break;
+        }
+      }
+
+      // Cascade forward: push subsequent words
+      if (field === 'end') {
+        let pushBoundary = words[wordIdx].end;
+        for (let j = wordIdx + 1; j < words.length; j++) {
+          if (words[j].start < pushBoundary) {
+            const dur = words[j].end - words[j].start;
+            words[j].start = Math.round(pushBoundary * 1000) / 1000;
+            words[j].end = Math.round((words[j].start + dur) * 1000) / 1000;
+            pushBoundary = words[j].end;
+          } else break;
+        }
+      }
+
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
+    });
+    setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
+  /** Add a placeholder word before or after the selected word */
+  const handleAddWord = useCallback((position: 'before' | 'after') => {
+    pushUndo();
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      if (!s?.words || editingWordIndex < 0) return prev;
+      const words = s.words.map(w => ({ ...w }));
+      const ref = words[editingWordIndex];
+      let newWord: WordTimestamp;
+
+      if (position === 'before') {
+        const prevWord = editingWordIndex > 0 ? words[editingWordIndex - 1] : null;
+        const gapStart = prevWord ? prevWord.end : (s.start ?? ref.start - 0.1);
+        const gap = ref.start - gapStart;
+        if (gap >= 0.05) {
+          newWord = { word: '___', start: gapStart, end: ref.start };
+        } else {
+          // Steal 0.1s from current word
+          const steal = Math.min(0.1, (ref.end - ref.start) / 2);
+          newWord = { word: '___', start: ref.start, end: Math.round((ref.start + steal) * 1000) / 1000 };
+          words[editingWordIndex] = { ...ref, start: newWord.end };
+        }
+        words.splice(editingWordIndex, 0, newWord);
+        setEditingWordIndex(editingWordIndex + 1);
+      } else {
+        const nextWord = editingWordIndex < words.length - 1 ? words[editingWordIndex + 1] : null;
+        const gapEnd = nextWord ? nextWord.start : (s.end ?? ref.end + 0.1);
+        const gap = gapEnd - ref.end;
+        if (gap >= 0.05) {
+          newWord = { word: '___', start: ref.end, end: gapEnd };
+        } else {
+          const steal = Math.min(0.1, (ref.end - ref.start) / 2);
+          newWord = { word: '___', start: Math.round((ref.end - steal) * 1000) / 1000, end: ref.end };
+          words[editingWordIndex] = { ...ref, end: newWord.start };
+        }
+        words.splice(editingWordIndex + 1, 0, newWord);
+      }
+
+      const text = words.map(w => w.word).join(' ');
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words, text } : ss);
+    });
+    setHasChanges(true);
+  }, [selectedIndex, editingWordIndex, pushUndo]);
+
+  /** Delete selected word (must have >1 word) */
+  const handleDeleteWord = useCallback(() => {
+    pushUndo();
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      if (!s?.words || s.words.length <= 1) return prev;
+      const words = s.words.filter((_, i) => i !== editingWordIndex);
+      const text = words.map(w => w.word).join(' ');
+      const newIdx = Math.min(editingWordIndex, words.length - 1);
+      setEditingWordIndex(newIdx);
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words, text } : ss);
+    });
+    setHasChanges(true);
+  }, [selectedIndex, editingWordIndex, pushUndo]);
+
+  /** Play only the selected word's audio range */
+  const handlePlayWord = useCallback(() => {
+    const ws = wavesurferRef.current;
+    const s = sentences[selectedIndex];
+    if (!ws || !s?.words || editingWordIndex < 0) return;
+    const w = s.words[editingWordIndex];
+    if (!w) return;
+    syncPlay(w.start, w.end);
+  }, [sentences, selectedIndex, editingWordIndex]);
+
+  /** Pull all subsequent words to pack tightly after current word */
+  const handlePullWords = useCallback(() => {
+    const s = sentences[selectedIndex];
+    if (!s?.words || editingWordIndex < 0 || editingWordIndex >= s.words.length - 1) return;
+    pushUndo();
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      if (!s?.words) return prev;
+      const words = s.words.map(w => ({ ...w }));
+      let cursor = words[editingWordIndex].end;
+      for (let j = editingWordIndex + 1; j < words.length; j++) {
+        const dur = words[j].end - words[j].start;
+        words[j].start = Math.round(cursor * 1000) / 1000;
+        words[j].end = Math.round((cursor + dur) * 1000) / 1000;
+        cursor = words[j].end;
+      }
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
+    });
+    setHasChanges(true);
+    // Advance to next word
+    const cur = sentences[selectedIndex];
+    if (cur?.words && editingWordIndex < cur.words.length - 1) {
+      setEditingWordIndex(editingWordIndex + 1);
+    }
+  }, [sentences, selectedIndex, editingWordIndex, pushUndo]);
+
+  /** Pull all subsequent sentences to pack tightly after current sentence */
+  const handlePullSentences = useCallback(() => {
+    if (selectedIndex >= sentences.length - 1) return;
+    const current = sentences[selectedIndex];
+    if (current.end == null) return;
+    pushUndo();
+    setSentences(prev => {
+      const updated = [...prev];
+      let cursor = updated[selectedIndex].end!;
+      for (let j = selectedIndex + 1; j < updated.length; j++) {
+        const dur = (updated[j].end ?? 0) - (updated[j].start ?? 0);
+        updated[j] = {
+          ...updated[j],
+          start: Math.round(cursor * 1000) / 1000,
+          end: Math.round((cursor + dur) * 1000) / 1000,
+        };
+        cursor = updated[j].end!;
+      }
+      return updated;
+    });
+    setHasChanges(true);
+    // Advance to next sentence
+    if (selectedIndex < sentences.length - 1) {
+      setSelectedIndex(selectedIndex + 1);
+    }
+  }, [sentences, selectedIndex, pushUndo]);
+
   // Auto-scroll selected sentence to center
   useEffect(() => {
     if (selectedItemRef.current) {
@@ -591,6 +903,8 @@ const TimestampEditorScreen: React.FC = () => {
     }
     setSelectedIndex(idx);
     setSplitMode(false);
+    setWordEditMode(false);
+    setEditingWordIndex(-1);
     const s = sentences[idx];
     if (s?.start != null && ws) {
       ws.setTime(s.start);
@@ -628,10 +942,53 @@ const TimestampEditorScreen: React.FC = () => {
         return;
       }
 
+      // Escape: exit word edit mode
+      if (e.key === 'Escape' && wordEditMode) {
+        e.preventDefault();
+        exitWordEditMode();
+        return;
+      }
+
       // Use e.code for IME-safe detection (한글 모드에서도 동작)
       const code = e.code;
 
+      // Word edit mode: Left/Right navigate words, Space=toggle, S=play from start
+      if (wordEditMode) {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          setEditingWordIndex(prev => Math.max(0, prev - 1));
+          return;
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          const s = sentences[selectedIndex];
+          const maxIdx = (s?.words?.length ?? 1) - 1;
+          setEditingWordIndex(prev => Math.min(maxIdx, prev + 1));
+          return;
+        } else if (code === 'Space' && !e.repeat) {
+          e.preventDefault();
+          // Toggle: playing → pause, paused → resume word playback
+          const ws = wavesurferRef.current;
+          if (ws?.isPlaying()) {
+            ws.pause();
+          } else {
+            handlePlayWord();
+          }
+          return;
+        } else if (code === 'KeyS' && !e.metaKey && !e.ctrlKey) {
+          e.preventDefault();
+          handlePlayWord();
+          return;
+        } else if (code === 'KeyP' && !e.metaKey && !e.ctrlKey) {
+          e.preventDefault();
+          handlePullWords();
+          return;
+        }
+      }
+
       if (code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        handlePlayPause();
+      } else if (code === 'KeyS' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         handlePlaySentence();
       } else if (code === 'KeyE') {
@@ -646,6 +1003,9 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyM') {
         e.preventDefault();
         handleMergeSentences();
+      } else if (code === 'KeyP' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        handlePullSentences();
       } else if (code === 'KeyZ' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (e.shiftKey) handleRedo();
@@ -669,7 +1029,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, sentences]);
 
   if (!article) {
     return (
@@ -797,36 +1157,144 @@ const TimestampEditorScreen: React.FC = () => {
               )}
             </Stack>
             <Box sx={{ display: 'flex', gap: 0.5 }}>
-              <IconButton
-                size="small"
-                onClick={selected?.hidden ? handleUnhideSentence : handleHideSentence}
-                color={selected?.hidden ? 'default' : 'primary'}
-                title={selected?.hidden ? '숨김 해제 (←)' : '숨기기 (→)'}
-              >
-                {selected?.hidden ? <VisibilityOff /> : <Visibility />}
-              </IconButton>
+              {!wordEditMode && (
+                <>
+                  <IconButton
+                    size="small"
+                    onClick={selected?.hidden ? handleUnhideSentence : handleHideSentence}
+                    color={selected?.hidden ? 'default' : 'primary'}
+                    title={selected?.hidden ? '숨김 해제 (←)' : '숨기기 (→)'}
+                  >
+                    {selected?.hidden ? <VisibilityOff /> : <Visibility />}
+                  </IconButton>
+                  <Button
+                    size="small"
+                    variant={splitMode ? 'contained' : 'outlined'}
+                    color={splitMode ? 'info' : 'primary'}
+                    onClick={() => setSplitMode(prev => !prev)}
+                    title="문장 분할 모드 (D)"
+                  >
+                    {splitMode ? '분할 취소' : '분할'}
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<MergeType />}
+                    onClick={handleMergeSentences}
+                    disabled={selectedIndex >= sentences.length - 1}
+                    title="다음 문장과 합치기 (M)"
+                  >
+                    합치기
+                  </Button>
+                </>
+              )}
               <Button
                 size="small"
-                variant={splitMode ? 'contained' : 'outlined'}
-                color={splitMode ? 'info' : 'primary'}
-                onClick={() => setSplitMode(prev => !prev)}
-                title="문장 분할 모드 (D)"
+                variant={wordEditMode ? 'contained' : 'outlined'}
+                color={wordEditMode ? 'secondary' : 'primary'}
+                onClick={wordEditMode ? exitWordEditMode : enterWordEditMode}
+                title="단어 타이밍 편집"
               >
-                {splitMode ? '분할 취소' : '분할'}
-              </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<MergeType />}
-                onClick={handleMergeSentences}
-                disabled={selectedIndex >= sentences.length - 1}
-                title="다음 문장과 합치기 (M)"
-              >
-                합치기
+                {wordEditMode ? '← 문장' : 'Words'}
               </Button>
             </Box>
           </Stack>
-          {splitMode ? (
+          {wordEditMode ? (
+            /* --- Word Edit Panel --- */
+            <Box sx={{ mb: 2 }}>
+              {selected?.words && selected.words.length > 0 ? (
+                <>
+                  {/* Word list as clickable chips */}
+                  <Box sx={{
+                    p: 1, mb: 1, border: '2px solid', borderColor: 'secondary.main',
+                    borderRadius: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5,
+                  }}>
+                    {selected.words.map((w, wi) => (
+                      <Chip
+                        key={wi}
+                        label={w.word}
+                        size="small"
+                        color={wi === editingWordIndex ? 'success' : 'default'}
+                        variant={wi === editingWordIndex ? 'filled' : 'outlined'}
+                        onClick={() => setEditingWordIndex(wi)}
+                        sx={{ cursor: 'pointer' }}
+                      />
+                    ))}
+                  </Box>
+
+                  {/* Selected word editor */}
+                  {editingWordIndex >= 0 && editingWordIndex < (selected.words?.length ?? 0) && (() => {
+                    const w = selected.words![editingWordIndex];
+                    return (
+                      <Box sx={{ p: 1, bgcolor: 'grey.50', borderRadius: 1 }}>
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                          <Typography variant="caption" sx={{ minWidth: 40 }}>Word:</Typography>
+                          <TextField
+                            size="small"
+                            value={w.word}
+                            onChange={(e) => handleWordTextEdit(editingWordIndex, e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                            sx={{ flex: 1 }}
+                            inputProps={{ style: { fontSize: '0.85rem', padding: '4px 8px' } }}
+                          />
+                          <IconButton size="small" onClick={handlePlayWord} color="primary" title="Play word">
+                            <PlayArrow fontSize="small" />
+                          </IconButton>
+                        </Stack>
+
+                        <Typography variant="caption" color="text.secondary">
+                          {w.start.toFixed(3)}s — {w.end.toFixed(3)}s ({((w.end - w.start) * 1000).toFixed(0)}ms)
+                        </Typography>
+
+                        {/* ±10ms fine adjust */}
+                        <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, mb: 0.5 }}>
+                          <Button size="small" variant="outlined" onClick={() => handleWordTimeAdjust(editingWordIndex, 'start', -10)}>S-10</Button>
+                          <Button size="small" variant="outlined" onClick={() => handleWordTimeAdjust(editingWordIndex, 'start', 10)}>S+10</Button>
+                          <Button size="small" variant="outlined" onClick={() => handleWordTimeAdjust(editingWordIndex, 'end', -10)}>E-10</Button>
+                          <Button size="small" variant="outlined" onClick={() => handleWordTimeAdjust(editingWordIndex, 'end', 10)}>E+10</Button>
+                        </Stack>
+
+                        {/* Add/Delete */}
+                        <Stack direction="row" spacing={0.5}>
+                          <Button size="small" variant="outlined" onClick={() => handleAddWord('before')}>+ Before</Button>
+                          <Button size="small" variant="outlined" onClick={() => handleAddWord('after')}>+ After</Button>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="error"
+                            onClick={handleDeleteWord}
+                            disabled={(selected.words?.length ?? 0) <= 1}
+                          >
+                            Delete
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            onClick={handlePullWords}
+                            disabled={editingWordIndex >= (selected.words?.length ?? 1) - 1}
+                            title="이후 단어 전부 당기기"
+                          >
+                            당기기
+                          </Button>
+                        </Stack>
+                      </Box>
+                    );
+                  })()}
+                </>
+              ) : (
+                /* No words[] — offer Init */
+                <Box sx={{ textAlign: 'center', py: 2 }}>
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    이 문장에 단어 타이밍 없음
+                  </Typography>
+                  <Button variant="contained" size="small" onClick={handleInitWords}>
+                    Init Words (균등 분배)
+                  </Button>
+                </Box>
+              )}
+            </Box>
+          ) : splitMode ? (
             <Box sx={{
               mb: 2, p: 1, border: '2px solid', borderColor: 'info.main',
               borderRadius: 1, minHeight: 60, display: 'flex', flexWrap: 'wrap',
@@ -880,49 +1348,79 @@ const TimestampEditorScreen: React.FC = () => {
             <IconButton onClick={handlePrevSentence} disabled={selectedIndex <= 0}>
               <SkipPrevious />
             </IconButton>
-            <IconButton onClick={handlePlayPause} color="primary">
+            <IconButton onClick={handlePlayPause} color="primary" title="재생/일시정지 토글">
               {isPlaying ? <Pause /> : <PlayArrow />}
             </IconButton>
             <IconButton
               onClick={handlePlaySentence}
-              color="secondary"
-              title="선택 구간 재생"
+              color="primary"
+              title="문장 처음부터 재생 (Space)"
             >
-              <PlayArrow />
+              <Replay />
             </IconButton>
             <IconButton onClick={handleNextSentence} disabled={selectedIndex >= sentences.length - 1}>
               <SkipNext />
             </IconButton>
           </Stack>
 
-          {/* Fine adjustment */}
-          <Typography variant="subtitle2" gutterBottom>Start: {(selected?.start ?? 0).toFixed(2)}s</Typography>
-          <Stack direction="row" spacing={1} sx={{ mb: 1.5 }} justifyContent="center">
-            <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('start', -0.5)}>0.5</Button>
-            <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('start', -0.1)}>0.1</Button>
-            <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('start', 0.1)}>0.1</Button>
-            <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('start', 0.5)}>0.5</Button>
-          </Stack>
+          {/* Fine adjustment (hidden in word edit mode — word has its own ±10ms) */}
+          {!wordEditMode && (
+            <>
+              <Typography variant="subtitle2" gutterBottom>Start: {(selected?.start ?? 0).toFixed(2)}s</Typography>
+              <Stack direction="row" spacing={1} sx={{ mb: 1.5 }} justifyContent="center">
+                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('start', -0.5)}>0.5</Button>
+                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('start', -0.1)}>0.1</Button>
+                <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('start', 0.1)}>0.1</Button>
+                <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('start', 0.5)}>0.5</Button>
+              </Stack>
 
-          <Typography variant="subtitle2" gutterBottom>End: {(selected?.end ?? 0).toFixed(2)}s</Typography>
-          <Stack direction="row" spacing={1} sx={{ mb: 2 }} justifyContent="center">
-            <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('end', -0.5)}>0.5</Button>
-            <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('end', -0.1)}>0.1</Button>
-            <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.1)}>0.1</Button>
-            <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.5)}>0.5</Button>
-          </Stack>
+              <Typography variant="subtitle2" gutterBottom>End: {(selected?.end ?? 0).toFixed(2)}s</Typography>
+              <Stack direction="row" spacing={1} sx={{ mb: 2 }} justifyContent="center">
+                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('end', -0.5)}>0.5</Button>
+                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('end', -0.1)}>0.1</Button>
+                <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.1)}>0.1</Button>
+                <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.5)}>0.5</Button>
+              </Stack>
+
+              <Button
+                size="small"
+                variant="outlined"
+                color="warning"
+                onClick={handlePullSentences}
+                disabled={selectedIndex >= sentences.length - 1}
+                sx={{ mb: 1 }}
+                fullWidth
+              >
+                이후 문장 전부 당기기
+              </Button>
+            </>
+          )}
 
           {/* Shortcuts */}
           <Box sx={{ color: theme.palette.text.secondary, display: { xs: 'none', sm: 'block' } }}>
-            <Typography variant="caption" display="block">Space: 처음부터 재생</Typography>
-            <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
-            <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
-            <Typography variant="caption" display="block">→: 문장 숨기기 / ←: 숨김 해제</Typography>
-            <Typography variant="caption" display="block">D: 문장 분할</Typography>
-            <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
-            <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
-            <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
-            <Typography variant="caption" display="block">⌘S: 저장</Typography>
+            {wordEditMode ? (
+              <>
+                <Typography variant="caption" display="block">←→: 이전/다음 단어</Typography>
+                <Typography variant="caption" display="block">Space: 재생/일시정지 토글</Typography>
+                <Typography variant="caption" display="block">S: 선택 단어 처음부터 재생</Typography>
+                <Typography variant="caption" display="block">P: 이후 단어 당기기</Typography>
+                <Typography variant="caption" display="block">Esc: 문장 모드로 돌아가기</Typography>
+              </>
+            ) : (
+              <>
+                <Typography variant="caption" display="block">Space: 재생/일시정지 토글</Typography>
+                <Typography variant="caption" display="block">S: 문장 처음부터 재생</Typography>
+                <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
+                <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
+                <Typography variant="caption" display="block">→: 문장 숨기기 / ←: 숨김 해제</Typography>
+                <Typography variant="caption" display="block">D: 문장 분할</Typography>
+                <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
+                <Typography variant="caption" display="block">P: 이후 문장 당기기</Typography>
+                <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
+                <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
+                <Typography variant="caption" display="block">⌘S: 저장</Typography>
+              </>
+            )}
           </Box>
         </Paper>
 
