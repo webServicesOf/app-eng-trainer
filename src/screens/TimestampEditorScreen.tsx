@@ -300,8 +300,11 @@ const TimestampEditorScreen: React.FC = () => {
                 } else break;
               }
 
+              clampWordsToSentence(words, s);
               return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
             });
+            // Force region redraw — clamped values may match pre-drag regionKey
+            lastRegionKeyRef.current = '';
             setHasChanges(true);
           });
         }
@@ -689,6 +692,16 @@ const TimestampEditorScreen: React.FC = () => {
     setEditingWordIndex(0);
   }, [sentences, selectedIndex]);
 
+  /** Clamp all words to stay within sentence boundaries (mutates in place) */
+  const clampWordsToSentence = (words: WordTimestamp[], s: { start?: number; end?: number }) => {
+    if (words.length === 0 || s.start == null || s.end == null) return;
+    for (const w of words) {
+      w.start = Math.max(Math.min(w.start, s.end), s.start);
+      w.end = Math.max(Math.min(w.end, s.end), s.start);
+      if (w.start > w.end) w.start = w.end;
+    }
+  };
+
   const exitWordEditMode = useCallback(() => {
     setWordEditMode(false);
     setEditingWordIndex(-1);
@@ -761,6 +774,7 @@ const TimestampEditorScreen: React.FC = () => {
         }
       }
 
+      clampWordsToSentence(words, s);
       return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
     });
     setHasChanges(true);
@@ -804,6 +818,7 @@ const TimestampEditorScreen: React.FC = () => {
         words.splice(editingWordIndex + 1, 0, newWord);
       }
 
+      clampWordsToSentence(words, s);
       const text = words.map(w => w.word).join(' ');
       return prev.map((ss, i) => i === selectedIndex ? { ...ss, words, text } : ss);
     });
@@ -851,6 +866,7 @@ const TimestampEditorScreen: React.FC = () => {
         words[j].end = Math.round((cursor + dur) * 1000) / 1000;
         cursor = words[j].end;
       }
+      clampWordsToSentence(words, s);
       return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
     });
     setHasChanges(true);
