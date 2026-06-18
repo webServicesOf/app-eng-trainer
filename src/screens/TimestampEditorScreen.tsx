@@ -14,6 +14,7 @@ import {
   Chip,
   TextField,
   useTheme,
+  CircularProgress,
 } from '@mui/material';
 import {
   Home,
@@ -62,6 +63,8 @@ const TimestampEditorScreen: React.FC = () => {
   const [splitMode, setSplitMode] = useState(false); // word-pick split mode
   const [wordEditMode, setWordEditMode] = useState(false);
   const [editingWordIndex, setEditingWordIndex] = useState(-1);
+  const [isSaving, setIsSaving] = useState(false);
+  const handleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
   const selectedItemRef = useRef<HTMLLIElement | null>(null);
@@ -93,29 +96,7 @@ const TimestampEditorScreen: React.FC = () => {
       const loaded: AudioArticle = { ...meta, audioBlob };
       setArticle(loaded);
 
-      // Check for unsaved draft in localStorage
-      const draftKey = `ts-editor-draft-${id}`;
-      const draft = localStorage.getItem(draftKey);
-      if (draft) {
-        try {
-          const draftSentences = JSON.parse(draft) as SentenceEntry[];
-          const useDraft = window.confirm(
-            `미저장 편집본이 있습니다 (${draftSentences.length}문장).\n복원하시겠습니까?\n\n"취소"를 누르면 Drive 원본을 사용합니다.`
-          );
-          if (useDraft) {
-            setSentences(draftSentences);
-            setHasChanges(true);
-          } else {
-            localStorage.removeItem(draftKey);
-            setSentences([...loaded.sentences]);
-          }
-        } catch {
-          localStorage.removeItem(draftKey);
-          setSentences([...loaded.sentences]);
-        }
-      } else {
-        setSentences([...loaded.sentences]);
-      }
+      setSentences([...loaded.sentences]);
 
       if (loaded.splitPoints?.length) {
         const pts = new Set(loaded.splitPoints);
@@ -126,11 +107,40 @@ const TimestampEditorScreen: React.FC = () => {
     load();
   }, [id, navigate, accessToken, audioArticles]);
 
-  // Auto-save draft to localStorage on sentence changes
+  // Navigation guard: prompt save/discard on exit
+  const handleNavigateAway = useCallback(async () => {
+    if (!hasChanges || isSaving) {
+      navigate('/');
+      return;
+    }
+    const choice = window.confirm('변경사항이 있습니다. 저장하시겠습니까?\n\n확인 = 저장 후 나가기\n취소 = 변경사항 버리기');
+    if (choice) {
+      await handleSaveRef.current();
+    }
+    navigate('/');
+  }, [hasChanges, isSaving, navigate]);
+
+  // Browser tab close/refresh guard
   useEffect(() => {
-    if (!id || !hasChanges || sentences.length === 0) return;
-    localStorage.setItem(`ts-editor-draft-${id}`, JSON.stringify(sentences));
-  }, [id, sentences, hasChanges]);
+    if (!hasChanges) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [hasChanges]);
+
+  // Browser back button guard
+  useEffect(() => {
+    if (!hasChanges) return;
+    const handler = (e: PopStateEvent) => {
+      e.preventDefault();
+      // Push state back to prevent navigation, then ask
+      window.history.pushState(null, '', window.location.href);
+      handleNavigateAway();
+    };
+    window.history.pushState(null, '', window.location.href);
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [hasChanges, handleNavigateAway]);
 
   // Initialize WaveSurfer
   useEffect(() => {
@@ -532,9 +542,43 @@ const TimestampEditorScreen: React.FC = () => {
   const handleTextEdit = useCallback((newText: string) => {
     pushUndo();
     setSentences(prev => prev.map((s, i) =>
-      i === selectedIndex ? { ...s, text: newText } : s
+      i === selectedIndex ? { ...s, text: newText, words: [] } : s
     ));
     setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
+  const handleWordDragStart = useCallback((e: React.DragEvent, fromIndex: number) => {
+    e.dataTransfer.setData('text/plain', String(fromIndex));
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleWordDrop = useCallback((e: React.DragEvent, toIndex: number) => {
+    e.preventDefault();
+    const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
+    if (isNaN(fromIndex) || fromIndex === toIndex) return;
+    pushUndo();
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      if (!s?.words) return prev;
+      const words = [...s.words];
+      const [moved] = words.splice(fromIndex, 1);
+      words.splice(toIndex, 0, moved);
+      // Redistribute timing: preserve total duration, reassign based on new order
+      const sentStart = s.start ?? 0;
+      const sentEnd = s.end ?? 0;
+      const totalDur = sentEnd - sentStart;
+      const totalCharLen = words.reduce((sum, w) => sum + w.word.length, 0) || 1;
+      let cursor = sentStart;
+      const retimedWords = words.map(w => {
+        const dur = (w.word.length / totalCharLen) * totalDur;
+        const newWord = { ...w, start: Math.round(cursor * 1000) / 1000, end: Math.round((cursor + dur) * 1000) / 1000 };
+        cursor += dur;
+        return newWord;
+      });
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words: retimedWords } : ss);
+    });
+    setHasChanges(true);
+    setEditingWordIndex(toIndex);
   }, [selectedIndex, pushUndo]);
 
   const handleMergeSentences = useCallback(() => {
@@ -596,6 +640,7 @@ const TimestampEditorScreen: React.FC = () => {
       alert('로그인 필요 — 토큰이 만료되었습니다. 홈에서 재로그인 후 다시 시도하세요.');
       return;
     }
+    setIsSaving(true);
     try {
       const updated: AudioArticle = {
         ...article,
@@ -605,15 +650,16 @@ const TimestampEditorScreen: React.FC = () => {
       await drive.saveArticle(updated);
       setArticle(updated);
       setHasChanges(false);
-      // Clear draft on successful save
-      if (updated.id) localStorage.removeItem(`ts-editor-draft-${updated.id}`);
-      // Sync appStore so HomeScreen sees fresh data
+      // Sync appStore so other screens see fresh data
       await loadAudioArticles();
     } catch (error) {
       console.error('Save failed:', error);
       alert('저장 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsSaving(false);
     }
   }, [article, sentences, accessToken, loadAudioArticles]);
+  handleSaveRef.current = handleSave;
 
   const toggleSplitMarker = useCallback((idx: number) => {
     setSplitMarkers(prev => {
@@ -859,12 +905,10 @@ const TimestampEditorScreen: React.FC = () => {
       const s = prev[selectedIndex];
       if (!s?.words) return prev;
       const words = s.words.map(w => ({ ...w }));
-      let cursor = words[editingWordIndex].end;
+      const gap = words[editingWordIndex + 1].start - words[editingWordIndex].end;
       for (let j = editingWordIndex + 1; j < words.length; j++) {
-        const dur = words[j].end - words[j].start;
-        words[j].start = Math.round(cursor * 1000) / 1000;
-        words[j].end = Math.round((cursor + dur) * 1000) / 1000;
-        cursor = words[j].end;
+        words[j].start = Math.round((words[j].start - gap) * 1000) / 1000;
+        words[j].end = Math.round((words[j].end - gap) * 1000) / 1000;
       }
       clampWordsToSentence(words, s);
       return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
@@ -885,15 +929,13 @@ const TimestampEditorScreen: React.FC = () => {
     pushUndo();
     setSentences(prev => {
       const updated = [...prev];
-      let cursor = updated[selectedIndex].end!;
+      const gap = updated[selectedIndex + 1].start! - updated[selectedIndex].end!;
       for (let j = selectedIndex + 1; j < updated.length; j++) {
-        const dur = (updated[j].end ?? 0) - (updated[j].start ?? 0);
         updated[j] = {
           ...updated[j],
-          start: Math.round(cursor * 1000) / 1000,
-          end: Math.round((cursor + dur) * 1000) / 1000,
+          start: Math.round(((updated[j].start ?? 0) - gap) * 1000) / 1000,
+          end: Math.round(((updated[j].end ?? 0) - gap) * 1000) / 1000,
         };
-        cursor = updated[j].end!;
       }
       return updated;
     });
@@ -1072,7 +1114,7 @@ const TimestampEditorScreen: React.FC = () => {
       {/* Header */}
       <Paper elevation={2} sx={{ p: 1.5, mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <IconButton onClick={() => navigate('/')} color="primary" size="small">
+          <IconButton onClick={handleNavigateAway} color="primary" size="small" disabled={isSaving}>
             <Home />
           </IconButton>
           <Typography variant="h6" sx={{ fontSize: { xs: '0.9rem', sm: '1.25rem' } }} noWrap>
@@ -1110,12 +1152,12 @@ const TimestampEditorScreen: React.FC = () => {
           )}
           <Button
             variant="contained"
-            startIcon={<Save />}
+            startIcon={isSaving ? <CircularProgress size={18} color="inherit" /> : <Save />}
             onClick={handleSave}
-            disabled={!hasChanges}
+            disabled={!hasChanges || isSaving}
             size="small"
           >
-            저장
+            {isSaving ? '저장 중...' : '저장'}
           </Button>
         </Box>
       </Paper>
@@ -1234,7 +1276,11 @@ const TimestampEditorScreen: React.FC = () => {
                         color={wi === editingWordIndex ? 'success' : 'default'}
                         variant={wi === editingWordIndex ? 'filled' : 'outlined'}
                         onClick={() => setEditingWordIndex(wi)}
-                        sx={{ cursor: 'pointer' }}
+                        draggable
+                        onDragStart={(e) => handleWordDragStart(e as unknown as React.DragEvent, wi)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => handleWordDrop(e as unknown as React.DragEvent, wi)}
+                        sx={{ cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
                       />
                     ))}
                   </Box>
@@ -1356,6 +1402,7 @@ const TimestampEditorScreen: React.FC = () => {
               size="small"
               value={selected?.text ?? ''}
               onChange={(e) => handleTextEdit(e.target.value)}
+              helperText={selected?.words && selected.words.length > 0 ? "⚠️ 텍스트 수정 시 단어 타이밍 초기화됨" : undefined}
               sx={{ mb: 2 }}
             />
           )}
@@ -1481,6 +1528,9 @@ const TimestampEditorScreen: React.FC = () => {
                         </Typography>
                       }
                     />
+                    {(!s.words || s.words.length === 0) && (
+                      <span style={{ marginLeft: 'auto', fontSize: '0.8rem' }} title="단어 타이밍 없음">⚠️</span>
+                    )}
                   </ListItemButton>
                 </ListItem>
                 {splitMarkers.has(i) && (
