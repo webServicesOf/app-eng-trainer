@@ -1,4 +1,4 @@
-import { AudioArticle, SentenceEntry, SubDeckReview } from '../types';
+import { AudioArticle, ArticleSummary, SentenceEntry, SubDeckReview } from '../types';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
@@ -283,7 +283,7 @@ export class GoogleDriveService {
     await this.migrateIfNeeded();
     const { data } = await this.ensureFolders();
     const remoteFiles = await this.listFilesIn(data);
-    const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json'));
+    const jsonFiles = remoteFiles.filter((f) => f.name.endsWith('.json') && f.name !== 'index.json');
 
     const articles: AudioArticle[] = [];
     for (const jsonFile of jsonFiles) {
@@ -374,6 +374,100 @@ export class GoogleDriveService {
     if (!settingsFile) return null;
     const blob = await this.downloadFile(settingsFile.id);
     return JSON.parse(await blob.text());
+  }
+
+  // ── index.json manifest ─────────────────────────────
+
+  /** Build summary from an AudioArticle */
+  private articleToSummary(article: AudioArticle): ArticleSummary {
+    return {
+      id: article.id,
+      title: article.title,
+      reviewInterval: article.reviewInterval || 0,
+      nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
+      sentenceCount: article.sentenceCount ?? article.sentences.length,
+      savedAsDeck: article.savedAsDeck,
+      savedSentenceIndices: article.savedSentenceIndices,
+      savedSentenceReview: article.savedSentenceReview,
+      subDeckReviews: article.subDeckReviews,
+      splitPoints: article.splitPoints,
+      source: article.source,
+      createdAt: new Date(article.createdAt).toISOString(),
+      lastAccessed: new Date(article.lastAccessed).toISOString(),
+    };
+  }
+
+  /** Load index.json from data/ folder. Returns null if missing or corrupt. */
+  async loadIndex(): Promise<ArticleSummary[] | null> {
+    const { data } = await this.ensureFolders();
+    const files = await this.listFilesIn(data);
+    const indexFile = files.find(f => f.name === 'index.json');
+    if (!indexFile) return null;
+    try {
+      const blob = await this.downloadFile(indexFile.id);
+      const parsed = JSON.parse(await blob.text());
+      return parsed.articles || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Save index.json to data/ folder */
+  private async saveIndex(summaries: ArticleSummary[]): Promise<void> {
+    const { data } = await this.ensureFolders();
+    const files = await this.listFilesIn(data);
+    const indexFile = files.find(f => f.name === 'index.json');
+    await this.uploadFile(
+      'index.json',
+      JSON.stringify({ articles: summaries }, null, 2),
+      'application/json',
+      data,
+      indexFile?.id,
+    );
+  }
+
+  /** Upsert a single article's summary into index.json */
+  async updateIndex(article: AudioArticle): Promise<void> {
+    const summaries = await this.loadIndex() || [];
+    const summary = this.articleToSummary(article);
+    const idx = summaries.findIndex(s => s.id === article.id);
+    if (idx >= 0) {
+      summaries[idx] = summary;
+    } else {
+      summaries.push(summary);
+    }
+    await this.saveIndex(summaries);
+  }
+
+  /** Sync index.json from full article list (batch — one write) */
+  async syncIndex(articles: AudioArticle[]): Promise<void> {
+    const summaries = articles.map(a => this.articleToSummary(a));
+    await this.saveIndex(summaries);
+  }
+
+  /** Rebuild index from all individual JSON files (self-healing fallback) */
+  async rebuildIndex(): Promise<AudioArticle[]> {
+    await this.migrateIfNeeded();
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
+    const jsonFiles = remoteFiles.filter(f => f.name.endsWith('.json') && f.name !== 'index.json');
+
+    const articles: AudioArticle[] = [];
+    for (const jsonFile of jsonFiles) {
+      try {
+        const jsonBlob = await this.downloadFile(jsonFile.id);
+        const meta: AudioArticleMeta = JSON.parse(await jsonBlob.text());
+        articles.push(this.metaToArticle(meta));
+      } catch (e) {
+        console.warn(`rebuildIndex: failed to parse ${jsonFile.name}:`, e);
+      }
+    }
+
+    const summaries = articles.map(a => this.articleToSummary(a));
+    await this.saveIndex(summaries);
+
+    articles.sort((a, b) => new Date(b.lastAccessed).getTime() - new Date(a.lastAccessed).getTime());
+    return articles;
   }
 
   /** Delete article JSON + MP3 from Drive data/ folder */

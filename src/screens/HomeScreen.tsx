@@ -43,6 +43,7 @@ import {
   Save as SaveIcon,
   Bookmark,
   BookmarkBorder,
+  Link as LinkIcon,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
@@ -128,6 +129,8 @@ export const HomeScreen: React.FC = () => {
   const [batchProgress, setBatchProgress] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
   const [editingTitleValue, setEditingTitleValue] = useState('');
+  const [editSourceId, setEditSourceId] = useState<string | null>(null);
+  const [editSourceValue, setEditSourceValue] = useState('');
 
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
@@ -257,7 +260,10 @@ export const HomeScreen: React.FC = () => {
   /** Upload a single article from mp3 + json + title */
   const uploadSingleArticle = async (mp3: File, json: File, title: string, source?: string) => {
     const jsonText = await json.text();
-    const rawSentences = JSON.parse(jsonText);
+    const parsed = JSON.parse(jsonText);
+    // Support both array format and object format {source, sentences}
+    const rawSentences = Array.isArray(parsed) ? parsed : parsed.sentences;
+    const jsonSource = Array.isArray(parsed) ? undefined : parsed.source;
     const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
       index: s.index ?? i + 1,
       text: s.text,
@@ -274,7 +280,7 @@ export const HomeScreen: React.FC = () => {
       title,
       audioBlob,
       sentences,
-      source: source || undefined,
+      source: source || jsonSource || undefined,
       nextReviewDate: null,
       reviewInterval: 0,
       createdAt: new Date(),
@@ -1080,7 +1086,7 @@ export const HomeScreen: React.FC = () => {
                     )}
                     <Chip label="Audio" size="small" color="info" variant="outlined" sx={{ mr: 1 }} />
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                      {(aa.sentences?.length ?? 0)}개 문장
+                      {aa.sentenceCount ?? (aa.sentences?.length ?? 0)}개 문장
                     </Typography>
                     {aa.source && (
                       <Typography variant="caption" color="text.secondary" display="block">
@@ -1105,7 +1111,7 @@ export const HomeScreen: React.FC = () => {
                     <IconButton
                       size="small"
                       color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
-                      onClick={() => handleToggleSaveDeck(aa.id, aa.title, aa.sentences?.length ?? 0)}
+                      onClick={() => handleToggleSaveDeck(aa.id, aa.title, aa.sentenceCount ?? aa.sentences?.length ?? 0)}
                       title={savedDeckIds.has(aa.id) ? '저장 해제' : '덱 저장'}
                     >
                       {savedDeckIds.has(aa.id) ? <Bookmark fontSize="small" /> : <BookmarkBorder fontSize="small" />}
@@ -1122,6 +1128,14 @@ export const HomeScreen: React.FC = () => {
                     <Button size="small" color="secondary" onClick={() => navigate(`/edit-timestamps/${aa.id}`)}>
                       편집
                     </Button>
+                    <IconButton
+                      size="small"
+                      color={aa.source ? 'info' : 'default'}
+                      onClick={() => { setEditSourceId(aa.id); setEditSourceValue(aa.source || ''); }}
+                      title={aa.source ? `출처: ${aa.source}` : '출처 URL 추가'}
+                    >
+                      <LinkIcon fontSize="small" />
+                    </IconButton>
                     <IconButton
                       size="small"
                       color="error"
@@ -1225,7 +1239,7 @@ export const HomeScreen: React.FC = () => {
                 const savedDeckItems: { id: string; title: string; sentenceCount: number; parentId?: string; reviewInterval: number; nextReviewDate: Date | null; reviewType: 'audio' | 'subdeck'; }[] = [];
                 audioArticles.forEach(aa => {
                   if (aa.savedAsDeck) {
-                    savedDeckItems.push({ id: aa.id, title: aa.title, sentenceCount: aa.sentences?.length ?? 0, reviewInterval: aa.reviewInterval || 0, nextReviewDate: aa.nextReviewDate, reviewType: 'audio' });
+                    savedDeckItems.push({ id: aa.id, title: aa.title, sentenceCount: aa.sentenceCount ?? aa.sentences?.length ?? 0, reviewInterval: aa.reviewInterval || 0, nextReviewDate: aa.nextReviewDate, reviewType: 'audio' });
                   }
                   (aa.subDeckReviews || []).forEach(r => {
                     if (!r.saved) return;
@@ -1695,6 +1709,36 @@ export const HomeScreen: React.FC = () => {
         <DialogActions>
           <Button onClick={() => setSettingsDialogOpen(false)}>취소</Button>
           <Button onClick={handleSaveAllSettings} variant="contained">
+            저장
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Source URL Edit Dialog */}
+      <Dialog open={!!editSourceId} onClose={() => setEditSourceId(null)} maxWidth="sm" fullWidth>
+        <DialogTitle>출처 URL 편집</DialogTitle>
+        <DialogContent>
+          <TextField
+            fullWidth
+            label="출처 URL"
+            value={editSourceValue}
+            onChange={(e) => setEditSourceValue(e.target.value)}
+            margin="normal"
+            placeholder="https://youtube.com/watch?v=..."
+            autoFocus
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditSourceId(null)}>취소</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              if (editSourceId) {
+                useAppStore.getState().updateArticleSource(editSourceId, editSourceValue.trim());
+              }
+              setEditSourceId(null);
+            }}
+          >
             저장
           </Button>
         </DialogActions>

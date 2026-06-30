@@ -4,95 +4,103 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-English learning web application built with React and TypeScript. Users create questionnaires with Korean questions and English answers, which are then broken into sentence pairs for sequential learning. The app features word-by-word highlighting during playback and integrates with Google's Gemini API for AI-powered Korean-to-English translation at different difficulty levels (Easy/Medium/Hard corresponding to IELTS 6-7, 7-8, 8-9).
+English shadowing trainer. Users upload MP3 + sentences.json (from yt2mp3 pipeline), study with word-level audio seek, review via spaced repetition. Google Drive is SSOT for all article data. Optional YouTube real-time sync for articles with source URLs.
 
 ## Development Commands
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server (http://localhost:3000)
-npm start
-
-# Run tests
+npm start          # http://localhost:3000
 npm test
-
-# Build for production
-npm build
+npm run build
 ```
 
 ## Core Architecture
 
 ### State Management
 - **Zustand stores** in `src/stores/appStore.ts`:
-  - `useAppStore`: Global app state (questionnaires, sessions, prompts, API interactions)
-  - `useLearningStore`: Learning screen state (sentence navigation, word highlighting playback)
+  - `useAppStore`: Global state — audioArticles, subDecks, OAuth, dirty tracking, Drive sync
+  - `useLearningStore`: Learning screen state — currentIndex, isCumulative, windowSize
 
 ### Data Layer
-- **IndexedDB via Dexie** (`src/services/database.ts`):
-  - `questionnaires`: Server-side questionnaire data
-  - `modifiedQuestionnaires`: Client-side edited questionnaires with sentence pairs
-  - `answerSessions`: User learning session history
-  - `prompts`: Difficulty-based translation templates
+- **Google Drive (SSOT)**: `eng-trainer/data/` folder
+  - `{id}.json` — article metadata + sentences (AudioArticleMeta format)
+  - `{id}.mp3` — full audio file
+  - `index.json` — manifest for lazy loading (ArticleSummary[])
+- **IndexedDB** (`src/services/database.ts`): MP3 cache only + legacy text articles
+- **Dirty tracking**: `snapshotArticle()` compares mutable fields. Save button (💾) syncs dirty articles to Drive
 
-- **Data Flow**:
-  1. User creates questionnaire with Korean questions
-  2. Gemini API translates to English based on difficulty
-  3. `SentenceProcessor` splits Q&A pairs into indexed sentence entries
-  4. `ModifiedQuestionnaire` stored in IndexedDB for offline access
+### Data Flow
+1. `yt2mp3.sh` downloads YouTube → MP3 + WhisperX → `sentences.json` (with source URL)
+2. User uploads MP3 + JSON via app → `saveAudioArticle()` → Drive JSON + MP3
+3. App load: `loadIndex()` → lightweight article list. Individual JSON loaded on-demand via `loadFullArticle()`
+4. Learning: `audioSeekService` plays MP3 segments with word-level tracking
+5. Changes (hidden, review interval, etc.) → dirty mark → explicit Save → Drive sync + index update
 
 ### Key Services
 
-**GeminiApiService** (`src/services/geminiApi.ts`):
-- Model: `gemini-2.5-flash-lite-preview-06-17`
-- API key stored in `localStorage` (key: `gemini_api_key`)
-- Translation uses difficulty-based prompt templates with `${sentence}` placeholder
-- Includes batch translation with 500ms delay for rate limiting
+**GoogleDriveService** (`src/services/googleDriveService.ts`):
+- Folder layout: `eng-trainer/data/` (articles) + `eng-trainer/sys/` (settings)
+- CRUD: `listArticles()`, `getArticle()`, `saveArticle()`, `deleteArticle()`
+- Index: `loadIndex()`, `updateIndex()`, `syncIndex()`, `rebuildIndex()` (self-healing)
+- Write guard: `saveDirtyArticles` skips articles with `sentences.length === 0` (lazy-loaded summary)
 
-**SentenceProcessor** (`src/services/sentenceProcessor.ts`):
-- Splits Korean/English text into sentences using pattern: `/[.!?。！？]+\s*/g`
-- Creates indexed `SentenceEntry[]` with 1-based indexing
-- Generates cumulative text for sequential sentence display
-- Provides word splitting for highlight animation (800ms interval per word)
+**audioSeekService** (`src/services/audioSeekService.ts`):
+- WebAudio API (`AudioContext` + `AudioBufferSourceNode`)
+- `playSentence()`, `playSegments()` — sentence/word-level seek with callbacks
+- Word tracking via `requestAnimationFrame` polling against word timestamps
+- Playback rate control via `playbackRate` property
 
-**LocalDatabaseService** (`src/services/database.ts`):
-- All queries return promises
-- `modifiedQuestionnaires` ordered by `lastAccessed` DESC
-- `answerSessions` ordered by `answerDateTime` DESC
+**GoogleCloudTTSService** (`src/services/googleCloudTtsService.ts`):
+- Text-to-speech for text-based articles (legacy flow)
+
+**GoogleSheetsService** (`src/services/googleSheetsService.ts`):
+- Fetches text articles from Google Sheets (legacy flow)
 
 ### Routing
-- `/` - HomeScreen (questionnaire list, creation, settings)
-- `/learn/:id` - SentenceLearningScreen (word-by-word playback with arrow key navigation)
+- `/` — HomeScreen (deck list, upload, review management)
+- `/learn/:id` — SentenceLearningScreen (text-based, legacy)
+- `/learn-audio/:id` — AudioLearningScreen (audio seek + word highlight)
+- `/edit-timestamps/:id` — TimestampEditorScreen (sentence boundary editor)
+- `/saved` — SavedSentencesScreen
 
 ## Important Implementation Details
 
-### Sentence Learning Flow
-1. User clicks "학습하기" on questionnaire card
-2. Screen loads sentences from `ModifiedQuestionnaire.sentences[]`
-3. Playback button starts word-by-word highlighting at 800ms intervals
-4. Arrow keys:
-   - ↑ Show all sentences cumulatively
-   - ↓ Show current sentence only
-   - ← Previous sentence
-   - → Next sentence
+### AudioLearningScreen
+- `loadArticle()`: reads store → waits for articles if not loaded → on-demand `loadFullArticle()` → MP3 cache/download
+- Sentence display: word-level color/bold tracking synced to audio position
+- Blind mode: blurs all words except active word during playback
+- Hide toggle: `hidden: true/false` on sentence → dirty mark → Save syncs to Drive
+- Hidden list dialog: view/unhide hidden sentences
 
-### Gemini API Integration
-- Prompt templates must contain `${sentence}` placeholder
-- Default prompts request "natural English nuance suitable for IELTS Level X-X"
-- Prompts explicitly ask to repeat input and omit quote markers
-- Error handling for 401 (invalid key), 429 (rate limit), 404 (model not found)
+### YouTube Integration
+- Toggle button replaces header play button (only when `article.source` has YouTube URL)
+- `react-youtube` IFrame embed above sentence text
+- 100ms polling: `player.getCurrentTime()` → sentence/word highlight sync
+- Sentence/word click → `player.seekTo()`. End-time auto-pause via `ytEndTimeRef`
+- `handleToggleYouTubeMode()` cleans up audio/polling state on switch
+
+### Lazy Loading (index.json)
+- App start: download `index.json` (1 file) instead of N individual JSONs
+- Store holds `sentences: []` + `sentenceCount: N` for summary-only articles
+- Deck entry triggers `loadFullArticle()` → individual JSON download
+- **Critical guard**: `saveDirtyArticles` refuses to write articles with `sentences.length === 0`
+- Self-healing: if index missing/corrupt → `rebuildIndex()` scans all JSONs
 
 ### Data Types (`src/types/index.ts`)
-- `Questionnaire`: Server data model (originalQuestions, difficulty, prompts)
-- `ModifiedQuestionnaire`: Client model with processed sentence pairs
-- `SentenceEntry`: `{index, korean, english, memo?}` - core learning unit
-- `AnswerSession`: User practice history with timestamp
+- `AudioArticle`: id, title, sentences[], source?, sentenceCount?, reviewInterval, nextReviewDate, splitPoints?, subDeckReviews?, savedAsDeck?, savedSentenceIndices?
+- `SentenceEntry`: index, text, start?, end?, words? (WordTimestamp[]), memo?, hidden?
+- `WordTimestamp`: word, start, end
+- `SubDeck`: parentId article range reference with own review schedule
+- `ArticleSummary`: lightweight index entry (no sentences, has sentenceCount)
+- `Article`: legacy text article from Google Sheets
 
 ## Technology Stack
-- React 19, TypeScript 4.9
-- Material-UI (MUI) for components
-- Zustand for state management
-- Dexie (IndexedDB wrapper) for offline storage
-- Axios for HTTP requests
-- React Router for navigation
+- React 19, TypeScript 4.9, MUI 7
+- Zustand 5 for state management
+- IndexedDB (Dexie) for MP3 cache
+- Google Drive API for data persistence
+- Google OAuth 2.0 (@react-oauth/google)
+- react-youtube for YouTube IFrame embed
+- wavesurfer.js for timestamp editor waveform
+- React Router 7

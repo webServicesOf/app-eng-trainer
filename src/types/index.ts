@@ -57,6 +57,7 @@ export interface AudioArticle {
   savedSentenceIndices?: number[]; // 저장된 문장 인덱스 (Drive SSOT)
   savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null }; // 저장 문장 덱 복습
   source?: string; // YouTube URL 등
+  sentenceCount?: number; // index summary count (before full sentences loaded)
   nextReviewDate: Date | null;
   reviewInterval: number; // days
   createdAt: Date;
@@ -74,6 +75,23 @@ export interface SubDeck {
   reviewInterval: number; // days
   createdAt: Date;
   lastAccessed: Date;
+}
+
+// Article summary for index.json manifest (lazy loading)
+export interface ArticleSummary {
+  id: string;
+  title: string;
+  reviewInterval: number;
+  nextReviewDate: string | null;
+  sentenceCount: number;
+  savedAsDeck?: boolean;
+  savedSentenceIndices?: number[];
+  savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null };
+  subDeckReviews?: SubDeckReview[];
+  splitPoints?: number[];
+  source?: string;
+  createdAt: string;
+  lastAccessed: string;
 }
 
 // Google Sheets 설정

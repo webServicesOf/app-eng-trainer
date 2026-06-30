@@ -14,6 +14,16 @@ import {
   TextField,
   MenuItem,
   useTheme,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  List,
+  ListItem,
+  ListItemText,
+  Tooltip,
+  Badge,
 } from '@mui/material';
 import {
   ArrowUpward,
@@ -30,6 +40,10 @@ import {
   VisibilityOff,
   VisibilityOffOutlined,
   Save,
+  FormatListBulleted,
+  RestoreFromTrash,
+  YouTube as YouTubeIcon,
+  Audiotrack,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { AudioArticle, SentenceEntry } from '../types';
@@ -37,6 +51,7 @@ import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
 import { GoogleDriveService } from '../services/googleDriveService';
+import YouTubePlayer from 'react-youtube';
 
 const AudioLearningScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -53,7 +68,7 @@ const AudioLearningScreen: React.FC = () => {
     resetLearningState,
   } = useLearningStore();
 
-  const { audioArticles, accessToken, dirtyAudioIds, saveDirtyArticles } = useAppStore();
+  const { dirtyAudioIds, saveDirtyArticles } = useAppStore();
 
   const [article, setArticle] = useState<AudioArticle | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -66,23 +81,87 @@ const AudioLearningScreen: React.FC = () => {
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
+  const [showHiddenList, setShowHiddenList] = useState(false);
+  const [isYouTubeMode, setIsYouTubeMode] = useState(false);
 
   const loadedArticleIdRef = React.useRef<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ytPlayerRef = React.useRef<any>(null);
+  const ytPollingRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const ytEndTimeRef = React.useRef<number>(0);
+  const displaySentencesRef = React.useRef(displaySentences);
+  React.useEffect(() => { displaySentencesRef.current = displaySentences; }, [displaySentences]);
 
   const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }, indices?: number[]) => {
-    // Skip if already loaded — prevents re-render loop from audioArticles changes
-    if (loadedArticleIdRef.current === articleId && audioLoaded) return;
+    // Guard: only load once per article ID
+    if (loadedArticleIdRef.current === articleId) return;
+    loadedArticleIdRef.current = articleId;
 
     try {
-      // Get metadata from store (Drive-backed)
-      const meta = audioArticles.find(a => a.id === articleId);
+      const storeState = useAppStore.getState();
+      console.log('[loadArticle] START', { articleId, storeArticleCount: storeState.audioArticles.length, hasToken: !!storeState.accessToken });
+
+      // Read store directly (not via closure) to avoid dep on audioArticles
+      let meta = storeState.audioArticles.find(a => a.id === articleId);
+      console.log('[loadArticle] meta from store:', meta ? { id: meta.id, sentencesLen: meta.sentences.length, sentenceCount: meta.sentenceCount } : 'NOT FOUND');
+
+      // Articles might still be loading from Drive — wait for them
       if (!meta) {
-        navigate('/');
-        return;
+        console.log('[loadArticle] waiting for store to populate...');
+        meta = await new Promise<AudioArticle | undefined>((resolve) => {
+          const found = useAppStore.getState().audioArticles.find(a => a.id === articleId);
+          if (found) { resolve(found); return; }
+          const unsub = useAppStore.subscribe(() => {
+            const found = useAppStore.getState().audioArticles.find(a => a.id === articleId);
+            if (found) { unsub(); resolve(found); }
+          });
+          setTimeout(() => { unsub(); resolve(undefined); }, 15000);
+        });
+        console.log('[loadArticle] after wait:', meta ? { id: meta.id, sentencesLen: meta.sentences.length } : 'TIMEOUT/NOT FOUND');
+        if (!meta) {
+          console.error('[loadArticle] BAIL: article not found after wait');
+          loadedArticleIdRef.current = null;
+          navigate('/');
+          return;
+        }
+      }
+
+      // On-demand: load full article if only summary (no sentences)
+      if (meta.sentences.length === 0) {
+        console.log('[loadArticle] sentences empty, calling loadFullArticle...');
+        try {
+          await useAppStore.getState().loadFullArticle(articleId);
+          meta = useAppStore.getState().audioArticles.find(a => a.id === articleId);
+          console.log('[loadArticle] after loadFullArticle:', meta ? { sentencesLen: meta.sentences.length } : 'NOT FOUND');
+        } catch (e) {
+          console.error('[loadArticle] loadFullArticle THREW:', e);
+        }
+
+        // Direct fallback
+        if (!meta || meta.sentences.length === 0) {
+          console.log('[loadArticle] trying direct drive.getArticle fallback...');
+          const token = useAppStore.getState().accessToken;
+          if (token) {
+            const drive = new GoogleDriveService(token);
+            const directArticle = await drive.getArticle(articleId);
+            console.log('[loadArticle] direct result:', directArticle ? { sentencesLen: directArticle.sentences.length } : 'NULL');
+            if (directArticle && directArticle.sentences.length > 0) {
+              meta = directArticle;
+            }
+          } else {
+            console.error('[loadArticle] no token for direct fallback');
+          }
+        }
+
+        if (!meta || meta.sentences.length === 0) {
+          console.error('[loadArticle] BAIL: no sentences after all attempts');
+          loadedArticleIdRef.current = null;
+          navigate('/');
+          return;
+        }
       }
 
       if (indices && indices.length > 0) {
-        // Pick specific sentences by original index, re-index sequentially
         const indexSet = new Set(indices);
         const picked = meta.sentences
           .filter(s => indexSet.has(s.index))
@@ -98,26 +177,34 @@ const AudioLearningScreen: React.FC = () => {
       }
 
       // Get MP3: try cache first, then Drive download
-      let audioBlob = await localDB.getCachedMp3(articleId);
-      if (!audioBlob && accessToken) {
-        const drive = new GoogleDriveService(accessToken);
-        audioBlob = (await drive.downloadMp3(articleId)) || undefined;
-        if (audioBlob) {
-          await localDB.cacheMp3(articleId, audioBlob);
+      try {
+        const token = useAppStore.getState().accessToken;
+        let audioBlob = await localDB.getCachedMp3(articleId);
+        if (!audioBlob && token) {
+          const drive = new GoogleDriveService(token);
+          audioBlob = (await drive.downloadMp3(articleId)) || undefined;
+          if (audioBlob) {
+            await localDB.cacheMp3(articleId, audioBlob);
+          }
         }
-      }
 
-      if (audioBlob) {
-        const blobUrl = URL.createObjectURL(audioBlob);
-        await audioSeekService.load(blobUrl);
-        setAudioLoaded(true);
-        loadedArticleIdRef.current = articleId;
+        if (audioBlob) {
+          const blobUrl = URL.createObjectURL(audioBlob);
+          await audioSeekService.load(blobUrl);
+          setAudioLoaded(true);
+        } else {
+          console.warn('MP3 not found for:', articleId);
+        }
+      } catch (mp3Error) {
+        console.error('MP3 load failed (article data OK):', mp3Error);
+        // Don't navigate home — article data is loaded, MP3 just failed
       }
     } catch (error) {
       console.error('Failed to load audio article:', error);
+      loadedArticleIdRef.current = null;
       navigate('/');
     }
-  }, [navigate, audioArticles, accessToken, audioLoaded]);
+  }, [navigate]);
 
   useEffect(() => {
     if (id) {
@@ -161,6 +248,7 @@ const AudioLearningScreen: React.FC = () => {
     return () => {
       resetLearningState();
       audioSeekService.stop();
+      if (ytPollingRef.current) clearInterval(ytPollingRef.current);
     };
   }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative]);
 
@@ -203,6 +291,72 @@ const AudioLearningScreen: React.FC = () => {
     };
     checkSaved();
   }, [article, currentIndex, isCumulative]);
+
+  const videoId = React.useMemo(() => {
+    if (!article?.source) return null;
+    const match = article.source.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/))([^?&#]+)/);
+    return match?.[1] || null;
+  }, [article?.source]);
+
+  const stopYouTubePolling = React.useCallback(() => {
+    if (ytPollingRef.current) {
+      clearInterval(ytPollingRef.current);
+      ytPollingRef.current = null;
+    }
+  }, []);
+
+  const startYouTubePolling = React.useCallback(() => {
+    stopYouTubePolling();
+    ytPollingRef.current = setInterval(() => {
+      const player = ytPlayerRef.current;
+      if (!player || typeof player.getCurrentTime !== 'function') return;
+      const currentTime = player.getCurrentTime();
+
+      if (ytEndTimeRef.current > 0 && currentTime >= ytEndTimeRef.current) {
+        player.pauseVideo();
+        setIsPlaying(false);
+        setActiveSentenceLocalIdx(-1);
+        setActiveWordIdx(-1);
+        ytEndTimeRef.current = 0;
+        if (ytPollingRef.current) { clearInterval(ytPollingRef.current); ytPollingRef.current = null; }
+        return;
+      }
+
+      const sents = displaySentencesRef.current;
+      let foundSent = -1;
+      let foundWord = -1;
+      for (let i = sents.length - 1; i >= 0; i--) {
+        if (sents[i].start != null && currentTime >= sents[i].start!) {
+          foundSent = i;
+          if (sents[i].words) {
+            for (let w = sents[i].words!.length - 1; w >= 0; w--) {
+              if (currentTime >= sents[i].words![w].start) {
+                foundWord = w;
+                break;
+              }
+            }
+          }
+          break;
+        }
+      }
+      setActiveSentenceLocalIdx(foundSent);
+      setActiveWordIdx(foundWord);
+    }, 100);
+  }, [stopYouTubePolling]);
+
+  const handleToggleYouTubeMode = React.useCallback(() => {
+    if (isYouTubeMode) {
+      const player = ytPlayerRef.current;
+      if (player) player.pauseVideo();
+      stopYouTubePolling();
+    } else {
+      audioSeekService.stop();
+    }
+    setIsPlaying(false);
+    setActiveSentenceLocalIdx(-1);
+    setActiveWordIdx(-1);
+    setIsYouTubeMode(prev => !prev);
+  }, [isYouTubeMode, stopYouTubePolling]);
 
   const handleUpArrow = React.useCallback(() => {
     setIsCumulative(true);
@@ -270,7 +424,47 @@ const AudioLearningScreen: React.FC = () => {
   }, []);
 
   const handleSpeak = React.useCallback(() => {
-    if (!article || !audioLoaded) return;
+    if (!article) return;
+
+    if (isYouTubeMode) {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      if (isCumulative) {
+        let startIdx: number;
+        if (windowSize === 'full') {
+          startIdx = 0;
+        } else {
+          startIdx = Math.max(0, currentIndex - (windowSize as number));
+        }
+        const endIdx = currentIndex - 1;
+        const visible = article.sentences
+          .slice(startIdx, endIdx + 1)
+          .filter(s => !s.hidden && s.start != null && s.end != null);
+        if (visible.length > 0) {
+          player.seekTo(visible[0].start!, true);
+          ytEndTimeRef.current = visible[visible.length - 1].end!;
+          player.playVideo();
+          setActiveSentenceLocalIdx(0);
+          setActiveWordIdx(-1);
+          setIsPlaying(true);
+          startYouTubePolling();
+        }
+      } else {
+        const sentence = article.sentences.find(s => s.index === currentIndex);
+        if (sentence?.start != null && sentence?.end != null) {
+          player.seekTo(sentence.start, true);
+          ytEndTimeRef.current = sentence.end;
+          player.playVideo();
+          setActiveSentenceLocalIdx(0);
+          setActiveWordIdx(-1);
+          setIsPlaying(true);
+          startYouTubePolling();
+        }
+      }
+      return;
+    }
+
+    if (!audioLoaded) return;
 
     if (isCumulative) {
       let startIdx: number;
@@ -312,12 +506,26 @@ const AudioLearningScreen: React.FC = () => {
         );
       }
     }
-  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate]);
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
 
   // Keep ref in sync for arrow handlers
   handleSpeakRef.current = handleSpeak;
 
   const handleTogglePlay = React.useCallback(() => {
+    if (isYouTubeMode) {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      if (isPlaying) {
+        player.pauseVideo();
+        setIsPlaying(false);
+        stopYouTubePolling();
+      } else {
+        player.playVideo();
+        setIsPlaying(true);
+        startYouTubePolling();
+      }
+      return;
+    }
     if (isPlaying) {
       audioSeekService.pause();
       setIsPlaying(false);
@@ -329,10 +537,37 @@ const AudioLearningScreen: React.FC = () => {
         handleSpeak();
       }
     }
-  }, [isPlaying, activeSentenceLocalIdx, handleSpeak]);
+  }, [isPlaying, activeSentenceLocalIdx, handleSpeak, isYouTubeMode, startYouTubePolling, stopYouTubePolling]);
 
   const handlePlayFromStart = React.useCallback(() => {
-    if (!article || !audioLoaded) return;
+    if (!article) return;
+
+    if (isYouTubeMode) {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      let si: number;
+      if (isCumulative) {
+        if (windowSize === 'full') si = 0;
+        else si = Math.max(0, currentIndex - (windowSize as number));
+      } else {
+        si = currentIndex - 1;
+      }
+      const visible = article.sentences
+        .slice(si, currentIndex)
+        .filter(s => !s.hidden && s.start != null && s.end != null);
+      if (visible.length > 0) {
+        player.seekTo(visible[0].start!, true);
+        ytEndTimeRef.current = visible[visible.length - 1].end!;
+        player.playVideo();
+        setActiveSentenceLocalIdx(0);
+        setActiveWordIdx(-1);
+        setIsPlaying(true);
+        startYouTubePolling();
+      }
+      return;
+    }
+
+    if (!audioLoaded) return;
     // Play from first sentence of current display range
     let startIdx: number;
     if (isCumulative) {
@@ -359,11 +594,30 @@ const AudioLearningScreen: React.FC = () => {
         onWordUpdate,
       );
     }
-  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate]);
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
 
   // Tap sentence to play from it
   const handleSentenceTap = React.useCallback((sentLocalIdx: number) => {
-    if (!article || !audioLoaded) return;
+    if (!article) return;
+
+    if (isYouTubeMode) {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      const fromDisplay = displaySentences.slice(sentLocalIdx)
+        .filter(s => s.start != null && s.end != null);
+      if (fromDisplay.length > 0) {
+        player.seekTo(fromDisplay[0].start!, true);
+        ytEndTimeRef.current = fromDisplay[fromDisplay.length - 1].end!;
+        player.playVideo();
+        setActiveSentenceLocalIdx(sentLocalIdx);
+        setActiveWordIdx(-1);
+        setIsPlaying(true);
+        startYouTubePolling();
+      }
+      return;
+    }
+
+    if (!audioLoaded) return;
     // displaySentences already filtered hidden — play from tapped sentence onward
     const fromDisplay = displaySentences.slice(sentLocalIdx)
       .filter(s => s.start != null && s.end != null);
@@ -378,12 +632,33 @@ const AudioLearningScreen: React.FC = () => {
         (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
       );
     }
-  }, [article, audioLoaded, displaySentences, onPlayEnd, onWordUpdate]);
+  }, [article, audioLoaded, displaySentences, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
 
   // Tap word to play from that word's timestamp
   const handleWordTap = React.useCallback((sentLocalIdx: number, wordIdx: number, e: React.MouseEvent) => {
     e.stopPropagation(); // prevent sentence tap
-    if (!article || !audioLoaded) return;
+    if (!article) return;
+
+    if (isYouTubeMode) {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      const sent = displaySentences[sentLocalIdx];
+      if (!sent?.words?.[wordIdx]) {
+        handleSentenceTap(sentLocalIdx);
+        return;
+      }
+      player.seekTo(sent.words[wordIdx].start, true);
+      const lastSent = displaySentences[displaySentences.length - 1];
+      ytEndTimeRef.current = lastSent?.end ?? 0;
+      player.playVideo();
+      setActiveSentenceLocalIdx(sentLocalIdx);
+      setActiveWordIdx(wordIdx);
+      setIsPlaying(true);
+      startYouTubePolling();
+      return;
+    }
+
+    if (!audioLoaded) return;
     const sent = displaySentences[sentLocalIdx];
     if (!sent?.words || !sent.words[wordIdx] || sent.start == null || sent.end == null) {
       // No word timestamps — fall back to sentence tap
@@ -406,11 +681,15 @@ const AudioLearningScreen: React.FC = () => {
       (localIdx) => setActiveSentenceLocalIdx(sentLocalIdx + localIdx),
       (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
     );
-  }, [article, audioLoaded, displaySentences, handleSentenceTap, onPlayEnd, onWordUpdate]);
+  }, [article, audioLoaded, displaySentences, handleSentenceTap, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
 
   const handleRateChange = (newRate: number) => {
     setPlaybackRate(newRate);
-    audioSeekService.setRate(newRate);
+    if (isYouTubeMode && ytPlayerRef.current) {
+      ytPlayerRef.current.setPlaybackRate(newRate);
+    } else {
+      audioSeekService.setRate(newRate);
+    }
   };
 
   const handleSaveSentence = async () => {
@@ -455,6 +734,15 @@ const AudioLearningScreen: React.FC = () => {
     useAppStore.getState().updateArticleSentences(id, updatedSentences);
   }, [article, id, currentIndex]);
 
+  const handleUnhideSentence = React.useCallback((sentenceIndex: number) => {
+    if (!article || !id) return;
+    const updatedSentences = article.sentences.map(s =>
+      s.index === sentenceIndex ? { ...s, hidden: false } : s
+    );
+    setArticle({ ...article, sentences: updatedSentences });
+    useAppStore.getState().updateArticleSentences(id, updatedSentences);
+  }, [article, id]);
+
   // Keyboard events
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -495,6 +783,8 @@ const AudioLearningScreen: React.FC = () => {
     );
   }
 
+  const hiddenSentences = article.sentences.filter(s => s.hidden);
+  const hiddenCount = hiddenSentences.length;
   const progress = (currentIndex / article.sentences.length) * 100;
 
   return (
@@ -565,9 +855,20 @@ const AudioLearningScreen: React.FC = () => {
                 </IconButton>
               </>
             )}
-            <IconButton onClick={handleTogglePlay} color="primary" size="small">
-              {isPlaying ? <Pause /> : <PlayArrow />}
-            </IconButton>
+            <Tooltip title="숨김 목록">
+              <IconButton onClick={() => setShowHiddenList(true)} size="small">
+                <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
+                  <FormatListBulleted />
+                </Badge>
+              </IconButton>
+            </Tooltip>
+            {videoId ? (
+              <Tooltip title={isYouTubeMode ? 'MP3로 전환' : 'YouTube로 전환'}>
+                <IconButton onClick={handleToggleYouTubeMode} size="small" color={isYouTubeMode ? 'error' : 'default'}>
+                  {isYouTubeMode ? <Audiotrack /> : <YouTubeIcon />}
+                </IconButton>
+              </Tooltip>
+            ) : null}
           </Stack>
         </Box>
 
@@ -598,7 +899,7 @@ const AudioLearningScreen: React.FC = () => {
               variant="filled"
               size="small"
             />
-            <Chip label="Audio" size="small" color="info" variant="outlined" />
+            <Chip label={isYouTubeMode ? 'YouTube' : 'Audio'} size="small" color={isYouTubeMode ? 'error' : 'info'} variant="outlined" />
           </Stack>
         </Stack>
 
@@ -629,9 +930,20 @@ const AudioLearningScreen: React.FC = () => {
               </IconButton>
             </>
           )}
-          <IconButton onClick={handleTogglePlay} color="primary" size="large">
-            {isPlaying ? <Pause /> : <PlayArrow />}
-          </IconButton>
+          <Tooltip title="숨김 목록">
+            <IconButton onClick={() => setShowHiddenList(true)} size="large">
+              <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
+                <FormatListBulleted />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+          {videoId ? (
+            <Tooltip title={isYouTubeMode ? 'MP3로 전환' : 'YouTube로 전환'}>
+              <IconButton onClick={handleToggleYouTubeMode} size="large" color={isYouTubeMode ? 'error' : 'default'}>
+                {isYouTubeMode ? <Audiotrack /> : <YouTubeIcon />}
+              </IconButton>
+            </Tooltip>
+          ) : null}
         </Stack>
       </Paper>
 
@@ -650,6 +962,21 @@ const AudioLearningScreen: React.FC = () => {
         }}
       >
         <CardContent sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
+          {isYouTubeMode && videoId && (
+            <Box sx={{ mb: 2, width: '100%', maxWidth: 640, mx: 'auto', '& > div': { width: '100%' }, '& iframe': { width: '100%', aspectRatio: '16/9', border: 'none' } }}>
+              <YouTubePlayer
+                videoId={videoId}
+                opts={{ width: '100%', playerVars: { autoplay: 0, controls: 1, modestbranding: 1 } }}
+                onReady={(e) => { ytPlayerRef.current = e.target; }}
+                onStateChange={(e) => {
+                  const state = e.data;
+                  if (state === 1) { setIsPlaying(true); startYouTubePolling(); }
+                  else if (state === 2) { setIsPlaying(false); stopYouTubePolling(); }
+                  else if (state === 0) { setIsPlaying(false); setActiveSentenceLocalIdx(-1); setActiveWordIdx(-1); stopYouTubePolling(); }
+                }}
+              />
+            </Box>
+          )}
           <Stack direction="row" alignItems="center" spacing={1}>
             <Typography variant="subtitle2" color="grey.600" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' }, mb: 0 }}>
               영어 ({isCumulative ? '누적' : '현재'}) — Audio Seek
@@ -744,6 +1071,38 @@ const AudioLearningScreen: React.FC = () => {
           </Box>
         </CardContent>
       </Card>
+
+      {/* Hidden Sentences List */}
+      <Dialog open={showHiddenList} onClose={() => setShowHiddenList(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>숨김 문장 목록</DialogTitle>
+        <DialogContent dividers>
+          {hiddenSentences.length > 0 ? (
+            <List dense>
+              {hiddenSentences.map(s => (
+                <ListItem
+                  key={`hidden-${s.index}`}
+                  secondaryAction={
+                    <IconButton edge="end" onClick={() => handleUnhideSentence(s.index)} size="small">
+                      <RestoreFromTrash />
+                    </IconButton>
+                  }
+                >
+                  <ListItemText
+                    primary={`#${s.index}`}
+                    secondary={s.text}
+                    secondaryTypographyProps={{ noWrap: true }}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          ) : (
+            <Typography color="text.secondary">숨김 문장이 없습니다.</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowHiddenList(false)}>닫기</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Control Panel */}
       <Paper

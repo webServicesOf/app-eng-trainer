@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   GoogleSheetsConfig,
   AudioArticle,
+  ArticleSummary,
   SubDeck,
   SentenceEntry,
   AppState,
@@ -41,6 +42,7 @@ interface AppStore extends AppState {
 
   // Audio article actions (Drive SSOT)
   loadAudioArticles: () => Promise<void>;
+  loadFullArticle: (id: string) => Promise<void>; // on-demand full JSON load
   saveAudioArticle: (article: AudioArticle) => Promise<void>;
   deleteAudioArticle: (id: string) => Promise<void>;
   saveDirtyArticles: () => Promise<void>; // 명시적 저장 — dirty → Drive
@@ -58,6 +60,7 @@ interface AppStore extends AppState {
   updateSavedSentenceIndices: (articleId: string, indices: number[]) => void;
   toggleSavedDeck: (articleId: string, subDeckId?: string) => void;
   updateArticleSentences: (articleId: string, sentences: SentenceEntry[]) => void;
+  updateArticleSource: (articleId: string, source: string) => void;
 
   // OAuth actions
   setAccessToken: (token: string | null) => void;
@@ -82,6 +85,7 @@ function snapshotArticle(a: AudioArticle): string {
       .map(r => ({ s: r.startIndex, e: r.endIndex, ri: r.reviewInterval, saved: r.saved || false }))
       .sort((a, b) => a.s - b.s || a.e - b.e),
     hidden: (a.sentences || []).filter(s => s.hidden).map(s => s.index),
+    src: a.source || '',
   });
 }
 
@@ -204,12 +208,57 @@ export const useAppStore = create<AppStore>((set, get) => ({
   loadAudioArticles: async () => {
     const drive = getDriveService(get().accessToken);
     if (!drive) {
-      // No token — nothing to load
-      set({ audioArticles: [] });
+      // Don't clear existing articles — token may be temporarily unavailable
       return;
     }
     try {
-      const audioArticles = await drive.listArticles();
+      console.log('[loadAudioArticles] START');
+      // Try index-based loading first (1 file download vs N)
+      const summaries = await drive.loadIndex();
+      console.log('[loadAudioArticles] loadIndex result:', summaries ? `${summaries.length} summaries` : 'null');
+      if (summaries && summaries.length > 0) {
+        const existingArticles = get().audioArticles;
+        const articles: AudioArticle[] = summaries.map((s: ArticleSummary) => {
+          // Preserve fully loaded article if already in store
+          const existing = existingArticles.find(a => a.id === s.id);
+          if (existing && existing.sentences.length > 0) {
+            // Update review fields from index (may be newer) but keep sentences
+            return {
+              ...existing,
+              reviewInterval: s.reviewInterval || existing.reviewInterval,
+              nextReviewDate: s.nextReviewDate ? new Date(s.nextReviewDate) : existing.nextReviewDate,
+              savedAsDeck: s.savedAsDeck ?? existing.savedAsDeck,
+              savedSentenceIndices: s.savedSentenceIndices ?? existing.savedSentenceIndices,
+              savedSentenceReview: s.savedSentenceReview ?? existing.savedSentenceReview,
+              subDeckReviews: s.subDeckReviews ?? existing.subDeckReviews,
+            };
+          }
+          return {
+            id: s.id,
+            title: s.title,
+            sentences: [], // lazy — loaded on demand via loadFullArticle
+            sentenceCount: s.sentenceCount,
+            splitPoints: s.splitPoints,
+            subDeckReviews: s.subDeckReviews,
+            savedAsDeck: s.savedAsDeck,
+            savedSentenceIndices: s.savedSentenceIndices,
+            savedSentenceReview: s.savedSentenceReview,
+            source: s.source,
+            nextReviewDate: s.nextReviewDate ? new Date(s.nextReviewDate) : null,
+            reviewInterval: s.reviewInterval || 0,
+            createdAt: new Date(s.createdAt),
+            lastAccessed: new Date(s.lastAccessed),
+          };
+        });
+        articles.sort((a, b) => b.lastAccessed.getTime() - a.lastAccessed.getTime());
+        set({ audioArticles: articles });
+        return;
+      }
+
+      // Fallback: full scan + rebuild index (self-healing)
+      console.log('[loadAudioArticles] falling back to rebuildIndex...');
+      const audioArticles = await drive.rebuildIndex();
+      console.log('[loadAudioArticles] rebuildIndex returned', audioArticles.length, 'articles, sentences:', audioArticles.map(a => ({ id: a.id, sent: a.sentences.length })));
       const cleanIntervals = new Map<string, number>();
       const cleanSnapshots = new Map<string, string>();
       audioArticles.forEach(a => {
@@ -228,6 +277,35 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
+  loadFullArticle: async (id: string) => {
+    console.log('[loadFullArticle] START', id);
+    const drive = getDriveService(get().accessToken);
+    if (!drive) { console.error('[loadFullArticle] no drive service'); throw new Error('Drive 인증 필요'); }
+    try {
+      const fullArticle = await drive.getArticle(id);
+      console.log('[loadFullArticle] getArticle result:', fullArticle ? { id: fullArticle.id, sentencesLen: fullArticle.sentences.length } : 'NULL');
+      if (!fullArticle) throw new Error(`Article ${id} not found on Drive`);
+      const merged = { ...fullArticle, sentenceCount: fullArticle.sentences.length };
+      set({
+        audioArticles: get().audioArticles.map(a => a.id === id ? merged : a),
+      });
+      // Create clean snapshot now that full data is available
+      const cleanSnapshots = new Map(get().cleanAudioSnapshots);
+      const cleanIntervals = new Map(get().cleanAudioIntervals);
+      cleanSnapshots.set(id, snapshotArticle(merged));
+      cleanIntervals.set(id, merged.reviewInterval || 0);
+      set({ cleanAudioSnapshots: cleanSnapshots, cleanAudioIntervals: cleanIntervals });
+    } catch (error) {
+      if (error instanceof DriveAuthError) {
+        localDB.clearAccessToken();
+        set({ accessToken: null, isAuthenticated: false, error: '토큰 만료 — 재로그인 후 다시 시도' });
+      } else {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to load article';
+        set({ error: errorMessage });
+      }
+    }
+  },
+
   saveAudioArticle: async (article: AudioArticle) => {
     const drive = getDriveService(get().accessToken);
     if (!drive) {
@@ -237,6 +315,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       // Save JSON metadata to Drive
       await drive.saveArticle(article);
+
+      // Update index with new article
+      await drive.updateIndex(article);
 
       // Upload MP3 to Drive (only if not already there) + cache locally
       if (article.audioBlob) {
@@ -408,6 +489,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const article = get().audioArticles.find(a => a.id === articleId);
         if (!article) continue;
 
+        // GUARD: never overwrite Drive JSON with empty sentences (summary-only article)
+        if (article.sentences.length === 0) {
+          console.warn('[saveDirtyArticles] SKIP: article has no sentences, refusing to overwrite Drive:', articleId);
+          continue;
+        }
+
         // Collect SubDeck review state into article, preserving saved flags
         const subs = get().subDecks.filter(sd => sd.parentId === articleId);
         const existingReviews = article.subDeckReviews || [];
@@ -426,6 +513,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         const toSave: AudioArticle = { ...article, subDeckReviews };
         await drive.saveArticle(toSave);
       }
+      // Sync index.json with current state (single write)
+      await drive.syncIndex(get().audioArticles);
+
       // Update clean snapshots to current saved state
       const cleanIntervals = new Map(get().cleanAudioIntervals);
       const cleanSnapshots = new Map(get().cleanAudioSnapshots);
@@ -565,6 +655,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
     if (!article) return;
     const updated = { ...article, savedSentenceIndices: indices };
     set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? updated : a) });
+    checkCleanAndUpdateDirty(get, set, articleId);
+  },
+
+  updateArticleSource: (articleId: string, source: string) => {
+    const article = get().audioArticles.find(a => a.id === articleId);
+    if (!article) return;
+    set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? { ...a, source: source || undefined } : a) });
     checkCleanAndUpdateDirty(get, set, articleId);
   },
 
