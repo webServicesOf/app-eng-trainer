@@ -441,7 +441,19 @@ export class GoogleDriveService {
 
   /** Sync index.json from full article list (batch — one write) */
   async syncIndex(articles: AudioArticle[]): Promise<void> {
-    const summaries = articles.map(a => this.articleToSummary(a));
+    // Preserve existing index entries for summary-only articles (sentences=[])
+    const existing = await this.loadIndex() || [];
+    const existingMap = new Map(existing.map(s => [s.id, s]));
+
+    const summaries = articles.map(a => {
+      const summary = this.articleToSummary(a);
+      // If article has no sentences loaded (summary-only), preserve existing sentenceCount
+      if (a.sentences.length === 0 && existingMap.has(a.id)) {
+        const prev = existingMap.get(a.id)!;
+        summary.sentenceCount = prev.sentenceCount;
+      }
+      return summary;
+    });
     await this.saveIndex(summaries);
   }
 
