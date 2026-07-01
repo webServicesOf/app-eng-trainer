@@ -492,7 +492,6 @@ export class GoogleDriveService {
     const corrupted: { id: string; title: string; sentenceCount: number; actualSentences: number; source?: string }[] = [];
 
     for (const summary of index) {
-      if (summary.sentenceCount === 0) continue; // legitimately empty
       const jsonFile = remoteFiles.find(f => f.name === `${summary.id}.json`);
       if (!jsonFile) {
         corrupted.push({ id: summary.id, title: summary.title, sentenceCount: summary.sentenceCount, actualSentences: -1, source: summary.source });
@@ -501,7 +500,9 @@ export class GoogleDriveService {
       try {
         const blob = await this.downloadFile(jsonFile.id);
         const meta: AudioArticleMeta = JSON.parse(await blob.text());
-        if (!meta.sentences || meta.sentences.length === 0) {
+        const actual = meta.sentences?.length ?? 0;
+        // Corrupted if: Drive JSON has no sentences (regardless of index sentenceCount)
+        if (actual === 0) {
           corrupted.push({ id: summary.id, title: summary.title, sentenceCount: summary.sentenceCount, actualSentences: 0, source: summary.source });
         }
       } catch {
