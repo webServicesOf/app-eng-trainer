@@ -795,11 +795,15 @@ const AudioLearningScreen: React.FC = () => {
           handleTogglePlay();
           break;
         case 's':
+        case 'S':
           e.preventDefault();
+          console.log('[keydown] s → handlePlayFromStart');
           handlePlayFromStart();
           break;
         case 'y':
+        case 'Y':
           e.preventDefault();
+          console.log('[keydown] y → handleToggleYouTubeMode');
           handleToggleYouTubeMode();
           break;
       }
@@ -1049,6 +1053,10 @@ const AudioLearningScreen: React.FC = () => {
                 onReady={(e) => { ytPlayerRef.current = e.target; }}
                 onStateChange={(e) => {
                   const state = e.data;
+                  // Reclaim focus from YouTube iframe so keyboard shortcuts work
+                  if (document.activeElement instanceof HTMLIFrameElement) {
+                    (document.activeElement as HTMLElement).blur();
+                  }
                   if (state === 1) {
                     setIsPlaying(true);
                     // Set end boundary if not already set (user pressed play via YouTube controls)
