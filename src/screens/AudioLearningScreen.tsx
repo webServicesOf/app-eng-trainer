@@ -773,44 +773,25 @@ const AudioLearningScreen: React.FC = () => {
   // Keyboard events
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      switch (e.key) {
-        case 'ArrowUp':
-          e.preventDefault();
-          handleUpArrow();
-          break;
-        case 'ArrowDown':
-          e.preventDefault();
-          handleDownArrow();
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          handleLeftArrow();
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          handleRightArrow();
-          break;
-        case ' ':
-          e.preventDefault();
-          handleTogglePlay();
-          break;
-        case 's':
-        case 'S':
-          e.preventDefault();
-          console.log('[keydown] s → handlePlayFromStart');
-          handlePlayFromStart();
-          break;
-        case 'y':
-        case 'Y':
-          e.preventDefault();
-          console.log('[keydown] y → handleToggleYouTubeMode');
-          handleToggleYouTubeMode();
-          break;
-      }
+      // Use e.code for letter keys (IME-safe: works with Korean input mode)
+      // Use e.key for special keys (arrows, space)
+      if (e.key === 'ArrowUp') { e.preventDefault(); handleUpArrow(); return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); handleDownArrow(); return; }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftArrow(); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); handleRightArrow(); return; }
+      if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); handleTogglePlay(); return; }
+      if (e.code === 'KeyS') { e.preventDefault(); handlePlayFromStart(); return; }
+      if (e.code === 'KeyY') { e.preventDefault(); handleToggleYouTubeMode(); return; }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    // Reclaim focus from YouTube iframe periodically
+    const focusInterval = setInterval(() => {
+      if (document.activeElement instanceof HTMLIFrameElement) {
+        document.activeElement.blur();
+      }
+    }, 500);
+    return () => { window.removeEventListener('keydown', handleKeyDown); clearInterval(focusInterval); };
   }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleToggleYouTubeMode]);
 
   if (!article || !audioLoaded) {
