@@ -305,6 +305,10 @@ class AudioSeekService {
     this.pausedOffset = 0;
   }
 
+  isPaused(): boolean {
+    return !this._isPlaying && this.pausedOffset > 0;
+  }
+
   pause(): void {
     if (!this._isPlaying) return;
     this.pausedOffset = this.getCurrentTime();

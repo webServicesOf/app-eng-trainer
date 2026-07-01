@@ -554,7 +554,9 @@ const AudioLearningScreen: React.FC = () => {
       audioSeekService.pause();
       setIsPlaying(false);
     } else {
-      if (audioSeekService.getCurrentTime() > 0 && activeSentenceLocalIdx >= 0) {
+      // Resume only if paused mid-playback (isPlaying was true → user paused → activeSentenceLocalIdx still >= 0)
+      // After playback ends (onPlayEnd sets activeSentenceLocalIdx=-1), always restart from beginning
+      if (audioSeekService.isPaused() && activeSentenceLocalIdx >= 0) {
         audioSeekService.resume();
         setIsPlaying(true);
       } else {
