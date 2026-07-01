@@ -424,12 +424,13 @@ const AudioLearningScreen: React.FC = () => {
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
     const step = windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
+    // Clamp to max instead of blocking when remaining < step
+    let target = Math.min(currentIndex + step, article.sentences.length);
     // Skip hidden sentences
-    let target = currentIndex + step;
     while (target <= article.sentences.length && article.sentences[target - 1]?.hidden) {
       target++;
     }
-    if (target <= article.sentences.length) {
+    if (target <= article.sentences.length && target !== currentIndex) {
       setCurrentIndex(target);
     }
     debouncedSpeak();
@@ -1045,7 +1046,15 @@ const AudioLearningScreen: React.FC = () => {
                 onReady={(e) => { ytPlayerRef.current = e.target; }}
                 onStateChange={(e) => {
                   const state = e.data;
-                  if (state === 1) { setIsPlaying(true); startYouTubePolling(); }
+                  if (state === 1) {
+                    setIsPlaying(true);
+                    // Set end boundary if not already set (user pressed play via YouTube controls)
+                    if (ytEndTimeRef.current === 0 && article) {
+                      const sentence = article.sentences.find(s => s.index === currentIndex);
+                      if (sentence?.end != null) ytEndTimeRef.current = sentence.end;
+                    }
+                    startYouTubePolling();
+                  }
                   else if (state === 2) { setIsPlaying(false); stopYouTubePolling(); }
                   else if (state === 0) { setIsPlaying(false); setActiveSentenceLocalIdx(-1); setActiveWordIdx(-1); stopYouTubePolling(); }
                 }}
