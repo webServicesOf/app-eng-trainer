@@ -482,6 +482,35 @@ export class GoogleDriveService {
     return articles;
   }
 
+  /** Diagnose corrupted articles: index says sentenceCount > 0 but JSON has sentences: [] */
+  async diagnoseCorrupted(): Promise<{ id: string; title: string; sentenceCount: number; actualSentences: number; source?: string }[]> {
+    const index = await this.loadIndex();
+    if (!index) return [];
+
+    const { data } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(data);
+    const corrupted: { id: string; title: string; sentenceCount: number; actualSentences: number; source?: string }[] = [];
+
+    for (const summary of index) {
+      if (summary.sentenceCount === 0) continue; // legitimately empty
+      const jsonFile = remoteFiles.find(f => f.name === `${summary.id}.json`);
+      if (!jsonFile) {
+        corrupted.push({ id: summary.id, title: summary.title, sentenceCount: summary.sentenceCount, actualSentences: -1, source: summary.source });
+        continue;
+      }
+      try {
+        const blob = await this.downloadFile(jsonFile.id);
+        const meta: AudioArticleMeta = JSON.parse(await blob.text());
+        if (!meta.sentences || meta.sentences.length === 0) {
+          corrupted.push({ id: summary.id, title: summary.title, sentenceCount: summary.sentenceCount, actualSentences: 0, source: summary.source });
+        }
+      } catch {
+        corrupted.push({ id: summary.id, title: summary.title, sentenceCount: summary.sentenceCount, actualSentences: -1, source: summary.source });
+      }
+    }
+    return corrupted;
+  }
+
   /** Delete article JSON + MP3 from Drive data/ folder */
   async deleteArticle(id: string): Promise<void> {
     const { data } = await this.ensureFolders();

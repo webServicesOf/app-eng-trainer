@@ -50,6 +50,7 @@ interface AppStore extends AppState {
   deleteAudioArticle: (id: string) => Promise<void>;
   saveDirtyArticles: () => Promise<void>; // 명시적 저장 — dirty → Drive
   getFullArticle: (id: string) => FullArticle | undefined; // type-safe accessor
+  diagnoseCorrupted: () => Promise<void>; // console diagnostic
 
   // SubDeck actions
   loadSubDecks: () => Promise<void>;
@@ -779,6 +780,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   getFullArticle: (id: string) => {
     const a = get().audioArticles.find(a => a.id === id);
     return a?.kind === 'loaded' ? a : undefined;
+  },
+
+  // Diagnostic: find articles where Drive JSON has empty sentences but index says sentenceCount > 0
+  diagnoseCorrupted: async () => {
+    const drive = getDriveService(get().accessToken);
+    if (!drive) { console.error('No Drive token'); return; }
+    console.log('[diagnose] Scanning all Drive JSONs...');
+    const corrupted = await drive.diagnoseCorrupted();
+    if (corrupted.length === 0) {
+      console.log('[diagnose] ✅ No corrupted articles found');
+    } else {
+      console.warn(`[diagnose] ❌ ${corrupted.length} corrupted articles:`);
+      console.table(corrupted);
+    }
   },
 
   // OAuth actions
