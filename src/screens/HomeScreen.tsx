@@ -245,15 +245,24 @@ export const HomeScreen: React.FC = () => {
     const aa = audioArticles.find(a => a.id === id);
     if (!aa) return;
     const trimmed = newTitle.trim();
-    // Convert StoreArticle → AudioArticle for persistence
-    const toSave: AudioArticle = {
-      ...aa,
-      sentences: aa.kind === 'loaded' ? aa.sentences : [],
-      sentenceCount: aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount,
-      title: trimmed,
-      lastAccessed: new Date(),
-    };
-    await saveAudioArticle(toSave);
+    if (aa.kind === 'loaded') {
+      // FullArticle — safe to save full JSON
+      await saveAudioArticle({ ...aa, title: trimmed, lastAccessed: new Date() } as AudioArticle);
+    } else {
+      // SummaryArticle — index-only update via Drive, never write empty sentences
+      if (accessToken) {
+        const drive = new GoogleDriveService(accessToken);
+        const summaries = await drive.loadIndex();
+        if (summaries) {
+          const idx = summaries.findIndex(s => s.id === id);
+          if (idx >= 0) {
+            summaries[idx] = { ...summaries[idx], title: trimmed, lastAccessed: new Date().toISOString() };
+            await drive.saveIndex(summaries);
+          }
+        }
+      }
+      await loadAudioArticles();
+    }
     // Update SubDeck titles
     const subs = await localDB.getSubDecksByParent(id);
     for (const sd of subs) {
@@ -362,15 +371,22 @@ export const HomeScreen: React.FC = () => {
 
   const handleLearnAudioArticle = async (id: string) => {
     const aa = audioArticles.find(a => a.id === id);
-    // Update lastAccessed in Drive (fire-and-forget, no dirty marking)
+    // Update lastAccessed — index-only for summary, full save for loaded
     if (aa) {
-      const toSave: AudioArticle = {
-        ...aa,
-        sentences: aa.kind === 'loaded' ? aa.sentences : [],
-        sentenceCount: aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount,
-        lastAccessed: new Date(),
-      };
-      saveAudioArticle(toSave).catch(() => {});
+      if (aa.kind === 'loaded') {
+        saveAudioArticle({ ...aa, lastAccessed: new Date() } as AudioArticle).catch(() => {});
+      } else if (accessToken) {
+        // SummaryArticle — update index.json only, never write empty sentences to Drive
+        const drive = new GoogleDriveService(accessToken);
+        const summaries = await drive.loadIndex();
+        if (summaries) {
+          const idx = summaries.findIndex(s => s.id === id);
+          if (idx >= 0) {
+            summaries[idx] = { ...summaries[idx], lastAccessed: new Date().toISOString() };
+            drive.saveIndex(summaries).catch(() => {});
+          }
+        }
+      }
     }
     navigate(`/learn-audio/${id}`);
   };
