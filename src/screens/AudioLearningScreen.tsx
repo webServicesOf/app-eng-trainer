@@ -46,7 +46,7 @@ import {
   Audiotrack,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AudioArticle, FullArticle, StoreArticle, SentenceEntry } from '../types';
+import { FullArticle, StoreArticle, SentenceEntry } from '../types';
 import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';

@@ -34,7 +34,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { AudioArticle, FullArticle, SentenceEntry, WordTimestamp } from '../types';
+import { FullArticle, SentenceEntry, WordTimestamp } from '../types';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
 import { GoogleDriveService } from '../services/googleDriveService';
