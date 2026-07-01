@@ -836,6 +836,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 }));
 
+// Expose store to browser console for diagnostics
+(window as any).__appStore = useAppStore;
+
 // Learning state store for sentence learning screen
 interface LearningStore extends LearningState {
   // Window size state
