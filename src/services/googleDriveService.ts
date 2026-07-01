@@ -315,6 +315,11 @@ export class GoogleDriveService {
 
   /** Save (upsert) article metadata JSON to Drive */
   async saveArticle(article: AudioArticle): Promise<void> {
+    // Last-resort guard: never write empty sentences to Drive (prevents data corruption)
+    if (!article.sentences || article.sentences.length === 0) {
+      console.error('[saveArticle] BLOCKED: refusing to write empty sentences to Drive:', article.id, article.title);
+      throw new Error(`saveArticle blocked: empty sentences for "${article.title}". This is a bug — report it.`);
+    }
     const { data } = await this.ensureFolders();
     const remoteFiles = await this.listFilesIn(data);
     const jsonName = `${article.id}.json`;
