@@ -554,17 +554,14 @@ const AudioLearningScreen: React.FC = () => {
       }
       return;
     }
-    console.log('[togglePlay]', { isPlaying, isPaused: audioSeekService.isPaused(), activeSentenceLocalIdx, currentTime: audioSeekService.getCurrentTime() });
     if (isPlaying) {
       audioSeekService.pause();
       setIsPlaying(false);
     } else {
       if (audioSeekService.isPaused() && activeSentenceLocalIdx >= 0) {
-        console.log('[togglePlay] → resume');
         audioSeekService.resume();
         setIsPlaying(true);
       } else {
-        console.log('[togglePlay] → handleSpeak (restart)');
         handleSpeak();
       }
     }
