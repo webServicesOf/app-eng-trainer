@@ -1121,41 +1121,42 @@ export const HomeScreen: React.FC = () => {
                       </Box>
                     )}
                   </CardContent>
-                  <CardActions sx={{ gap: 0.5, flexWrap: 'wrap' }}>
+                  <CardActions sx={{ gap: 0, px: 0.5, flexWrap: 'nowrap' }}>
                     <IconButton
-                      size="small"
+                      sx={{ p: 0.5 }}
                       color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
                       onClick={() => handleToggleSaveDeck(aa.id, aa.title, (aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount))}
                       title={savedDeckIds.has(aa.id) ? '저장 해제' : '덱 저장'}
                     >
-                      {savedDeckIds.has(aa.id) ? <Bookmark fontSize="small" /> : <BookmarkBorder fontSize="small" />}
+                      {savedDeckIds.has(aa.id) ? <Bookmark sx={{ fontSize: 18 }} /> : <BookmarkBorder sx={{ fontSize: 18 }} />}
                     </IconButton>
-                    <Button size="small" color="primary" onClick={() => handleLearnAudioArticle(aa.id)}>
+                    <Button size="small" color="primary" sx={{ minWidth: 0, px: 0.5, fontSize: '0.75rem' }} onClick={() => handleLearnAudioArticle(aa.id)}>
                       학습
                     </Button>
-                    <Button size="small" variant="outlined" onClick={() => cycleReviewInterval('audio', aa.id)}>
+                    <Button size="small" variant="outlined" sx={{ minWidth: 0, px: 0.5, fontSize: '0.75rem' }} onClick={() => cycleReviewInterval('audio', aa.id)}>
                       {aa.reviewInterval || 0}일
                     </Button>
-                    <IconButton size="small" color="success" onClick={() => markReviewDone('audio', aa.id)} title="복습 완료">
-                      <DoneAllIcon fontSize="small" />
+                    <IconButton sx={{ p: 0.5 }} color="success" onClick={() => markReviewDone('audio', aa.id)} title="복습 완료">
+                      <DoneAllIcon sx={{ fontSize: 18 }} />
                     </IconButton>
-                    <Button size="small" color="secondary" onClick={() => navigate(`/edit-timestamps/${aa.id}`)}>
+                    <Button size="small" color="secondary" sx={{ minWidth: 0, px: 0.5, fontSize: '0.75rem' }} onClick={() => navigate(`/edit-timestamps/${aa.id}`)}>
                       편집
                     </Button>
                     <IconButton
-                      size="small"
+                      sx={{ p: 0.5 }}
                       color={aa.source ? 'info' : 'default'}
                       onClick={() => { setEditSourceId(aa.id); setEditSourceValue(aa.source || ''); }}
                       title={aa.source ? `출처: ${aa.source}` : '출처 URL 추가'}
                     >
-                      <LinkIcon fontSize="small" />
+                      <LinkIcon sx={{ fontSize: 18 }} />
                     </IconButton>
                     <IconButton
-                      size="small"
+                      sx={{ p: 0.5 }}
                       color="error"
                       onClick={() => handleDeleteAudioArticle(aa.id)}
+                      title="삭제"
                     >
-                      <DeleteIcon fontSize="small" />
+                      <DeleteIcon sx={{ fontSize: 18 }} />
                     </IconButton>
                   </CardActions>
                   {/* SubDecks for this audio article */}
