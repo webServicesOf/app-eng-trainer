@@ -87,13 +87,16 @@ npm run build
 - **Critical guard**: `saveDirtyArticles` refuses to write articles with `sentences.length === 0`
 - Self-healing: if index missing/corrupt → `rebuildIndex()` scans all JSONs
 
-### Data Types (`src/types/index.ts`)
-- `AudioArticle`: id, title, sentences[], source?, sentenceCount?, reviewInterval, nextReviewDate, splitPoints?, subDeckReviews?, savedAsDeck?, savedSentenceIndices?
+### Data Types (`src/types/index.ts`) — CQRS-lite Discriminated Union
+- `StoreArticle = SummaryArticle | FullArticle` — store가 보유하는 article 타입
+- `SummaryArticle` (kind:'summary'): ArticleBase + sentenceCount. **sentences 필드 없음** → Drive 덮어쓰기 컴파일 차단
+- `FullArticle` (kind:'loaded'): ArticleBase + sentences[] + audioBlob?. Drive write 안전
+- `AudioArticle`: persistence type (Drive JSON + IndexedDB). kind 필드 없음. Drive I/O 경계에서만 사용
 - `SentenceEntry`: index, text, start?, end?, words? (WordTimestamp[]), memo?, hidden?
 - `WordTimestamp`: word, start, end
 - `SubDeck`: parentId article range reference with own review schedule
-- `ArticleSummary`: lightweight index entry (no sentences, has sentenceCount)
-- `Article`: legacy text article from Google Sheets
+- `ArticleSummary`: index.json용 JSON 직렬화 타입 (string dates)
+- **Write guard**: `drive.saveArticle()` 자체가 빈 sentences throw (최후 방어)
 
 ## Technology Stack
 - React 19, TypeScript 4.9, MUI 7
@@ -104,3 +107,10 @@ npm run build
 - react-youtube for YouTube IFrame embed
 - wavesurfer.js for timestamp editor waveform
 - React Router 7
+
+## Code Modification Protocol
+
+함수/동작 수정 시 반드시:
+1. **편집 전**: 수정 대상 grep → 영향 받는 모든 코드 경로 나열 (분기, 호출처)
+2. **편집 중**: 함수 내 모든 조건 분기(if/else, switch)에 수정 여부 태그 — "누락" 있으면 미완료
+3. **키보드 이벤트**: letter 키는 `e.code` (KeyS, KeyY) 사용 — `e.key`는 한글 IME에서 실패
