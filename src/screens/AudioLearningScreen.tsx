@@ -543,10 +543,14 @@ const AudioLearningScreen: React.FC = () => {
         player.pauseVideo();
         setIsPlaying(false);
         stopYouTubePolling();
-      } else {
+      } else if (activeSentenceLocalIdx >= 0) {
+        // Paused mid-playback → resume
         player.playVideo();
         setIsPlaying(true);
         startYouTubePolling();
+      } else {
+        // Playback ended → restart from beginning
+        handleSpeak();
       }
       return;
     }
