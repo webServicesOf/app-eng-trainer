@@ -1121,7 +1121,7 @@ export const HomeScreen: React.FC = () => {
                       </Box>
                     )}
                   </CardContent>
-                  <CardActions sx={{ gap: 0.5, flexWrap: 'nowrap' }}>
+                  <CardActions sx={{ gap: 0.5, flexWrap: 'wrap' }}>
                     <IconButton
                       size="small"
                       color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
