@@ -47,7 +47,7 @@ import {
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
+import { SavedSentence, AudioArticle, StoreArticle, FullArticle, SentenceEntry } from '../types';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
@@ -245,7 +245,15 @@ export const HomeScreen: React.FC = () => {
     const aa = audioArticles.find(a => a.id === id);
     if (!aa) return;
     const trimmed = newTitle.trim();
-    await saveAudioArticle({ ...aa, title: trimmed, lastAccessed: new Date() });
+    // Convert StoreArticle → AudioArticle for persistence
+    const toSave: AudioArticle = {
+      ...aa,
+      sentences: aa.kind === 'loaded' ? aa.sentences : [],
+      sentenceCount: aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount,
+      title: trimmed,
+      lastAccessed: new Date(),
+    };
+    await saveAudioArticle(toSave);
     // Update SubDeck titles
     const subs = await localDB.getSubDecksByParent(id);
     for (const sd of subs) {
@@ -356,7 +364,13 @@ export const HomeScreen: React.FC = () => {
     const aa = audioArticles.find(a => a.id === id);
     // Update lastAccessed in Drive (fire-and-forget, no dirty marking)
     if (aa) {
-      saveAudioArticle({ ...aa, lastAccessed: new Date() }).catch(() => {});
+      const toSave: AudioArticle = {
+        ...aa,
+        sentences: aa.kind === 'loaded' ? aa.sentences : [],
+        sentenceCount: aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount,
+        lastAccessed: new Date(),
+      };
+      saveAudioArticle(toSave).catch(() => {});
     }
     navigate(`/learn-audio/${id}`);
   };
@@ -1086,7 +1100,7 @@ export const HomeScreen: React.FC = () => {
                     )}
                     <Chip label="Audio" size="small" color="info" variant="outlined" sx={{ mr: 1 }} />
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                      {aa.sentenceCount ?? (aa.sentences?.length ?? 0)}개 문장
+                      {(aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount)}개 문장
                     </Typography>
                     {aa.source && (
                       <Typography variant="caption" color="text.secondary" display="block">
@@ -1111,7 +1125,7 @@ export const HomeScreen: React.FC = () => {
                     <IconButton
                       size="small"
                       color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
-                      onClick={() => handleToggleSaveDeck(aa.id, aa.title, aa.sentenceCount ?? aa.sentences?.length ?? 0)}
+                      onClick={() => handleToggleSaveDeck(aa.id, aa.title, (aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount))}
                       title={savedDeckIds.has(aa.id) ? '저장 해제' : '덱 저장'}
                     >
                       {savedDeckIds.has(aa.id) ? <Bookmark fontSize="small" /> : <BookmarkBorder fontSize="small" />}
@@ -1239,7 +1253,7 @@ export const HomeScreen: React.FC = () => {
                 const savedDeckItems: { id: string; title: string; sentenceCount: number; parentId?: string; reviewInterval: number; nextReviewDate: Date | null; reviewType: 'audio' | 'subdeck'; }[] = [];
                 audioArticles.forEach(aa => {
                   if (aa.savedAsDeck) {
-                    savedDeckItems.push({ id: aa.id, title: aa.title, sentenceCount: aa.sentenceCount ?? aa.sentences?.length ?? 0, reviewInterval: aa.reviewInterval || 0, nextReviewDate: aa.nextReviewDate, reviewType: 'audio' });
+                    savedDeckItems.push({ id: aa.id, title: aa.title, sentenceCount: (aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount), reviewInterval: aa.reviewInterval || 0, nextReviewDate: aa.nextReviewDate, reviewType: 'audio' });
                   }
                   (aa.subDeckReviews || []).forEach(r => {
                     if (!r.saved) return;

@@ -46,7 +46,7 @@ import {
   Audiotrack,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
-import { AudioArticle, SentenceEntry } from '../types';
+import { AudioArticle, FullArticle, StoreArticle, SentenceEntry } from '../types';
 import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
@@ -70,7 +70,7 @@ const AudioLearningScreen: React.FC = () => {
 
   const { dirtyAudioIds, saveDirtyArticles } = useAppStore();
 
-  const [article, setArticle] = useState<AudioArticle | null>(null);
+  const [article, setArticle] = useState<FullArticle | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
   const [displaySentences, setDisplaySentences] = useState<SentenceEntry[]>([]);
@@ -102,13 +102,13 @@ const AudioLearningScreen: React.FC = () => {
       console.log('[loadArticle] START', { articleId, storeArticleCount: storeState.audioArticles.length, hasToken: !!storeState.accessToken });
 
       // Read store directly (not via closure) to avoid dep on audioArticles
-      let meta = storeState.audioArticles.find(a => a.id === articleId);
-      console.log('[loadArticle] meta from store:', meta ? { id: meta.id, sentencesLen: meta.sentences.length, sentenceCount: meta.sentenceCount } : 'NOT FOUND');
+      let storeArticle = storeState.audioArticles.find(a => a.id === articleId);
+      console.log('[loadArticle] meta from store:', storeArticle ? { id: storeArticle.id, kind: storeArticle.kind } : 'NOT FOUND');
 
       // Articles might still be loading from Drive — wait for them
-      if (!meta) {
+      if (!storeArticle) {
         console.log('[loadArticle] waiting for store to populate...');
-        meta = await new Promise<AudioArticle | undefined>((resolve) => {
+        storeArticle = await new Promise<StoreArticle | undefined>((resolve) => {
           const found = useAppStore.getState().audioArticles.find(a => a.id === articleId);
           if (found) { resolve(found); return; }
           const unsub = useAppStore.subscribe(() => {
@@ -117,8 +117,8 @@ const AudioLearningScreen: React.FC = () => {
           });
           setTimeout(() => { unsub(); resolve(undefined); }, 15000);
         });
-        console.log('[loadArticle] after wait:', meta ? { id: meta.id, sentencesLen: meta.sentences.length } : 'TIMEOUT/NOT FOUND');
-        if (!meta) {
+        console.log('[loadArticle] after wait:', storeArticle ? { id: storeArticle.id, kind: storeArticle.kind } : 'TIMEOUT/NOT FOUND');
+        if (!storeArticle) {
           console.error('[loadArticle] BAIL: article not found after wait');
           loadedArticleIdRef.current = null;
           navigate('/');
@@ -126,19 +126,22 @@ const AudioLearningScreen: React.FC = () => {
         }
       }
 
-      // On-demand: load full article if only summary (no sentences)
-      if (meta.sentences.length === 0) {
-        console.log('[loadArticle] sentences empty, calling loadFullArticle...');
+      // On-demand: load full article if only summary (discriminated union check)
+      let fullArticle: FullArticle | undefined;
+      if (storeArticle.kind === 'loaded') {
+        fullArticle = storeArticle;
+      } else {
+        console.log('[loadArticle] summary-only, calling loadFullArticle...');
         try {
           await useAppStore.getState().loadFullArticle(articleId);
-          meta = useAppStore.getState().audioArticles.find(a => a.id === articleId);
-          console.log('[loadArticle] after loadFullArticle:', meta ? { sentencesLen: meta.sentences.length } : 'NOT FOUND');
+          fullArticle = useAppStore.getState().getFullArticle(articleId);
+          console.log('[loadArticle] after loadFullArticle:', fullArticle ? { sentencesLen: fullArticle.sentences.length } : 'NOT FOUND');
         } catch (e) {
           console.error('[loadArticle] loadFullArticle THREW:', e);
         }
 
         // Direct fallback
-        if (!meta || meta.sentences.length === 0) {
+        if (!fullArticle) {
           console.log('[loadArticle] trying direct drive.getArticle fallback...');
           const token = useAppStore.getState().accessToken;
           if (token) {
@@ -146,14 +149,14 @@ const AudioLearningScreen: React.FC = () => {
             const directArticle = await drive.getArticle(articleId);
             console.log('[loadArticle] direct result:', directArticle ? { sentencesLen: directArticle.sentences.length } : 'NULL');
             if (directArticle && directArticle.sentences.length > 0) {
-              meta = directArticle;
+              fullArticle = { ...directArticle, kind: 'loaded' } as FullArticle;
             }
           } else {
             console.error('[loadArticle] no token for direct fallback');
           }
         }
 
-        if (!meta || meta.sentences.length === 0) {
+        if (!fullArticle || fullArticle.sentences.length === 0) {
           console.error('[loadArticle] BAIL: no sentences after all attempts');
           loadedArticleIdRef.current = null;
           navigate('/');
@@ -163,17 +166,17 @@ const AudioLearningScreen: React.FC = () => {
 
       if (indices && indices.length > 0) {
         const indexSet = new Set(indices);
-        const picked = meta.sentences
-          .filter(s => indexSet.has(s.index))
-          .map((s, i) => ({ ...s, index: i + 1 }));
-        setArticle({ ...meta, sentences: picked });
+        const picked = fullArticle.sentences
+          .filter((s: SentenceEntry) => indexSet.has(s.index))
+          .map((s: SentenceEntry, i: number) => ({ ...s, index: i + 1 }));
+        setArticle({ ...fullArticle, sentences: picked });
       } else if (range) {
-        const sliced = meta.sentences
+        const sliced = fullArticle.sentences
           .slice(range.start, range.end)
-          .map((s, i) => ({ ...s, index: i + 1 }));
-        setArticle({ ...meta, sentences: sliced });
+          .map((s: SentenceEntry, i: number) => ({ ...s, index: i + 1 }));
+        setArticle({ ...fullArticle, sentences: sliced });
       } else {
-        setArticle(meta);
+        setArticle(fullArticle);
       }
 
       // Get MP3: try cache first, then Drive download

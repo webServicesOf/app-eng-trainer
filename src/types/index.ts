@@ -45,6 +45,7 @@ export interface SubDeckReview {
 }
 
 // Audio 기반 Article (full mp3 + sentences.json 업로드)
+// persistence type — Drive JSON + IndexedDB. kind 필드 없음.
 export interface AudioArticle {
   id: string;
   title: string;
@@ -63,6 +64,41 @@ export interface AudioArticle {
   createdAt: Date;
   lastAccessed: Date;
 }
+
+// ── Store runtime types (CQRS-lite discriminated union) ──────────
+
+// 공유 필드 — summary와 loaded 모두 가지는 메타데이터
+export interface ArticleBase {
+  id: string;
+  title: string;
+  reviewInterval: number;
+  nextReviewDate: Date | null;
+  savedAsDeck?: boolean;
+  savedSentenceIndices?: number[];
+  savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null };
+  subDeckReviews?: SubDeckReview[];
+  splitPoints?: number[];
+  source?: string;
+  createdAt: Date;
+  lastAccessed: Date;
+}
+
+// summary: index.json에서 로드, HomeScreen 카드 렌더용. sentences 필드 없음.
+export interface SummaryArticle extends ArticleBase {
+  kind: 'summary';
+  sentenceCount: number;
+}
+
+// loaded: full JSON 로드 완료. sentences 항상 존재.
+export interface FullArticle extends ArticleBase {
+  kind: 'loaded';
+  sentences: SentenceEntry[];
+  audioBlob?: Blob;
+  audioUrl?: string;
+}
+
+// Store가 보유하는 article 타입 — 컴파일러가 write 경로 분기 강제
+export type StoreArticle = SummaryArticle | FullArticle;
 
 // SubDeck — AudioArticle의 문장 범위 참조
 export interface SubDeck {

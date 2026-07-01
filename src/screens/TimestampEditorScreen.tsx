@@ -34,7 +34,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { AudioArticle, SentenceEntry, WordTimestamp } from '../types';
+import { AudioArticle, FullArticle, SentenceEntry, WordTimestamp } from '../types';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
 import { GoogleDriveService } from '../services/googleDriveService';
@@ -49,7 +49,7 @@ const TimestampEditorScreen: React.FC = () => {
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const regionsRef = useRef<RegionsPlugin | null>(null);
 
-  const [article, setArticle] = useState<AudioArticle | null>(null);
+  const [article, setArticle] = useState<FullArticle | null>(null);
   const [sentences, setSentences] = useState<SentenceEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -76,11 +76,25 @@ const TimestampEditorScreen: React.FC = () => {
       if (!id || loadedRef.current) return;
       loadedRef.current = true;
 
-      // Get metadata from store (already loaded from Drive)
-      const meta = audioArticles.find(a => a.id === id);
-      if (!meta) {
+      // Get metadata from store — must be FullArticle (loaded via loadFullArticle before navigating here)
+      const storeArticle = audioArticles.find(a => a.id === id);
+      if (!storeArticle) {
         navigate('/');
         return;
+      }
+
+      // Ensure full article is loaded
+      let full: FullArticle | undefined;
+      if (storeArticle.kind === 'loaded') {
+        full = storeArticle;
+      } else {
+        // Load full article on demand
+        await useAppStore.getState().loadFullArticle(id);
+        full = useAppStore.getState().getFullArticle(id);
+        if (!full) {
+          navigate('/');
+          return;
+        }
       }
 
       // Get MP3: try cache first, then Drive
@@ -93,7 +107,7 @@ const TimestampEditorScreen: React.FC = () => {
         }
       }
 
-      const loaded: AudioArticle = { ...meta, audioBlob };
+      const loaded: FullArticle = { ...full, audioBlob };
       setArticle(loaded);
 
       setSentences([...loaded.sentences]);
@@ -642,7 +656,7 @@ const TimestampEditorScreen: React.FC = () => {
     }
     setIsSaving(true);
     try {
-      const updated: AudioArticle = {
+      const updated: FullArticle = {
         ...article,
         sentences,
       };
@@ -676,7 +690,7 @@ const TimestampEditorScreen: React.FC = () => {
     const sortedMarkers = Array.from(splitMarkers).sort((a, b) => a - b);
 
     // Save splitPoints into the article (Drive SSOT)
-    const updated: AudioArticle = { ...article, sentences, splitPoints: sortedMarkers };
+    const updated: FullArticle = { ...article, sentences, splitPoints: sortedMarkers };
     const drive = new GoogleDriveService(accessToken);
     await drive.saveArticle(updated);
     setArticle(updated);

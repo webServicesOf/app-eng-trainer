@@ -413,7 +413,7 @@ export class GoogleDriveService {
   }
 
   /** Save index.json to data/ folder */
-  private async saveIndex(summaries: ArticleSummary[]): Promise<void> {
+  async saveIndex(summaries: ArticleSummary[]): Promise<void> {
     const { data } = await this.ensureFolders();
     const files = await this.listFilesIn(data);
     const indexFile = files.find(f => f.name === 'index.json');
