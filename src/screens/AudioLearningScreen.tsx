@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Box,
   Paper,
@@ -12,7 +12,6 @@ import {
   Stack,
   Slider,
   TextField,
-  MenuItem,
   useTheme,
   Dialog,
   DialogTitle,
@@ -24,12 +23,17 @@ import {
   ListItemText,
   Tooltip,
   Badge,
+  Popover,
+  FormControlLabel,
+  Checkbox,
 } from '@mui/material';
 import {
   ArrowUpward,
   ArrowDownward,
-  ArrowBack,
-  ArrowForward,
+  KeyboardArrowLeft,
+  KeyboardArrowRight,
+  KeyboardDoubleArrowLeft,
+  KeyboardDoubleArrowRight,
   PlayArrow,
   Pause,
   Replay,
@@ -44,6 +48,8 @@ import {
   RestoreFromTrash,
   YouTube as YouTubeIcon,
   Audiotrack,
+  Settings,
+  Gamepad,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { FullArticle, StoreArticle, SentenceEntry } from '../types';
@@ -83,6 +89,11 @@ const AudioLearningScreen: React.FC = () => {
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
   const [showHiddenList, setShowHiddenList] = useState(false);
   const [isYouTubeMode, setIsYouTubeMode] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [windowStepMode, setWindowStepMode] = useState(false);
+  const [settingsAnchorEl, setSettingsAnchorEl] = useState<HTMLElement | null>(null);
+
+  const sentenceRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const loadedArticleIdRef = React.useRef<string | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -282,6 +293,13 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, updateDisplayText]);
 
+  // Auto-scroll active sentence to center
+  useEffect(() => {
+    if (activeSentenceLocalIdx >= 0 && sentenceRefs.current[activeSentenceLocalIdx]) {
+      sentenceRefs.current[activeSentenceLocalIdx]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [activeSentenceLocalIdx]);
+
   // Check if current sentence is saved
   useEffect(() => {
     const checkSaved = async () => {
@@ -387,8 +405,9 @@ const AudioLearningScreen: React.FC = () => {
     setIsPlaying(false);
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
+    const step = windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
     // Skip hidden sentences
-    let target = currentIndex - 1;
+    let target = currentIndex - step;
     while (target >= 1 && article.sentences[target - 1]?.hidden) {
       target--;
     }
@@ -396,7 +415,7 @@ const AudioLearningScreen: React.FC = () => {
       setCurrentIndex(target);
     }
     debouncedSpeak();
-  }, [article, currentIndex, setCurrentIndex, debouncedSpeak]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize]);
 
   const handleRightArrow = React.useCallback(() => {
     if (!article) return;
@@ -404,8 +423,9 @@ const AudioLearningScreen: React.FC = () => {
     setIsPlaying(false);
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
+    const step = windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
     // Skip hidden sentences
-    let target = currentIndex + 1;
+    let target = currentIndex + step;
     while (target <= article.sentences.length && article.sentences[target - 1]?.hidden) {
       target++;
     }
@@ -413,7 +433,7 @@ const AudioLearningScreen: React.FC = () => {
       setCurrentIndex(target);
     }
     debouncedSpeak();
-  }, [article, currentIndex, setCurrentIndex, debouncedSpeak]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize]);
 
   const onPlayEnd = React.useCallback(() => {
     setActiveSentenceLocalIdx(-1);
@@ -770,12 +790,20 @@ const AudioLearningScreen: React.FC = () => {
           e.preventDefault();
           handleTogglePlay();
           break;
+        case 's':
+          e.preventDefault();
+          handlePlayFromStart();
+          break;
+        case 'y':
+          e.preventDefault();
+          handleToggleYouTubeMode();
+          break;
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleTogglePlay]);
+  }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleToggleYouTubeMode]);
 
   if (!article || !audioLoaded) {
     return (
@@ -789,6 +817,7 @@ const AudioLearningScreen: React.FC = () => {
   const hiddenSentences = article.sentences.filter(s => s.hidden);
   const hiddenCount = hiddenSentences.length;
   const progress = (currentIndex / article.sentences.length) * 100;
+  const settingsOpen = Boolean(settingsAnchorEl);
 
   return (
     <Box
@@ -801,17 +830,18 @@ const AudioLearningScreen: React.FC = () => {
         overflow: 'hidden',
       }}
     >
-      {/* Header */}
+      {/* Top Bar: home + title + chips + toggle buttons */}
       <Paper
         elevation={2}
         sx={{
-          p: { xs: 1, sm: 2 },
-          mb: 2,
+          p: { xs: 1, sm: 1.5 },
+          mb: 1,
           display: 'flex',
           flexDirection: { xs: 'column', md: 'row' },
           justifyContent: 'space-between',
           alignItems: { xs: 'stretch', md: 'center' },
-          gap: { xs: 1, md: 0 },
+          gap: { xs: 0.5, md: 0 },
+          flexShrink: 0,
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -831,7 +861,7 @@ const AudioLearningScreen: React.FC = () => {
             )}
           </Box>
 
-          <Stack direction="row" spacing={{ xs: 0.5, sm: 1 }} sx={{ display: { xs: 'flex', md: 'none' } }}>
+          <Stack direction="row" spacing={0.5} alignItems="center">
             <IconButton
               onClick={() => setIsBlindMode(!isBlindMode)}
               color={isBlindMode ? 'primary' : 'default'}
@@ -866,22 +896,32 @@ const AudioLearningScreen: React.FC = () => {
               </IconButton>
             </Tooltip>
             {videoId ? (
-              <Tooltip title={isYouTubeMode ? 'MP3로 전환' : 'YouTube로 전환'}>
+              <Tooltip title={isYouTubeMode ? 'MP3로 전환 (y)' : 'YouTube로 전환 (y)'}>
                 <IconButton onClick={handleToggleYouTubeMode} size="small" color={isYouTubeMode ? 'error' : 'default'}>
                   {isYouTubeMode ? <Audiotrack /> : <YouTubeIcon />}
                 </IconButton>
               </Tooltip>
             ) : null}
+            <Tooltip title="설정">
+              <IconButton onClick={(e) => setSettingsAnchorEl(e.currentTarget)} size="small">
+                <Settings />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title={showControls ? '패드 숨기기' : '패드 보이기'}>
+              <IconButton onClick={() => setShowControls(prev => !prev)} size="small" color={showControls ? 'primary' : 'default'}>
+                <Gamepad />
+              </IconButton>
+            </Tooltip>
           </Stack>
         </Box>
 
-        <Stack spacing={1} sx={{ flex: 1, minWidth: 0 }}>
+        <Stack spacing={0.5} sx={{ flex: 1, minWidth: 0 }}>
           <Stack direction="row" alignItems="center" spacing={{ xs: 0.5, sm: 1 }} flexWrap="wrap">
             <Typography
               variant="h6"
               component="h1"
               sx={{
-                fontSize: { xs: '1rem', sm: '1.25rem' },
+                fontSize: { xs: '0.9rem', sm: '1.1rem' },
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -903,55 +943,85 @@ const AudioLearningScreen: React.FC = () => {
               size="small"
             />
             <Chip label={isYouTubeMode ? 'YouTube' : 'Audio'} size="small" color={isYouTubeMode ? 'error' : 'info'} variant="outlined" />
+            {windowStepMode && <Chip label="Window Step" size="small" color="success" variant="outlined" />}
           </Stack>
-        </Stack>
-
-        <Stack direction="row" spacing={1} sx={{ display: { xs: 'none', md: 'flex' } }}>
-          <IconButton
-            onClick={() => setIsBlindMode(!isBlindMode)}
-            color={isBlindMode ? 'primary' : 'default'}
-            size="large"
-          >
-            {isBlindMode ? <VisibilityOff /> : <Visibility />}
-          </IconButton>
-          {!isCumulative && (
-            <>
-              <IconButton
-                onClick={handleSaveSentence}
-                color={isSaved ? 'primary' : 'default'}
-                size="large"
-              >
-                {isSaved ? <Bookmark /> : <BookmarkBorder />}
-              </IconButton>
-              <IconButton
-                onClick={handleToggleHideSentence}
-                size="large"
-                color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
-                title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}
-              >
-                {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
-              </IconButton>
-            </>
-          )}
-          <Tooltip title="숨김 목록">
-            <IconButton onClick={() => setShowHiddenList(true)} size="large">
-              <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
-                <FormatListBulleted />
-              </Badge>
-            </IconButton>
-          </Tooltip>
-          {videoId ? (
-            <Tooltip title={isYouTubeMode ? 'MP3로 전환' : 'YouTube로 전환'}>
-              <IconButton onClick={handleToggleYouTubeMode} size="large" color={isYouTubeMode ? 'error' : 'default'}>
-                {isYouTubeMode ? <Audiotrack /> : <YouTubeIcon />}
-              </IconButton>
-            </Tooltip>
-          ) : null}
         </Stack>
       </Paper>
 
+      {/* Settings Popover */}
+      <Popover
+        open={settingsOpen}
+        anchorEl={settingsAnchorEl}
+        onClose={() => setSettingsAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        <Box sx={{ p: 2, width: 260 }}>
+          <Typography variant="subtitle2" gutterBottom>재생 속도</Typography>
+          <Typography variant="body2" color="primary" sx={{ mb: 0.5 }}>
+            {playbackRate.toFixed(1)}x
+          </Typography>
+          <Slider
+            value={playbackRate}
+            onChange={(_, newValue) => handleRateChange(newValue as number)}
+            min={0.5}
+            max={3.0}
+            step={0.1}
+            marks={[
+              { value: 0.5, label: '0.5x' },
+              { value: 1.0, label: '1.0x' },
+              { value: 2.0, label: '2.0x' },
+              { value: 3.0, label: '3.0x' },
+            ]}
+            valueLabelDisplay="auto"
+            valueLabelFormat={(value) => `${value.toFixed(1)}x`}
+            sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
+          />
+
+          <Typography variant="subtitle2" sx={{ mt: 2 }} gutterBottom>누적 윈도우</Typography>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={windowSize === 'full'}
+                  onChange={(e) => setWindowSize(e.target.checked ? 'full' : 5)}
+                  size="small"
+                />
+              }
+              label="전체"
+              sx={{ mr: 0 }}
+            />
+            {windowSize !== 'full' && (
+              <TextField
+                type="number"
+                value={windowSize}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (v > 0) setWindowSize(v);
+                }}
+                size="small"
+                inputProps={{ min: 1, step: 1 }}
+                sx={{ width: 80 }}
+              />
+            )}
+          </Stack>
+
+          <Typography variant="subtitle2" sx={{ mt: 2 }} gutterBottom>이동 모드</Typography>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={windowStepMode}
+                onChange={(e) => setWindowStepMode(e.target.checked)}
+                size="small"
+              />
+            }
+            label="Window Step (좌우 윈도우 단위 이동)"
+          />
+        </Box>
+      </Popover>
+
       {/* Progress Bar */}
-      <LinearProgress variant="determinate" value={progress} sx={{ mb: 3, height: 6, borderRadius: 3 }} />
+      <LinearProgress variant="determinate" value={progress} sx={{ mb: 1, height: 6, borderRadius: 3, flexShrink: 0 }} />
 
       {/* Main Content Area */}
       <Card
@@ -959,14 +1029,16 @@ const AudioLearningScreen: React.FC = () => {
         sx={{
           flex: 1,
           minHeight: 0,
-          mb: { xs: 2, sm: 3 },
+          mb: 1,
           backgroundColor: theme.palette.grey[50],
-          overflow: 'auto',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
         }}
       >
-        <CardContent sx={{ p: { xs: 2, sm: 3, md: 4 } }}>
+        <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 3 }, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {isYouTubeMode && videoId && (
-            <Box sx={{ mb: 2, width: '100%', maxWidth: 640, mx: 'auto', '& > div': { width: '100%' }, '& iframe': { width: '100%', aspectRatio: '16/9', border: 'none' } }}>
+            <Box sx={{ flexShrink: 0, mb: 1, width: '100%', maxWidth: 640, mx: 'auto', flex: '0 0 60%', '& > div': { width: '100%' }, '& iframe': { width: '100%', height: '100%', aspectRatio: '16/9', border: 'none' } }}>
               <YouTubePlayer
                 videoId={videoId}
                 opts={{ width: '100%', playerVars: { autoplay: 0, controls: 1, modestbranding: 1 } }}
@@ -980,52 +1052,52 @@ const AudioLearningScreen: React.FC = () => {
               />
             </Box>
           )}
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <Typography variant="subtitle2" color="grey.600" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' }, mb: 0 }}>
-              영어 ({isCumulative ? '누적' : '현재'}) — Audio Seek
-            </Typography>
-            {!isCumulative && article.sentences.find(s => s.index === currentIndex)?.hidden && (
-              <Chip label="숨김 문장" size="small" color="warning" variant="outlined" />
-            )}
-          </Stack>
 
+          {/* Sentence display container */}
           <Box
             sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              px: { xs: 1, sm: 2 },
+              flex: 1,
+              minHeight: 0,
+              overflow: 'hidden',
+              position: 'relative',
             }}
           >
-            <Typography
+            <Box
               sx={{
-                fontSize: {
-                  xs: '1rem',
-                  sm: '1.1rem',
-                  md: '1.25rem',
-                },
-                lineHeight: 1.8,
-                textAlign: 'left',
-                wordWrap: 'break-word',
-                overflowWrap: 'break-word',
-                width: '100%',
+                height: '100%',
+                overflow: 'auto',
+                scrollbarWidth: 'none',
+                '&::-webkit-scrollbar': { display: 'none' },
+                display: 'flex',
+                flexDirection: 'column',
+                px: { xs: 1, sm: 2 },
               }}
             >
               {displaySentences.length > 0 ? (
                 displaySentences.map((sent, sentIdx) => {
                   const isActiveSent = activeSentenceLocalIdx === sentIdx;
                   const hasActiveAnySent = activeSentenceLocalIdx >= 0;
-                  // Use words array for display when available (ensures index alignment with trackWord)
-                  // Fall back to text split when no words array exists
                   const words = sent.words && sent.words.length > 0
                     ? sent.words.map(w => w.word)
                     : sent.text.split(/\s+/);
 
                   return (
-                    <span
+                    <Box
                       key={sentIdx}
+                      ref={(el: HTMLDivElement | null) => { sentenceRefs.current[sentIdx] = el; }}
                       onClick={() => handleSentenceTap(sentIdx)}
-                      style={{ cursor: 'pointer', display: 'inline' }}
+                      sx={{
+                        cursor: 'pointer',
+                        py: 0.5,
+                        fontSize: { xs: '1rem', sm: '1.1rem', md: '1.25rem' },
+                        lineHeight: 1.8,
+                        textAlign: 'left',
+                        wordWrap: 'break-word',
+                        overflowWrap: 'break-word',
+                        borderLeft: isActiveSent ? `3px solid ${theme.palette.primary.main}` : '3px solid transparent',
+                        pl: 1,
+                        transition: 'border-color 0.2s',
+                      }}
                     >
                       {words.map((word, wIdx) => {
                         const isActiveWord = isActiveSent && activeWordIdx === wIdx;
@@ -1034,16 +1106,12 @@ const AudioLearningScreen: React.FC = () => {
                         if (isActiveWord) {
                           color = '#000000';
                         } else if (isBlindMode && duringPlayback) {
-                          // Blind mode + playing: blur everything except active word
                           color = 'transparent';
                         } else if (isBlindMode) {
-                          // Blind mode + not playing: all blurred
                           color = 'transparent';
                         } else if (duringPlayback) {
-                          // Normal mode + playing: all visible, active word bold
                           color = '#cccccc';
                         } else {
-                          // Normal mode + not playing
                           color = '#cccccc';
                         }
                         return (
@@ -1064,13 +1132,15 @@ const AudioLearningScreen: React.FC = () => {
                           </span>
                         );
                       })}
-                    </span>
+                    </Box>
                   );
                 })
               ) : (
-                '문장을 선택하세요.'
+                <Typography sx={{ textAlign: 'center', color: 'text.secondary', mt: 4 }}>
+                  문장을 선택하세요.
+                </Typography>
               )}
-            </Typography>
+            </Box>
           </Box>
         </CardContent>
       </Card>
@@ -1107,186 +1177,119 @@ const AudioLearningScreen: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Control Panel */}
-      <Paper
-        elevation={3}
-        sx={{
-          flexShrink: 0,
-          p: { xs: 2, sm: 3 },
-          display: 'flex',
-          flexDirection: { xs: 'column', lg: 'row' },
-          justifyContent: 'center',
-          alignItems: 'center',
-          gap: { xs: 2, sm: 3 },
-        }}
-      >
-        {/* Window Size Control */}
-        <Box sx={{ textAlign: 'center', width: { xs: '100%', sm: 'auto' }, minWidth: { sm: '150px' } }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            누적 윈도우
-          </Typography>
-          <TextField
-            select
-            value={windowSize}
-            onChange={(e) => setWindowSize(e.target.value === 'full' ? 'full' : Number(e.target.value))}
-            size="small"
-            sx={{ width: '100%', mt: 1 }}
-          >
-            <MenuItem value="full">전체</MenuItem>
-            <MenuItem value={3}>3문장</MenuItem>
-            <MenuItem value={5}>5문장</MenuItem>
-            <MenuItem value={7}>7문장</MenuItem>
-            <MenuItem value={10}>10문장</MenuItem>
-          </TextField>
-        </Box>
-
-        {/* Speed Control */}
-        <Box sx={{ textAlign: 'center', width: { xs: '100%', sm: 'auto' }, minWidth: { sm: '200px' } }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            재생 속도
-          </Typography>
-          <Typography variant="h6" color="primary" sx={{ mb: 1, fontSize: { xs: '1rem', sm: '1.25rem' } }}>
-            {playbackRate.toFixed(1)}x
-          </Typography>
-          <Slider
-            value={playbackRate}
-            onChange={(_, newValue) => handleRateChange(newValue as number)}
-            min={0.5}
-            max={3.0}
-            step={0.1}
-            marks={[
-              { value: 0.5, label: '0.5x' },
-              { value: 1.0, label: '1.0x' },
-              { value: 2.0, label: '2.0x' },
-              { value: 3.0, label: '3.0x' },
-            ]}
-            valueLabelDisplay="auto"
-            valueLabelFormat={(value) => `${value.toFixed(1)}x`}
-            sx={{
-              width: '100%',
-              '& .MuiSlider-markLabel': {
-                fontSize: { xs: '0.6rem', sm: '0.75rem' },
-              },
-            }}
-          />
-        </Box>
-
-        {/* Navigation Grid */}
-        <Box
+      {/* Bottom: 3x3 Navigation Pad (hideable) */}
+      {showControls && (
+        <Paper
+          elevation={3}
           sx={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gridTemplateRows: 'repeat(3, 1fr)',
-            gap: 0.5,
-            width: { xs: '100px', sm: '120px' },
-            height: { xs: '100px', sm: '120px' },
+            flexShrink: 0,
+            p: { xs: 1.5, sm: 2 },
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: { xs: 1, sm: 2 },
           }}
         >
-          <Box />
-          <IconButton
-            onClick={handleUpArrow}
-            size="small"
-            color="primary"
+          {/* Navigation Grid */}
+          <Box
             sx={{
-              backgroundColor: theme.palette.primary.light,
-              color: theme.palette.common.white,
-              '&:hover': { backgroundColor: theme.palette.primary.main },
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gridTemplateRows: 'repeat(3, 1fr)',
+              gap: 0.5,
+              width: { xs: '100px', sm: '120px' },
+              height: { xs: '100px', sm: '120px' },
             }}
           >
-            <ArrowUpward fontSize="small" />
-          </IconButton>
-          <Box />
+            <Box />
+            <IconButton
+              onClick={handleUpArrow}
+              size="small"
+              color="primary"
+              sx={{
+                backgroundColor: theme.palette.primary.light,
+                color: theme.palette.common.white,
+                '&:hover': { backgroundColor: theme.palette.primary.main },
+              }}
+            >
+              <ArrowUpward fontSize="small" />
+            </IconButton>
+            <Box />
 
-          <IconButton
-            onClick={handleLeftArrow}
-            size="small"
-            color="primary"
-            disabled={currentIndex <= 1}
-            sx={{
-              backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.light,
-              color: theme.palette.common.white,
-              '&:hover': {
-                backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.main,
-              },
-            }}
-          >
-            <ArrowBack fontSize="small" />
-          </IconButton>
+            <IconButton
+              onClick={handleLeftArrow}
+              size="small"
+              color="primary"
+              disabled={currentIndex <= 1}
+              sx={{
+                backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.light,
+                color: theme.palette.common.white,
+                '&:hover': {
+                  backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.main,
+                },
+              }}
+            >
+              {windowStepMode ? <KeyboardDoubleArrowLeft fontSize="small" /> : <KeyboardArrowLeft fontSize="small" />}
+            </IconButton>
 
-          <IconButton
-            onClick={handleTogglePlay}
-            size="small"
-            color="secondary"
-            sx={{
-              backgroundColor: theme.palette.secondary.main,
-              color: theme.palette.common.white,
-              '&:hover': { backgroundColor: theme.palette.secondary.dark },
-            }}
-          >
-            {isPlaying ? <Pause fontSize="small" /> : <PlayArrow fontSize="small" />}
-          </IconButton>
+            <IconButton
+              onClick={handleTogglePlay}
+              size="small"
+              color="secondary"
+              sx={{
+                backgroundColor: theme.palette.secondary.main,
+                color: theme.palette.common.white,
+                '&:hover': { backgroundColor: theme.palette.secondary.dark },
+              }}
+            >
+              {isPlaying ? <Pause fontSize="small" /> : <PlayArrow fontSize="small" />}
+            </IconButton>
 
-          <IconButton
-            onClick={handleRightArrow}
-            size="small"
-            color="primary"
-            disabled={currentIndex >= article.sentences.length}
-            sx={{
-              backgroundColor:
-                currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.light,
-              color: theme.palette.common.white,
-              '&:hover': {
+            <IconButton
+              onClick={handleRightArrow}
+              size="small"
+              color="primary"
+              disabled={currentIndex >= article.sentences.length}
+              sx={{
                 backgroundColor:
-                  currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.main,
-              },
-            }}
-          >
-            <ArrowForward fontSize="small" />
-          </IconButton>
+                  currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.light,
+                color: theme.palette.common.white,
+                '&:hover': {
+                  backgroundColor:
+                    currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.main,
+                },
+              }}
+            >
+              {windowStepMode ? <KeyboardDoubleArrowRight fontSize="small" /> : <KeyboardArrowRight fontSize="small" />}
+            </IconButton>
 
-          <Box />
-          <IconButton
-            onClick={handleDownArrow}
-            size="small"
-            color="primary"
-            sx={{
-              backgroundColor: theme.palette.primary.light,
-              color: theme.palette.common.white,
-              '&:hover': { backgroundColor: theme.palette.primary.main },
-            }}
-          >
-            <ArrowDownward fontSize="small" />
-          </IconButton>
-          <IconButton
-            onClick={handlePlayFromStart}
-            size="small"
-            sx={{
-              backgroundColor: theme.palette.info.light,
-              color: theme.palette.common.white,
-              '&:hover': { backgroundColor: theme.palette.info.main },
-            }}
-          >
-            <Replay fontSize="small" />
-          </IconButton>
-        </Box>
-
-        {/* Control Info */}
-        <Box sx={{ textAlign: 'left', color: theme.palette.text.secondary, display: { xs: 'none', sm: 'block' } }}>
-          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            ↑ 누적 표시
-          </Typography>
-          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            ↓ 단일 표시
-          </Typography>
-          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            ← 이전 문장
-          </Typography>
-          <Typography variant="body2" gutterBottom sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>
-            → 다음 문장
-          </Typography>
-          <Typography variant="body2" sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}>Space 재생/정지</Typography>
-        </Box>
-      </Paper>
+            <Box />
+            <IconButton
+              onClick={handleDownArrow}
+              size="small"
+              color="primary"
+              sx={{
+                backgroundColor: theme.palette.primary.light,
+                color: theme.palette.common.white,
+                '&:hover': { backgroundColor: theme.palette.primary.main },
+              }}
+            >
+              <ArrowDownward fontSize="small" />
+            </IconButton>
+            <IconButton
+              onClick={handlePlayFromStart}
+              size="small"
+              sx={{
+                backgroundColor: theme.palette.info.light,
+                color: theme.palette.common.white,
+                '&:hover': { backgroundColor: theme.palette.info.main },
+              }}
+            >
+              <Replay fontSize="small" />
+            </IconButton>
+          </Box>
+        </Paper>
+      )}
     </Box>
   );
 };
