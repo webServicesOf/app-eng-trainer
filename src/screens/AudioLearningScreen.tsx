@@ -26,6 +26,7 @@ import {
   Popover,
   FormControlLabel,
   Checkbox,
+  Switch,
 } from '@mui/material';
 import {
   ArrowUpward,
@@ -959,44 +960,34 @@ const AudioLearningScreen: React.FC = () => {
             sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
           />
 
-          <Typography variant="subtitle2" sx={{ mt: 2 }} gutterBottom>누적 윈도우</Typography>
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={windowSize === 'full'}
-                  onChange={(e) => setWindowSize(e.target.checked ? 'full' : 5)}
-                  size="small"
-                />
-              }
-              label="전체"
-              sx={{ mr: 0 }}
-            />
-            {windowSize !== 'full' && (
-              <TextField
-                type="number"
-                value={windowSize}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  if (v > 0) setWindowSize(v);
-                }}
-                size="small"
-                inputProps={{ min: 1, step: 1 }}
-                sx={{ width: 80 }}
-              />
-            )}
-          </Stack>
+          <Typography variant="subtitle2" sx={{ mt: 2 }} gutterBottom>
+            윈도우 크기: {windowSize === 'full' ? '전체' : windowSize}
+          </Typography>
+          <Slider
+            value={windowSize === 'full' ? article.sentences.length : (windowSize as number)}
+            onChange={(_, v) => {
+              const val = v as number;
+              setWindowSize(val >= article.sentences.length ? 'full' : val);
+            }}
+            min={1}
+            max={article.sentences.length}
+            step={1}
+            valueLabelDisplay="auto"
+            valueLabelFormat={(v) => v >= article.sentences.length ? '전체' : `${v}`}
+            sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
+          />
 
-          <Typography variant="subtitle2" sx={{ mt: 2 }} gutterBottom>이동 모드</Typography>
           <FormControlLabel
             control={
-              <Checkbox
+              <Switch
                 checked={windowStepMode}
                 onChange={(e) => setWindowStepMode(e.target.checked)}
                 size="small"
+                color="success"
               />
             }
-            label="Window Step (좌우 윈도우 단위 이동)"
+            label={windowStepMode ? '블록 이동' : '문장 이동'}
+            sx={{ mt: 1 }}
           />
         </Box>
       </Popover>
