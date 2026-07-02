@@ -1028,10 +1028,10 @@ const AudioLearningScreen: React.FC = () => {
       >
         <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 3 }, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {isYouTubeMode && videoId && (
-            <Box sx={{ flexShrink: 0, mb: 1, width: '100%', maxWidth: 640, mx: 'auto', flex: '0 0 60%', '& > div': { width: '100%' }, '& iframe': { width: '100%', height: '100%', aspectRatio: '16/9', border: 'none' } }}>
+            <Box sx={{ flexShrink: 1, flexGrow: 1, mb: 1, width: '100%', maxWidth: 640, mx: 'auto', minHeight: 0, position: 'relative', '& > div:first-of-type': { width: '100%', height: '100%' }, '& iframe': { width: '100%', height: '100%', border: 'none' } }}>
               <YouTubePlayer
                 videoId={videoId}
-                opts={{ width: '100%', playerVars: { autoplay: 0, controls: 1, modestbranding: 1 } }}
+                opts={{ width: '100%', playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0, showinfo: 0, iv_load_policy: 3 } }}
                 onReady={(e) => { ytPlayerRef.current = e.target; }}
                 onStateChange={(e) => {
                   const state = e.data;
@@ -1052,14 +1052,32 @@ const AudioLearningScreen: React.FC = () => {
                   else if (state === 0) { setIsPlaying(false); setActiveSentenceLocalIdx(-1); setActiveWordIdx(-1); stopYouTubePolling(); }
                 }}
               />
+              {/* Transparent overlay to intercept clicks — play/pause via API without YouTube UI */}
+              <Box
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleTogglePlay();
+                }}
+                sx={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 1,
+                  cursor: 'pointer',
+                }}
+              />
             </Box>
           )}
 
           {/* Sentence display container */}
           <Box
             sx={{
-              flex: 1,
+              flex: isYouTubeMode && videoId ? '0 0 auto' : 1,
               minHeight: 0,
+              maxHeight: isYouTubeMode && videoId ? '4.5em' : undefined,
               overflow: 'hidden',
               position: 'relative',
             }}

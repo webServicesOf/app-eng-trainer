@@ -960,6 +960,51 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, [sentences, selectedIndex, pushUndo]);
 
+  /** Insert empty sentence above current (like Jupyter 'a') */
+  const handleInsertAbove = useCallback(() => {
+    pushUndo();
+    setSentences(prev => {
+      const updated = [...prev];
+      const current = updated[selectedIndex];
+      const empty: SentenceEntry = {
+        index: current.index,
+        text: '',
+        start: current.start,
+        end: current.start,
+      };
+      // Shift indices for current and all below
+      for (let i = selectedIndex; i < updated.length; i++) {
+        updated[i] = { ...updated[i], index: updated[i].index + 1 };
+      }
+      updated.splice(selectedIndex, 0, empty);
+      return updated;
+    });
+    setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
+  /** Insert empty sentence below current (like Jupyter 'b') */
+  const handleInsertBelow = useCallback(() => {
+    pushUndo();
+    setSentences(prev => {
+      const updated = [...prev];
+      const current = updated[selectedIndex];
+      const empty: SentenceEntry = {
+        index: current.index + 1,
+        text: '',
+        start: current.end,
+        end: current.end,
+      };
+      // Shift indices for all below
+      for (let i = selectedIndex + 1; i < updated.length; i++) {
+        updated[i] = { ...updated[i], index: updated[i].index + 1 };
+      }
+      updated.splice(selectedIndex + 1, 0, empty);
+      return updated;
+    });
+    setSelectedIndex(selectedIndex + 1);
+    setHasChanges(true);
+  }, [selectedIndex, pushUndo]);
+
   // Auto-scroll selected sentence to center
   useEffect(() => {
     if (selectedItemRef.current) {
@@ -1079,6 +1124,12 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyP' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         handlePullSentences();
+      } else if (code === 'KeyA' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        handleInsertAbove();
+      } else if (code === 'KeyB' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        handleInsertBelow();
       } else if (code === 'KeyZ' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (e.shiftKey) handleRedo();
@@ -1102,7 +1153,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, sentences]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, handleInsertAbove, handleInsertBelow, sentences]);
 
   if (!article) {
     return (
@@ -1460,17 +1511,6 @@ const TimestampEditorScreen: React.FC = () => {
                 <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.5)}>0.5</Button>
               </Stack>
 
-              <Button
-                size="small"
-                variant="outlined"
-                color="warning"
-                onClick={handlePullSentences}
-                disabled={selectedIndex >= sentences.length - 1}
-                sx={{ mb: 1 }}
-                fullWidth
-              >
-                이후 문장 전부 당기기
-              </Button>
             </>
           )}
 
@@ -1494,6 +1534,8 @@ const TimestampEditorScreen: React.FC = () => {
                 <Typography variant="caption" display="block">D: 문장 분할</Typography>
                 <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
                 <Typography variant="caption" display="block">P: 이후 문장 당기기</Typography>
+                <Typography variant="caption" display="block">A: 위에 빈 문장 추가</Typography>
+                <Typography variant="caption" display="block">B: 아래에 빈 문장 추가</Typography>
                 <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
                 <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
                 <Typography variant="caption" display="block">⌘S: 저장</Typography>
