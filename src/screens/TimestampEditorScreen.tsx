@@ -661,12 +661,7 @@ const TimestampEditorScreen: React.FC = () => {
         sentences,
       };
       const drive = new GoogleDriveService(accessToken);
-      console.log('[handleSave] saving to Drive:', { id: updated.id, sentenceCount: updated.sentences.length, sentences: updated.sentences.map(s => ({ idx: s.index, text: s.text.slice(0, 30), start: s.start, end: s.end, wordsLen: s.words?.length })) });
       await drive.saveArticle(updated);
-      console.log('[handleSave] Drive save complete');
-      // Verify: re-read from Drive to confirm
-      const verify = await drive.getArticle(updated.id);
-      console.log('[handleSave] Drive verify:', { sentenceCount: verify?.sentences.length, firstText: verify?.sentences[0]?.text.slice(0, 30) });
       setArticle(updated);
       setHasChanges(false);
       // Sync store cache so other screens (learning mode) see fresh sentences
