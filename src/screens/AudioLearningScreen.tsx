@@ -190,28 +190,34 @@ const AudioLearningScreen: React.FC = () => {
         setArticle(fullArticle);
       }
 
-      // Get MP3: try cache first, then Drive download
-      try {
-        const token = useAppStore.getState().accessToken;
-        let audioBlob = await localDB.getCachedMp3(articleId);
-        if (!audioBlob && token) {
-          const drive = new GoogleDriveService(token);
-          audioBlob = (await drive.downloadMp3(articleId)) || undefined;
-          if (audioBlob) {
-            await localDB.cacheMp3(articleId, audioBlob);
+      // YouTube source → skip MP3 loading, use YouTube iframe
+      const hasVideo = !!fullArticle.source?.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/))([^?&#]+)/);
+      if (hasVideo) {
+        setIsYouTubeMode(true);
+        setAudioLoaded(true);
+      } else {
+        // Get MP3: try cache first, then Drive download
+        try {
+          const token = useAppStore.getState().accessToken;
+          let audioBlob = await localDB.getCachedMp3(articleId);
+          if (!audioBlob && token) {
+            const drive = new GoogleDriveService(token);
+            audioBlob = (await drive.downloadMp3(articleId)) || undefined;
+            if (audioBlob) {
+              await localDB.cacheMp3(articleId, audioBlob);
+            }
           }
-        }
 
-        if (audioBlob) {
-          const blobUrl = URL.createObjectURL(audioBlob);
-          await audioSeekService.load(blobUrl);
-          setAudioLoaded(true);
-        } else {
-          console.warn('MP3 not found for:', articleId);
+          if (audioBlob) {
+            const blobUrl = URL.createObjectURL(audioBlob);
+            await audioSeekService.load(blobUrl);
+            setAudioLoaded(true);
+          } else {
+            console.warn('MP3 not found for:', articleId);
+          }
+        } catch (mp3Error) {
+          console.error('MP3 load failed (article data OK):', mp3Error);
         }
-      } catch (mp3Error) {
-        console.error('MP3 load failed (article data OK):', mp3Error);
-        // Don't navigate home — article data is loaded, MP3 just failed
       }
     } catch (error) {
       console.error('Failed to load audio article:', error);
@@ -366,18 +372,9 @@ const AudioLearningScreen: React.FC = () => {
   }, [stopYouTubePolling]);
 
   const handleToggleYouTubeMode = React.useCallback(() => {
-    if (isYouTubeMode) {
-      const player = ytPlayerRef.current;
-      if (player) player.pauseVideo();
-      stopYouTubePolling();
-    } else {
-      audioSeekService.stop();
-    }
-    setIsPlaying(false);
-    setActiveSentenceLocalIdx(-1);
-    setActiveWordIdx(-1);
+    // Toggle video visibility only — audio always stays on YouTube player
     setIsYouTubeMode(prev => !prev);
-  }, [isYouTubeMode, stopYouTubePolling]);
+  }, []);
 
   const handleUpArrow = React.useCallback(() => {
     setIsCumulative(true);
@@ -450,7 +447,8 @@ const AudioLearningScreen: React.FC = () => {
   const handleSpeak = React.useCallback(() => {
     if (!article) return;
 
-    if (isYouTubeMode) {
+    if (videoId) {
+      // YouTube source: always use YouTube player for audio
       const player = ytPlayerRef.current;
       if (!player) return;
       if (isCumulative) {
@@ -530,13 +528,13 @@ const AudioLearningScreen: React.FC = () => {
         );
       }
     }
-  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
   // Keep ref in sync for arrow handlers
   handleSpeakRef.current = handleSpeak;
 
   const handleTogglePlay = React.useCallback(() => {
-    if (isYouTubeMode) {
+    if (videoId) {
       const player = ytPlayerRef.current;
       if (!player) return;
       if (isPlaying) {
@@ -544,12 +542,10 @@ const AudioLearningScreen: React.FC = () => {
         setIsPlaying(false);
         stopYouTubePolling();
       } else if (activeSentenceLocalIdx >= 0) {
-        // Paused mid-playback → resume
         player.playVideo();
         setIsPlaying(true);
         startYouTubePolling();
       } else {
-        // Playback ended → restart from beginning
         handleSpeak();
       }
       return;
@@ -565,12 +561,12 @@ const AudioLearningScreen: React.FC = () => {
         handleSpeak();
       }
     }
-  }, [isPlaying, activeSentenceLocalIdx, handleSpeak, isYouTubeMode, startYouTubePolling, stopYouTubePolling]);
+  }, [isPlaying, activeSentenceLocalIdx, handleSpeak, videoId, startYouTubePolling, stopYouTubePolling]);
 
   const handlePlayFromStart = React.useCallback(() => {
     if (!article) return;
 
-    if (isYouTubeMode) {
+    if (videoId) {
       const player = ytPlayerRef.current;
       if (!player) return;
       let si: number;
@@ -596,7 +592,6 @@ const AudioLearningScreen: React.FC = () => {
     }
 
     if (!audioLoaded) return;
-    // Play from first sentence of current display range
     let startIdx: number;
     if (isCumulative) {
       if (windowSize === 'full') {
@@ -622,13 +617,13 @@ const AudioLearningScreen: React.FC = () => {
         onWordUpdate,
       );
     }
-  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
+  }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
   // Tap sentence to play from it
   const handleSentenceTap = React.useCallback((sentLocalIdx: number) => {
     if (!article) return;
 
-    if (isYouTubeMode) {
+    if (videoId) {
       const player = ytPlayerRef.current;
       if (!player) return;
       const fromDisplay = displaySentences.slice(sentLocalIdx)
@@ -646,7 +641,6 @@ const AudioLearningScreen: React.FC = () => {
     }
 
     if (!audioLoaded) return;
-    // displaySentences already filtered hidden — play from tapped sentence onward
     const fromDisplay = displaySentences.slice(sentLocalIdx)
       .filter(s => s.start != null && s.end != null);
     if (fromDisplay.length > 0) {
@@ -660,14 +654,14 @@ const AudioLearningScreen: React.FC = () => {
         (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
       );
     }
-  }, [article, audioLoaded, displaySentences, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
+  }, [article, audioLoaded, displaySentences, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
   // Tap word to play from that word's timestamp
   const handleWordTap = React.useCallback((sentLocalIdx: number, wordIdx: number, e: React.MouseEvent) => {
     e.stopPropagation(); // prevent sentence tap
     if (!article) return;
 
-    if (isYouTubeMode) {
+    if (videoId) {
       const player = ytPlayerRef.current;
       if (!player) return;
       const sent = displaySentences[sentLocalIdx];
@@ -689,16 +683,13 @@ const AudioLearningScreen: React.FC = () => {
     if (!audioLoaded) return;
     const sent = displaySentences[sentLocalIdx];
     if (!sent?.words || !sent.words[wordIdx] || sent.start == null || sent.end == null) {
-      // No word timestamps — fall back to sentence tap
       handleSentenceTap(sentLocalIdx);
       return;
     }
     const wordStart = sent.words[wordIdx].start;
-    // Build segments: current sentence (from word start) + remaining sentences
     const fromDisplay = displaySentences.slice(sentLocalIdx)
       .filter(s => s.start != null && s.end != null);
     if (fromDisplay.length === 0) return;
-    // Override first segment's start to word's start time
     const adjusted = [{ ...fromDisplay[0], start: wordStart }, ...fromDisplay.slice(1)];
     setActiveSentenceLocalIdx(sentLocalIdx);
     setActiveWordIdx(wordIdx);
@@ -709,11 +700,11 @@ const AudioLearningScreen: React.FC = () => {
       (localIdx) => setActiveSentenceLocalIdx(sentLocalIdx + localIdx),
       (sentIdx, wordIdx) => onWordUpdate(sentLocalIdx + sentIdx, wordIdx),
     );
-  }, [article, audioLoaded, displaySentences, handleSentenceTap, onPlayEnd, onWordUpdate, isYouTubeMode, startYouTubePolling]);
+  }, [article, audioLoaded, displaySentences, handleSentenceTap, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
   const handleRateChange = (newRate: number) => {
     setPlaybackRate(newRate);
-    if (isYouTubeMode && ytPlayerRef.current) {
+    if (videoId && ytPlayerRef.current) {
       ytPlayerRef.current.setPlaybackRate(newRate);
     } else {
       audioSeekService.setRate(newRate);
@@ -1027,8 +1018,13 @@ const AudioLearningScreen: React.FC = () => {
         }}
       >
         <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 3 }, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          {isYouTubeMode && videoId && (
-            <Box sx={{ flexShrink: 1, flexGrow: 1, mb: 1, width: '100%', maxWidth: 640, mx: 'auto', minHeight: 0, position: 'relative', '& > div:first-of-type': { width: '100%', height: '100%' }, '& iframe': { width: '100%', height: '100%', border: 'none' } }}>
+          {videoId && (
+            <Box sx={{
+              flexShrink: 1, flexGrow: isYouTubeMode ? 1 : 0, mb: isYouTubeMode ? 1 : 0, width: '100%', maxWidth: 640, mx: 'auto', minHeight: 0, position: 'relative',
+              // Hidden: 1px iframe keeps YouTube player alive for audio playback
+              ...(isYouTubeMode ? {} : { height: '1px', overflow: 'hidden', position: 'absolute', opacity: 0, pointerEvents: 'none' }),
+              '& > div:first-of-type': { width: '100%', height: '100%' }, '& iframe': { width: '100%', height: '100%', border: 'none' }
+            }}>
               <YouTubePlayer
                 videoId={videoId}
                 opts={{ width: '100%', playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0, showinfo: 0, iv_load_policy: 3 } }}
@@ -1076,7 +1072,7 @@ const AudioLearningScreen: React.FC = () => {
           <Box
             sx={{
               flex: isYouTubeMode && videoId ? '0 0 auto' : 1,
-              minHeight: 0,
+              minHeight: isYouTubeMode && videoId ? undefined : 0,
               maxHeight: isYouTubeMode && videoId ? '4.5em' : undefined,
               overflow: 'hidden',
               position: 'relative',

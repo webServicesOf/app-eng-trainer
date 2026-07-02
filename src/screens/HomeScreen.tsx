@@ -44,6 +44,7 @@ import {
   Bookmark,
   BookmarkBorder,
   Link as LinkIcon,
+  DriveFileRenameOutline as RenameIcon,
 } from '@mui/icons-material';
 import { useGoogleLogin } from '@react-oauth/google';
 import { useAppStore } from '../stores/appStore';
@@ -1062,170 +1063,130 @@ export const HomeScreen: React.FC = () => {
               </Typography>
             </Box>
           ) : (
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: {
-                  xs: 'repeat(1, 1fr)',
-                  sm: 'repeat(2, 1fr)',
-                  md: 'repeat(3, 1fr)',
-                },
-                gap: 3,
-              }}
-            >
+            <List dense disablePadding>
               {[...audioArticles].sort((a, b) => {
                 const aDue = isDue(a.nextReviewDate) ? 0 : 1;
                 const bDue = isDue(b.nextReviewDate) ? 0 : 1;
                 if (aDue !== bDue) return aDue - bDue;
-                return new Date(b.lastAccessed).getTime() - new Date(a.lastAccessed).getTime();
+                const aDate = a.nextReviewDate ? new Date(a.nextReviewDate).getTime() : Infinity;
+                const bDate = b.nextReviewDate ? new Date(b.nextReviewDate).getTime() : Infinity;
+                return aDate - bDate;
               }).map((aa) => (
-                <Card
-                  key={aa.id}
-                  sx={{
-                    border: isDue(aa.nextReviewDate) && !pendingDeleteIds.has(aa.id) ? 2 : 0,
-                    borderColor: isDue(aa.nextReviewDate) && !pendingDeleteIds.has(aa.id) ? 'error.main' : 'transparent',
-                    opacity: pendingDeleteIds.has(aa.id) ? 0.4 : 1,
-                    bgcolor: pendingDeleteIds.has(aa.id) ? 'action.disabledBackground' : undefined,
-                  }}
-                >
-                  <CardContent>
-                    {editingTitleId === aa.id ? (
-                      <TextField
-                        fullWidth
-                        size="small"
-                        value={editingTitleValue}
-                        onChange={(e) => setEditingTitleValue(e.target.value)}
-                        onBlur={() => handleRenameAudioArticle(aa.id, editingTitleValue)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleRenameAudioArticle(aa.id, editingTitleValue);
-                          if (e.key === 'Escape') setEditingTitleId(null);
-                        }}
-                        autoFocus
-                        sx={{ mb: 1 }}
-                      />
-                    ) : (
-                      <Typography
-                        variant="h6"
-                        gutterBottom
-                        noWrap
-                        sx={{ cursor: 'pointer', '&:hover': { textDecoration: 'underline' } }}
-                        onClick={() => { setEditingTitleId(aa.id); setEditingTitleValue(aa.title); }}
-                      >
-                        {aa.title}
-                      </Typography>
-                    )}
-                    <Chip label="Audio" size="small" color="info" variant="outlined" sx={{ mr: 1 }} />
-                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                      {(aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount)}개 문장
-                    </Typography>
-                    {aa.source && (
-                      <Typography variant="caption" color="text.secondary" display="block">
-                        {aa.source}
-                      </Typography>
-                    )}
-                    <Typography variant="caption" color="text.secondary">
-                      최근 접근: {new Date(aa.lastAccessed).toLocaleDateString()}
-                    </Typography>
-                    {aa.nextReviewDate && (
-                      <Box sx={{ mt: 0.5 }}>
-                        <Chip
-                          label={isDue(aa.nextReviewDate) ? '복습 필요' : `다음 복습: ${new Date(aa.nextReviewDate).toLocaleDateString()}`}
+                <React.Fragment key={aa.id}>
+                  <ListItem
+                    disablePadding
+                    sx={{
+                      borderLeft: isDue(aa.nextReviewDate) && !pendingDeleteIds.has(aa.id) ? '3px solid' : '3px solid transparent',
+                      borderColor: isDue(aa.nextReviewDate) && !pendingDeleteIds.has(aa.id) ? 'error.main' : 'transparent',
+                      opacity: pendingDeleteIds.has(aa.id) ? 0.4 : 1,
+                      mb: 0.5,
+                    }}
+                  >
+                    <ListItemButton onClick={() => handleLearnAudioArticle(aa.id)} sx={{ py: 0.5, px: 1 }}>
+                      {editingTitleId === aa.id ? (
+                        <TextField
+                          fullWidth
                           size="small"
-                          color={isDue(aa.nextReviewDate) ? 'error' : 'default'}
-                          variant={isDue(aa.nextReviewDate) ? 'filled' : 'outlined'}
+                          value={editingTitleValue}
+                          onChange={(e) => setEditingTitleValue(e.target.value)}
+                          onBlur={() => handleRenameAudioArticle(aa.id, editingTitleValue)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleRenameAudioArticle(aa.id, editingTitleValue);
+                            if (e.key === 'Escape') setEditingTitleId(null);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          autoFocus
                         />
-                      </Box>
-                    )}
-                  </CardContent>
-                  <CardActions sx={{ gap: 0, px: 0.5, flexWrap: 'nowrap' }}>
-                    <IconButton
-                      sx={{ p: 0.5 }}
-                      color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
-                      onClick={() => handleToggleSaveDeck(aa.id, aa.title, (aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount))}
-                      title={savedDeckIds.has(aa.id) ? '저장 해제' : '덱 저장'}
-                    >
-                      {savedDeckIds.has(aa.id) ? <Bookmark sx={{ fontSize: 18 }} /> : <BookmarkBorder sx={{ fontSize: 18 }} />}
-                    </IconButton>
-                    <Button size="small" color="primary" sx={{ minWidth: 0, px: 0.5, fontSize: '0.75rem' }} onClick={() => handleLearnAudioArticle(aa.id)}>
-                      학습
-                    </Button>
-                    <Button size="small" variant="outlined" sx={{ minWidth: 0, px: 0.5, fontSize: '0.75rem' }} onClick={() => cycleReviewInterval('audio', aa.id)}>
-                      {aa.reviewInterval || 0}일
-                    </Button>
-                    <IconButton sx={{ p: 0.5 }} color="success" onClick={() => markReviewDone('audio', aa.id)} title="복습 완료">
-                      <DoneAllIcon sx={{ fontSize: 18 }} />
-                    </IconButton>
-                    <Button size="small" color="secondary" sx={{ minWidth: 0, px: 0.5, fontSize: '0.75rem' }} onClick={() => navigate(`/edit-timestamps/${aa.id}`)}>
-                      편집
-                    </Button>
-                    <IconButton
-                      sx={{ p: 0.5 }}
-                      color={aa.source ? 'info' : 'default'}
-                      onClick={() => { setEditSourceId(aa.id); setEditSourceValue(aa.source || ''); }}
-                      title={aa.source ? `출처: ${aa.source}` : '출처 URL 추가'}
-                    >
-                      <LinkIcon sx={{ fontSize: 18 }} />
-                    </IconButton>
-                    <IconButton
-                      sx={{ p: 0.5 }}
-                      color="error"
-                      onClick={() => handleDeleteAudioArticle(aa.id)}
-                      title="삭제"
-                    >
-                      <DeleteIcon sx={{ fontSize: 18 }} />
-                    </IconButton>
-                  </CardActions>
-                  {/* SubDecks for this audio article */}
-                  {subDecks.filter(sd => sd.parentId === aa.id).length > 0 && (
-                    <Box sx={{ px: 2, pb: 1 }}>
-                      <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
-                        Sub-Decks:
-                      </Typography>
-                      {subDecks
-                        .filter(sd => sd.parentId === aa.id)
-                        .sort((a, b) => a.startIndex - b.startIndex)
-                        .map(sd => (
-                          <Box key={sd.id} sx={{
-                            display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5,
-                            border: isDue(sd.nextReviewDate) ? '1px solid' : '1px solid transparent',
-                            borderColor: isDue(sd.nextReviewDate) ? 'error.main' : 'divider',
-                            borderRadius: 1, px: 1, py: 0.3,
-                          }}>
-                            <Box sx={{ flex: 1 }}>
-                              <Typography variant="caption" display="block">
-                                {sd.title} ({sd.startIndex + 1}–{sd.endIndex})
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                                {sd.lastAccessed ? `최근: ${new Date(sd.lastAccessed).toLocaleDateString()}` : ''}
-                                {sd.nextReviewDate ? ` · 복습: ${new Date(sd.nextReviewDate).toLocaleDateString()}` : ''}
-                              </Typography>
-                            </Box>
-                            <IconButton
-                              size="small"
-                              color={savedDeckIds.has(sd.id) ? 'primary' : 'default'}
-                              onClick={() => handleToggleSaveDeck(sd.id, sd.title, sd.endIndex - sd.startIndex, sd.parentId)}
-                            >
-                              {savedDeckIds.has(sd.id) ? <Bookmark sx={{ fontSize: 14 }} /> : <BookmarkBorder sx={{ fontSize: 14 }} />}
-                            </IconButton>
-                            <Button size="small" onClick={() => navigate(`/learn-audio/${aa.id}?start=${sd.startIndex}&end=${sd.endIndex}`)}>
-                              학습
-                            </Button>
-                            <Button size="small" variant="outlined" onClick={() => cycleReviewInterval('subdeck', sd.id)}>
-                              {sd.reviewInterval || 0}일
-                            </Button>
-                            <IconButton size="small" color="success" onClick={() => markReviewDone('subdeck', sd.id)} title="복습 완료">
-                              <DoneAllIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                            <IconButton size="small" color="error" onClick={() => deleteSubDeck(sd.id)}>
-                              <DeleteIcon sx={{ fontSize: 14 }} />
-                            </IconButton>
-                          </Box>
-                        ))}
+                      ) : (
+                        <ListItemText
+                          primary={`${aa.title} (${aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount})`}
+                          primaryTypographyProps={{ noWrap: true, variant: 'body2' }}
+                          secondary={aa.nextReviewDate ? (isDue(aa.nextReviewDate) ? '복습 필요' : new Date(aa.nextReviewDate).toLocaleDateString()) : undefined}
+                          secondaryTypographyProps={{ variant: 'caption', color: isDue(aa.nextReviewDate) ? 'error' : 'text.secondary' }}
+                        />
+                      )}
+                    </ListItemButton>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, pr: 0.5 }}>
+                      <IconButton
+                        size="small" sx={{ p: 0.3 }}
+                        color={savedDeckIds.has(aa.id) ? 'primary' : 'default'}
+                        onClick={() => handleToggleSaveDeck(aa.id, aa.title, (aa.kind === 'loaded' ? aa.sentences.length : aa.sentenceCount))}
+                        title={savedDeckIds.has(aa.id) ? '저장 해제' : '덱 저장'}
+                      >
+                        {savedDeckIds.has(aa.id) ? <Bookmark sx={{ fontSize: 16 }} /> : <BookmarkBorder sx={{ fontSize: 16 }} />}
+                      </IconButton>
+                      <IconButton size="small" sx={{ p: 0.3 }} onClick={(e) => { e.stopPropagation(); cycleReviewInterval('audio', aa.id); }} title={`${aa.reviewInterval || 0}일`}>
+                        <Typography variant="caption" sx={{ fontSize: '0.65rem', minWidth: 16, textAlign: 'center' }}>{aa.reviewInterval || 0}d</Typography>
+                      </IconButton>
+                      <IconButton size="small" sx={{ p: 0.3 }} color="success" onClick={() => markReviewDone('audio', aa.id)} title="복습 완료">
+                        <DoneAllIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton size="small" sx={{ p: 0.3 }} color="secondary" onClick={() => navigate(`/edit-timestamps/${aa.id}`)} title="편집">
+                        <EditIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton
+                        size="small" sx={{ p: 0.3 }}
+                        onClick={(e) => { e.stopPropagation(); setEditingTitleId(aa.id); setEditingTitleValue(aa.title); }}
+                        title="이름 변경"
+                      >
+                        <RenameIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton
+                        size="small" sx={{ p: 0.3 }}
+                        color={aa.source ? 'info' : 'default'}
+                        onClick={() => { setEditSourceId(aa.id); setEditSourceValue(aa.source || ''); }}
+                        title={aa.source ? `출처: ${aa.source}` : '출처 URL 추가'}
+                      >
+                        <LinkIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton size="small" sx={{ p: 0.3 }} color="error" onClick={() => handleDeleteAudioArticle(aa.id)} title="삭제">
+                        <DeleteIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
                     </Box>
-                  )}
-                </Card>
+                  </ListItem>
+                  {/* SubDecks */}
+                  {subDecks.filter(sd => sd.parentId === aa.id).sort((a, b) => a.startIndex - b.startIndex).map(sd => (
+                    <ListItem
+                      key={sd.id}
+                      disablePadding
+                      sx={{
+                        pl: 3,
+                        borderLeft: isDue(sd.nextReviewDate) ? '2px solid' : '2px solid transparent',
+                        borderColor: isDue(sd.nextReviewDate) ? 'error.main' : 'transparent',
+                        mb: 0.25,
+                      }}
+                    >
+                      <ListItemButton onClick={() => navigate(`/learn-audio/${aa.id}?start=${sd.startIndex}&end=${sd.endIndex}`)} sx={{ py: 0.3, px: 1 }}>
+                        <ListItemText
+                          primary={`${sd.title} (${sd.startIndex + 1}–${sd.endIndex})`}
+                          primaryTypographyProps={{ variant: 'caption' }}
+                          secondary={sd.nextReviewDate ? (isDue(sd.nextReviewDate) ? '복습 필요' : new Date(sd.nextReviewDate).toLocaleDateString()) : undefined}
+                          secondaryTypographyProps={{ variant: 'caption', sx: { fontSize: '0.6rem' }, color: isDue(sd.nextReviewDate) ? 'error' : 'text.secondary' }}
+                        />
+                      </ListItemButton>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, pr: 0.5 }}>
+                        <IconButton
+                          size="small" sx={{ p: 0.3 }}
+                          color={savedDeckIds.has(sd.id) ? 'primary' : 'default'}
+                          onClick={() => handleToggleSaveDeck(sd.id, sd.title, sd.endIndex - sd.startIndex, sd.parentId)}
+                        >
+                          {savedDeckIds.has(sd.id) ? <Bookmark sx={{ fontSize: 14 }} /> : <BookmarkBorder sx={{ fontSize: 14 }} />}
+                        </IconButton>
+                        <IconButton size="small" sx={{ p: 0.3 }} onClick={() => cycleReviewInterval('subdeck', sd.id)} title={`${sd.reviewInterval || 0}일`}>
+                          <Typography variant="caption" sx={{ fontSize: '0.6rem', minWidth: 14, textAlign: 'center' }}>{sd.reviewInterval || 0}d</Typography>
+                        </IconButton>
+                        <IconButton size="small" sx={{ p: 0.3 }} color="success" onClick={() => markReviewDone('subdeck', sd.id)} title="복습 완료">
+                          <DoneAllIcon sx={{ fontSize: 14 }} />
+                        </IconButton>
+                        <IconButton size="small" sx={{ p: 0.3 }} color="error" onClick={() => deleteSubDeck(sd.id)} title="삭제">
+                          <DeleteIcon sx={{ fontSize: 14 }} />
+                        </IconButton>
+                      </Box>
+                    </ListItem>
+                  ))}
+                </React.Fragment>
               ))}
-            </Box>
+            </List>
           )}
         </>
       )}
