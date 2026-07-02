@@ -939,30 +939,19 @@ const AudioLearningScreen: React.FC = () => {
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
         <Box sx={{ p: 2, width: 260 }}>
-          <Typography variant="subtitle2" gutterBottom>재생 속도</Typography>
-          <Typography variant="body2" color="primary" sx={{ mb: 0.5 }}>
-            {playbackRate.toFixed(1)}x
-          </Typography>
+          <Typography variant="caption" color="text.secondary">재생속도: {playbackRate.toFixed(1)}x</Typography>
           <Slider
             value={playbackRate}
             onChange={(_, newValue) => handleRateChange(newValue as number)}
             min={0.5}
             max={3.0}
             step={0.1}
-            marks={[
-              { value: 0.5, label: '0.5x' },
-              { value: 1.0, label: '1.0x' },
-              { value: 2.0, label: '2.0x' },
-              { value: 3.0, label: '3.0x' },
-            ]}
             valueLabelDisplay="auto"
             valueLabelFormat={(value) => `${value.toFixed(1)}x`}
-            sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
+            size="small"
           />
 
-          <Typography variant="subtitle2" sx={{ mt: 2 }} gutterBottom>
-            윈도우 크기: {windowSize === 'full' ? '전체' : windowSize}
-          </Typography>
+          <Typography variant="caption" color="text.secondary">윈도우 크기: {windowSize === 'full' ? '전체' : windowSize}</Typography>
           <Slider
             value={windowSize === 'full' ? article.sentences.length : (windowSize as number)}
             onChange={(_, v) => {
@@ -974,7 +963,7 @@ const AudioLearningScreen: React.FC = () => {
             step={1}
             valueLabelDisplay="auto"
             valueLabelFormat={(v) => v >= article.sentences.length ? '전체' : `${v}`}
-            sx={{ '& .MuiSlider-markLabel': { fontSize: '0.65rem' } }}
+            size="small"
           />
 
           <FormControlLabel
@@ -986,8 +975,8 @@ const AudioLearningScreen: React.FC = () => {
                 color="success"
               />
             }
-            label={windowStepMode ? '블록 이동' : '문장 이동'}
-            sx={{ mt: 1 }}
+            label={<Typography variant="caption" color="text.secondary">{windowStepMode ? '블록 이동' : '문장 이동'}</Typography>}
+            sx={{ mt: 0 }}
           />
         </Box>
       </Popover>
