@@ -46,6 +46,16 @@ const TimestampEditorScreen: React.FC = () => {
   const { createSubDeck, loadSubDecks, loadAudioArticles, accessToken, audioArticles } = useAppStore();
 
   const waveformRef = useRef<HTMLDivElement>(null);
+  const shiftKeyRef = useRef(false);
+
+  // Track shift key state globally for region drag
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { shiftKeyRef.current = e.shiftKey; };
+    const up = (e: KeyboardEvent) => { shiftKeyRef.current = e.shiftKey; };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  }, []);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const regionsRef = useRef<RegionsPlugin | null>(null);
 
@@ -404,11 +414,36 @@ const TimestampEditorScreen: React.FC = () => {
                   updated[currentIdx - 1] = { ...prevS, end: newStart };
                 }
               }
-              // Trim next sentence's start if current end overlaps it
+              // End overlap: Shift = push, default = trim
               if (currentIdx < updated.length - 1) {
-                const nextS = updated[currentIdx + 1];
-                if ((nextS.start ?? 0) < newEnd) {
-                  updated[currentIdx + 1] = { ...nextS, start: newEnd };
+                if (shiftKeyRef.current) {
+                  let pushBoundary = newEnd;
+                  for (let pi = currentIdx + 1; pi < updated.length; pi++) {
+                    const ss = updated[pi];
+                    const ssStart = ss.start ?? 0;
+                    if (ssStart < pushBoundary) {
+                      const shift = pushBoundary - ssStart;
+                      const shifted = {
+                        ...ss,
+                        start: Math.round((ssStart + shift) * 1000) / 1000,
+                        end: Math.round(((ss.end ?? 0) + shift) * 1000) / 1000,
+                      };
+                      if (shifted.words) {
+                        shifted.words = shifted.words.map(w => ({
+                          ...w,
+                          start: Math.round((w.start + shift) * 1000) / 1000,
+                          end: Math.round((w.end + shift) * 1000) / 1000,
+                        }));
+                      }
+                      updated[pi] = shifted;
+                      pushBoundary = updated[pi].end!;
+                    } else break;
+                  }
+                } else {
+                  const nextS = updated[currentIdx + 1];
+                  if ((nextS.start ?? 0) < newEnd) {
+                    updated[currentIdx + 1] = { ...nextS, start: newEnd };
+                  }
                 }
               }
               return updated;
@@ -530,7 +565,7 @@ const TimestampEditorScreen: React.FC = () => {
     syncPlay(startAt, s.end);
   }, [sentences, selectedIndex, syncPlay]);
 
-  const adjustTime = useCallback((field: 'start' | 'end', delta: number) => {
+  const adjustTime = useCallback((field: 'start' | 'end', delta: number, pushMode?: boolean) => {
     pushUndo();
     setSentences(prev => {
       const updated = [...prev];
@@ -547,12 +582,38 @@ const TimestampEditorScreen: React.FC = () => {
         }
       }
 
-      // Trim next sentence's start if current end overlaps it (symmetric with start trim)
       if (field === 'end' && selectedIndex < updated.length - 1) {
         const newEnd = updated[selectedIndex].end!;
-        const nextS = updated[selectedIndex + 1];
-        if ((nextS.start ?? 0) < newEnd) {
-          updated[selectedIndex + 1] = { ...nextS, start: newEnd };
+        if (pushMode) {
+          // Shift+click: push subsequent sentences
+          let pushBoundary = newEnd;
+          for (let i = selectedIndex + 1; i < updated.length; i++) {
+            const ss = updated[i];
+            const ssStart = ss.start ?? 0;
+            if (ssStart < pushBoundary) {
+              const shift = pushBoundary - ssStart;
+              const shifted = {
+                ...ss,
+                start: Math.round((ssStart + shift) * 1000) / 1000,
+                end: Math.round(((ss.end ?? 0) + shift) * 1000) / 1000,
+              };
+              if (shifted.words) {
+                shifted.words = shifted.words.map(w => ({
+                  ...w,
+                  start: Math.round((w.start + shift) * 1000) / 1000,
+                  end: Math.round((w.end + shift) * 1000) / 1000,
+                }));
+              }
+              updated[i] = shifted;
+              pushBoundary = updated[i].end!;
+            } else break;
+          }
+        } else {
+          // Default: trim next sentence's start
+          const nextS = updated[selectedIndex + 1];
+          if ((nextS.start ?? 0) < newEnd) {
+            updated[selectedIndex + 1] = { ...nextS, start: newEnd };
+          }
         }
       }
 
@@ -1536,10 +1597,10 @@ const TimestampEditorScreen: React.FC = () => {
 
               <Typography variant="subtitle2" gutterBottom>End: {(selected?.end ?? 0).toFixed(2)}s</Typography>
               <Stack direction="row" spacing={1} sx={{ mb: 2 }} justifyContent="center">
-                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('end', -0.5)}>0.5</Button>
-                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={() => adjustTime('end', -0.1)}>0.1</Button>
-                <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.1)}>0.1</Button>
-                <Button size="small" variant="outlined" startIcon={<Add />} onClick={() => adjustTime('end', 0.5)}>0.5</Button>
+                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={(e) => adjustTime('end', -0.5, e.shiftKey)}>0.5</Button>
+                <Button size="small" variant="outlined" startIcon={<Remove />} onClick={(e) => adjustTime('end', -0.1, e.shiftKey)}>0.1</Button>
+                <Button size="small" variant="outlined" startIcon={<Add />} onClick={(e) => adjustTime('end', 0.1, e.shiftKey)}>0.1</Button>
+                <Button size="small" variant="outlined" startIcon={<Add />} onClick={(e) => adjustTime('end', 0.5, e.shiftKey)}>0.5</Button>
               </Stack>
 
             </>
