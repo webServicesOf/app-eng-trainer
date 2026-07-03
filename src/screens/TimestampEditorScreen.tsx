@@ -685,7 +685,7 @@ const TimestampEditorScreen: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
-  }, [article, sentences, accessToken, loadAudioArticles]);
+  }, [article, sentences, accessToken, loadAudioArticles, id]);
   handleSaveRef.current = handleSave;
 
   const toggleSplitMarker = useCallback((idx: number) => {
