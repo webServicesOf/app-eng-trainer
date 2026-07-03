@@ -93,6 +93,7 @@ export const HomeScreen: React.FC = () => {
   const [managementMode, setManagementMode] = useState(false);
   const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set());
   const [currentTab, setCurrentTab] = useState(0);
+  const [sortBy, setSortBy] = useState<'review' | 'name'>('review');
   const [savedSentences, setSavedSentences] = useState<SavedSentence[]>([]);
   // Derive saved deck IDs from Drive SSOT (audioArticles + subDeckReviews)
   const savedDeckIds = React.useMemo(() => {
@@ -867,11 +868,23 @@ export const HomeScreen: React.FC = () => {
         </Box>
       </Box>
 
-      <Tabs value={currentTab} onChange={handleTabChange} sx={{ mb: 3 }}>
-        <Tab label="Audio" />
-        <Tab label="Text" />
-        <Tab label="Saved" />
-      </Tabs>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+        <Tabs value={currentTab} onChange={handleTabChange} sx={{ flex: 1 }}>
+          <Tab label="Audio" />
+          <Tab label="Text" />
+          <Tab label="Saved" />
+        </Tabs>
+        {(currentTab === 0 || currentTab === 1) && (
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => setSortBy(prev => prev === 'review' ? 'name' : 'review')}
+            sx={{ fontSize: '0.7rem', minWidth: 0, px: 1, flexShrink: 0 }}
+          >
+            {sortBy === 'review' ? '복습순' : '이름순'}
+          </Button>
+        )}
+      </Box>
 
       {currentTab === 1 && (
         <>
@@ -975,108 +988,54 @@ export const HomeScreen: React.FC = () => {
               </Typography>
             </Box>
           ) : (
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: {
-                  xs: 'repeat(1, 1fr)',
-                  sm: 'repeat(2, 1fr)',
-                  md: 'repeat(3, 1fr)',
-                },
-                gap: 3,
-              }}
-            >
-              {filteredArticles.map((article) => (
-            <Card
-              key={article.id}
-              sx={{
-                border: managementMode && selectedArticles.has(article.id) ? 2 : isDue(article.nextReviewDate) ? 2 : 0,
-                borderColor: managementMode && selectedArticles.has(article.id) ? 'primary.main' : isDue(article.nextReviewDate) ? 'error.main' : 'transparent',
-                position: 'relative',
-              }}
-            >
-              {managementMode && (
-                <IconButton
+            <List dense disablePadding>
+              {[...filteredArticles].sort((a, b) => {
+                if (sortBy === 'name') return a.title.localeCompare(b.title);
+                const aDue = isDue(a.nextReviewDate) ? 0 : 1;
+                const bDue = isDue(b.nextReviewDate) ? 0 : 1;
+                if (aDue !== bDue) return aDue - bDue;
+                const aDate = a.nextReviewDate ? new Date(a.nextReviewDate).getTime() : Infinity;
+                const bDate = b.nextReviewDate ? new Date(b.nextReviewDate).getTime() : Infinity;
+                return aDate - bDate;
+              }).map((article) => (
+                <ListItem
+                  key={article.id}
+                  disablePadding
                   sx={{
-                    position: 'absolute',
-                    top: 8,
-                    right: 8,
-                    zIndex: 1,
+                    borderLeft: isDue(article.nextReviewDate) ? '3px solid' : '3px solid transparent',
+                    borderColor: isDue(article.nextReviewDate) ? 'error.main' : 'transparent',
+                    mb: 0.5,
                   }}
-                  onClick={() => toggleArticleSelection(article.id)}
                 >
-                  {selectedArticles.has(article.id) ? (
-                    <CheckBox color="primary" />
-                  ) : (
-                    <CheckBoxOutlineBlank />
+                  {managementMode && (
+                    <IconButton size="small" sx={{ p: 0.3, mr: 0.5 }} onClick={() => toggleArticleSelection(article.id)}>
+                      {selectedArticles.has(article.id) ? <CheckBox color="primary" sx={{ fontSize: 16 }} /> : <CheckBoxOutlineBlank sx={{ fontSize: 16 }} />}
+                    </IconButton>
                   )}
-                </IconButton>
-              )}
-              <CardContent>
-                <Typography variant="h6" gutterBottom noWrap>
-                  {article.title}
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
-                  {article.difficulty && (
-                    <Chip label={article.difficulty} size="small" color="primary" variant="outlined" />
-                  )}
-                  {article.length && (
-                    <Chip label={article.length} size="small" color="secondary" variant="outlined" />
-                  )}
-                </Box>
-                <Typography variant="body2" color="text.secondary" noWrap>
-                  {article.sentences.length}개 문장
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  최근 접근: {new Date(article.lastAccessed).toLocaleDateString()}
-                </Typography>
-                {article.nextReviewDate && (
-                  <Box sx={{ mt: 0.5 }}>
-                    <Chip
-                      label={isDue(article.nextReviewDate) ? '복습 필요' : `다음 복습: ${new Date(article.nextReviewDate).toLocaleDateString()}`}
-                      size="small"
-                      color={isDue(article.nextReviewDate) ? 'error' : 'default'}
-                      variant={isDue(article.nextReviewDate) ? 'filled' : 'outlined'}
+                  <ListItemButton onClick={() => handleLearnArticle(article.id)} sx={{ py: 0.5, px: 1 }}>
+                    <ListItemText
+                      primary={`${article.title} (${article.sentences.length})`}
+                      primaryTypographyProps={{ noWrap: true, variant: 'body2' }}
+                      secondary={article.nextReviewDate ? (isDue(article.nextReviewDate) ? '복습 필요' : new Date(article.nextReviewDate).toLocaleDateString()) : undefined}
+                      secondaryTypographyProps={{ variant: 'caption', color: isDue(article.nextReviewDate) ? 'error' : 'text.secondary' }}
                     />
-                  </Box>
-                )}
-              </CardContent>
-              {!managementMode && (
-                <CardActions sx={{ flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
-                  <Button
-                    size="small"
-                    color="primary"
-                    onClick={() => handleLearnArticle(article.id)}
-                  >
-                    학습
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    onClick={() => cycleReviewInterval('article', article.id)}
-                  >
-                    {article.reviewInterval || 0}일
-                  </Button>
-                  <IconButton
-                    size="small"
-                    color="success"
-                    onClick={() => markReviewDone('article', article.id)}
-                    title="복습 완료"
-                  >
-                    <DoneAllIcon fontSize="small" />
-                  </IconButton>
-                  <IconButton
-                    size="small"
-                    color="error"
-                    onClick={() => handleDeleteArticle(article.id)}
-                  >
-                    <DeleteIcon fontSize="small" />
-                  </IconButton>
-                </CardActions>
-              )}
-            </Card>
+                  </ListItemButton>
+                  {!managementMode && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0, flexShrink: 0, pr: 0.5 }}>
+                      <IconButton size="small" sx={{ p: 0.3 }} onClick={() => cycleReviewInterval('article', article.id)} title={`${article.reviewInterval || 0}일`}>
+                        <Typography variant="caption" sx={{ fontSize: '0.65rem', minWidth: 16, textAlign: 'center' }}>{article.reviewInterval || 0}d</Typography>
+                      </IconButton>
+                      <IconButton size="small" sx={{ p: 0.3 }} color="success" onClick={() => markReviewDone('article', article.id)} title="복습 완료">
+                        <DoneAllIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton size="small" sx={{ p: 0.3 }} color="error" onClick={() => handleDeleteArticle(article.id)} title="삭제">
+                        <DeleteIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                    </Box>
+                  )}
+                </ListItem>
               ))}
-            </Box>
+            </List>
           )}
         </>
       )}
@@ -1095,6 +1054,7 @@ export const HomeScreen: React.FC = () => {
           ) : (
             <List dense disablePadding>
               {[...audioArticles].sort((a, b) => {
+                if (sortBy === 'name') return a.title.localeCompare(b.title);
                 const aDue = isDue(a.nextReviewDate) ? 0 : 1;
                 const bDue = isDue(b.nextReviewDate) ? 0 : 1;
                 if (aDue !== bDue) return aDue - bDue;
