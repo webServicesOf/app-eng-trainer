@@ -247,11 +247,35 @@ const TimestampEditorScreen: React.FC = () => {
       });
       if (bgR.element) {
         bgR.element.style.borderRight = '1px dotted rgba(0,0,0,0.25)';
+        bgR.element.style.cursor = 'pointer';
+        const idx = i;
+        bgR.element.addEventListener('click', () => {
+          handleSelectSentence(idx);
+        });
       }
     });
 
     // Word edit mode: show sentence background + individual word regions
     if (wordEditMode && sel?.words && sel.start != null && sel.end != null) {
+      // Show prev/next sentence regions (colored, not just grey)
+      [selectedIndex - 1, selectedIndex + 1].forEach(ni => {
+        if (ni < 0 || ni >= sentences.length) return;
+        const ns = sentences[ni];
+        if (ns.start == null || ns.end == null) return;
+        const isPrev = ni === selectedIndex - 1;
+        const neighborRegion = regions.addRegion({
+          id: `sn-${ns.index}`,
+          start: ns.start,
+          end: ns.end,
+          color: isPrev ? 'rgba(255, 152, 0, 0.15)' : 'rgba(244, 67, 54, 0.15)',
+          drag: false,
+          resize: false,
+        });
+        if (neighborRegion.element) {
+          neighborRegion.element.style.borderRight = isPrev ? '2px solid rgba(255,152,0,0.4)' : '2px solid rgba(244,67,54,0.4)';
+        }
+      });
+
       // Sentence background
       const bgRegion = regions.addRegion({
         id: `s-bg-${sel.index}`,
@@ -359,6 +383,12 @@ const TimestampEditorScreen: React.FC = () => {
           region.element.classList.add(
             isCurrent ? 'region-current' : isPrev ? 'region-prev' : 'region-next'
           );
+          if (!isCurrent) {
+            region.element.style.cursor = 'pointer';
+            region.element.addEventListener('click', () => {
+              handleSelectSentence(i);
+            });
+          }
         }
         if (isCurrent) {
           region.on('update-end', () => {
@@ -374,21 +404,11 @@ const TimestampEditorScreen: React.FC = () => {
                   updated[currentIdx - 1] = { ...prevS, end: newStart };
                 }
               }
-              let pushBoundary = newEnd;
-              for (let i = currentIdx + 1; i < updated.length; i++) {
-                const ss = updated[i];
-                const ssStart = ss.start ?? 0;
-                const ssEnd = ss.end ?? 0;
-                if (ssStart < pushBoundary) {
-                  const shift = pushBoundary - ssStart;
-                  updated[i] = {
-                    ...ss,
-                    start: Math.round((ssStart + shift) * 1000) / 1000,
-                    end: Math.round((ssEnd + shift) * 1000) / 1000,
-                  };
-                  pushBoundary = updated[i].end!;
-                } else {
-                  break;
+              // Trim next sentence's start if current end overlaps it
+              if (currentIdx < updated.length - 1) {
+                const nextS = updated[currentIdx + 1];
+                if ((nextS.start ?? 0) < newEnd) {
+                  updated[currentIdx + 1] = { ...nextS, start: newEnd };
                 }
               }
               return updated;
@@ -527,24 +547,12 @@ const TimestampEditorScreen: React.FC = () => {
         }
       }
 
-      // Push out subsequent sentences only if they overlap with new end
-      if (field === 'end') {
-        let pushBoundary = updated[selectedIndex].end!;
-        for (let i = selectedIndex + 1; i < updated.length; i++) {
-          const ss = updated[i];
-          const ssStart = ss.start ?? 0;
-          const ssEnd = ss.end ?? 0;
-          if (ssStart < pushBoundary) {
-            const shift = pushBoundary - ssStart;
-            updated[i] = {
-              ...ss,
-              start: Math.round((ssStart + shift) * 1000) / 1000,
-              end: Math.round((ssEnd + shift) * 1000) / 1000,
-            };
-            pushBoundary = updated[i].end!;
-          } else {
-            break;
-          }
+      // Trim next sentence's start if current end overlaps it (symmetric with start trim)
+      if (field === 'end' && selectedIndex < updated.length - 1) {
+        const newEnd = updated[selectedIndex].end!;
+        const nextS = updated[selectedIndex + 1];
+        if ((nextS.start ?? 0) < newEnd) {
+          updated[selectedIndex + 1] = { ...nextS, start: newEnd };
         }
       }
 
@@ -950,11 +958,20 @@ const TimestampEditorScreen: React.FC = () => {
       const updated = [...prev];
       const gap = updated[selectedIndex + 1].start! - updated[selectedIndex].end!;
       for (let j = selectedIndex + 1; j < updated.length; j++) {
-        updated[j] = {
+        const shifted = {
           ...updated[j],
           start: Math.round(((updated[j].start ?? 0) - gap) * 1000) / 1000,
           end: Math.round(((updated[j].end ?? 0) - gap) * 1000) / 1000,
         };
+        // Shift words by same offset
+        if (shifted.words) {
+          shifted.words = shifted.words.map(w => ({
+            ...w,
+            start: Math.round((w.start - gap) * 1000) / 1000,
+            end: Math.round((w.end - gap) * 1000) / 1000,
+          }));
+        }
+        updated[j] = shifted;
       }
       return updated;
     });
@@ -1056,6 +1073,12 @@ const TimestampEditorScreen: React.FC = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        // Esc: exit text editing
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          (e.target as HTMLElement).blur();
+          return;
+        }
         // Only allow ⌘Z in text fields
         if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
           e.preventDefault();
@@ -1123,6 +1146,9 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyD' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         setSplitMode(prev => !prev);
+      } else if (code === 'KeyW' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        enterWordEditMode();
       } else if (code === 'KeyM') {
         e.preventDefault();
         handleMergeSentences();
@@ -1158,7 +1184,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, handleInsertAbove, handleInsertBelow, sentences]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, enterWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, handleInsertAbove, handleInsertBelow, sentences]);
 
   if (!article) {
     return (
@@ -1536,11 +1562,13 @@ const TimestampEditorScreen: React.FC = () => {
                 <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
                 <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
                 <Typography variant="caption" display="block">→: 문장 숨기기 / ←: 숨김 해제</Typography>
+                <Typography variant="caption" display="block">W: 단어 편집 모드</Typography>
                 <Typography variant="caption" display="block">D: 문장 분할</Typography>
                 <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
                 <Typography variant="caption" display="block">P: 이후 문장 당기기</Typography>
                 <Typography variant="caption" display="block">A: 위에 빈 문장 추가</Typography>
                 <Typography variant="caption" display="block">B: 아래에 빈 문장 추가</Typography>
+                <Typography variant="caption" display="block">Esc: 텍스트 편집 나가기</Typography>
                 <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
                 <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
                 <Typography variant="caption" display="block">⌘S: 저장</Typography>

@@ -93,6 +93,7 @@ const AudioLearningScreen: React.FC = () => {
   const [settingsAnchorEl, setSettingsAnchorEl] = useState<HTMLElement | null>(null);
 
   const sentenceRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const activeWordRef = useRef<HTMLSpanElement | null>(null);
 
   const loadedArticleIdRef = React.useRef<string | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,6 +102,13 @@ const AudioLearningScreen: React.FC = () => {
   const ytEndTimeRef = React.useRef<number>(0);
   const displaySentencesRef = React.useRef(displaySentences);
   React.useEffect(() => { displaySentencesRef.current = displaySentences; }, [displaySentences]);
+
+  // Scroll active word into view when it changes
+  React.useEffect(() => {
+    if (activeWordRef.current) {
+      activeWordRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [activeSentenceLocalIdx, activeWordIdx]);
 
   const loadArticle = React.useCallback(async (articleId: string, range?: { start: number; end: number }, indices?: number[]) => {
     // Guard: only load once per article ID
@@ -1111,6 +1119,7 @@ const AudioLearningScreen: React.FC = () => {
                         return (
                           <span
                             key={wIdx}
+                            ref={isActiveWord ? (el: HTMLSpanElement | null) => { activeWordRef.current = el; } : undefined}
                             onClick={(e) => handleWordTap(sentIdx, wIdx, e)}
                             style={{
                               color,
