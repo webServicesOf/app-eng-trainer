@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -133,9 +133,23 @@ export const HomeScreen: React.FC = () => {
   const [editSourceId, setEditSourceId] = useState<string | null>(null);
   const [editSourceValue, setEditSourceValue] = useState('');
 
+  const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleTokenRefresh = useCallback((expiresIn: number) => {
+    if (tokenRefreshTimerRef.current) clearTimeout(tokenRefreshTimerRef.current);
+    // Refresh 5 minutes before expiry
+    const refreshMs = Math.max((expiresIn - 300) * 1000, 60000);
+    tokenRefreshTimerRef.current = setTimeout(() => {
+      console.log('[auth] auto-refreshing token...');
+      login();
+    }, refreshMs);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const login = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
-      setAccessToken(tokenResponse.access_token);
+      setAccessToken(tokenResponse.access_token, tokenResponse.expires_in);
+      scheduleTokenRefresh(tokenResponse.expires_in);
       // Reload Drive-backed data after login
       await loadAudioArticles();
       await loadSubDecks();
@@ -145,6 +159,22 @@ export const HomeScreen: React.FC = () => {
     },
     scope: 'https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.file',
   });
+
+  // On mount: schedule refresh for existing token
+  useEffect(() => {
+    const expiry = localDB.getTokenExpiryMs();
+    if (expiry && isAuthenticated) {
+      const remainingSec = Math.floor((expiry - Date.now()) / 1000);
+      if (remainingSec > 0) {
+        scheduleTokenRefresh(remainingSec);
+      } else {
+        // Token expired, trigger re-login
+        login();
+      }
+    }
+    return () => { if (tokenRefreshTimerRef.current) clearTimeout(tokenRefreshTimerRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
 
   useEffect(() => {
     loadGoogleSheetsConfig();

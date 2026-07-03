@@ -68,7 +68,7 @@ interface AppStore extends AppState {
   updateArticleSource: (articleId: string, source: string) => void;
 
   // OAuth actions
-  setAccessToken: (token: string | null) => void;
+  setAccessToken: (token: string | null, expiresIn?: number) => void;
   loadAccessToken: () => void;
   logout: () => void;
 
@@ -797,9 +797,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   // OAuth actions
-  setAccessToken: (token: string | null) => {
+  setAccessToken: (token: string | null, expiresIn?: number) => {
     if (token) {
-      localDB.saveAccessToken(token);
+      localDB.saveAccessToken(token, expiresIn);
       set({ accessToken: token, isAuthenticated: true });
     } else {
       localDB.clearAccessToken();

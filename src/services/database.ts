@@ -103,16 +103,31 @@ export class LocalDatabaseService {
   }
 
   // OAuth 토큰 관리
-  saveAccessToken(token: string): void {
+  saveAccessToken(token: string, expiresIn?: number): void {
     localStorage.setItem('google_oauth_token', token);
+    if (expiresIn) {
+      const expiryTime = Date.now() + expiresIn * 1000;
+      localStorage.setItem('google_oauth_token_expiry', String(expiryTime));
+    }
   }
 
   getAccessToken(): string | null {
+    const expiry = localStorage.getItem('google_oauth_token_expiry');
+    if (expiry && Date.now() > Number(expiry)) {
+      this.clearAccessToken();
+      return null;
+    }
     return localStorage.getItem('google_oauth_token');
+  }
+
+  getTokenExpiryMs(): number | null {
+    const expiry = localStorage.getItem('google_oauth_token_expiry');
+    return expiry ? Number(expiry) : null;
   }
 
   clearAccessToken(): void {
     localStorage.removeItem('google_oauth_token');
+    localStorage.removeItem('google_oauth_token_expiry');
   }
 
   // 데이터베이스 초기화
