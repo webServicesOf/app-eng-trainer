@@ -47,11 +47,13 @@ const TimestampEditorScreen: React.FC = () => {
 
   const waveformRef = useRef<HTMLDivElement>(null);
   const shiftKeyRef = useRef(false);
+  const metaKeyRef = useRef(false);
+  const dragCreatingRef = useRef(false);
 
-  // Track shift key state globally for region drag
+  // Track modifier key state globally for region drag
   useEffect(() => {
-    const down = (e: KeyboardEvent) => { shiftKeyRef.current = e.shiftKey; };
-    const up = (e: KeyboardEvent) => { shiftKeyRef.current = e.shiftKey; };
+    const down = (e: KeyboardEvent) => { shiftKeyRef.current = e.shiftKey; metaKeyRef.current = e.metaKey; };
+    const up = (e: KeyboardEvent) => { shiftKeyRef.current = e.shiftKey; metaKeyRef.current = e.metaKey; };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
@@ -187,6 +189,41 @@ const TimestampEditorScreen: React.FC = () => {
     let destroyed = false;
     wavesurferRef.current = ws;
 
+    // Alt+drag on waveform to create new sentence region
+    regions.enableDragSelection({
+      color: 'rgba(76, 175, 80, 0.25)',
+    });
+
+    // Intercept mousedown: only allow drag-create when Cmd held
+    const container = waveformRef.current;
+    const guardDragCreate = (e: MouseEvent) => {
+      dragCreatingRef.current = e.metaKey;
+    };
+    container.addEventListener('mousedown', guardDragCreate, true);
+
+    // Handle user-created regions (from Cmd+drag)
+    const onRegionCreated = (region: { id: string; start: number; end: number; remove: () => void }) => {
+      if (destroyed) return;
+      // Skip programmatic regions (our IDs start with bg-, s-, w-)
+      if (/^(bg-|s-|w-)/.test(region.id)) return;
+      // Not a Cmd+drag — remove the accidental drag region
+      if (!dragCreatingRef.current) {
+        region.remove();
+        return;
+      }
+      dragCreatingRef.current = false;
+      const start = Math.min(region.start, region.end);
+      const end = Math.max(region.start, region.end);
+      region.remove();
+      if (end - start < 0.05) return; // ignore tiny accidental drags
+
+      // Dispatch custom event to create sentence (avoids stale closure)
+      container.dispatchEvent(new CustomEvent('create-sentence-from-drag', {
+        detail: { start, end },
+      }));
+    };
+    regions.on('region-created', onRegionCreated);
+
     const blobUrl = URL.createObjectURL(article.audioBlob);
     ws.load(blobUrl).catch((err: Error) => {
       // Ignore abort errors from React Strict Mode double-mount
@@ -211,6 +248,7 @@ const TimestampEditorScreen: React.FC = () => {
     return () => {
       destroyed = true;
       setWsReady(false);
+      container.removeEventListener('mousedown', guardDragCreate, true);
       ws.destroy();
       URL.revokeObjectURL(blobUrl);
     };
@@ -1088,6 +1126,54 @@ const TimestampEditorScreen: React.FC = () => {
     setHasChanges(true);
   }, [selectedIndex, pushUndo]);
 
+  /** Alt+drag on waveform → create new sentence at dragged time range */
+  const handleCreateFromDrag = useCallback((start: number, end: number) => {
+    pushUndo();
+    setSentences(prev => {
+      // Find insertion position: first sentence whose start >= drag end, or append
+      let insertAt = prev.length;
+      for (let i = 0; i < prev.length; i++) {
+        if (prev[i].start != null && prev[i].start! >= start) {
+          insertAt = i;
+          break;
+        }
+      }
+      const newSentence: SentenceEntry = {
+        index: insertAt + 1, // will be reindexed below
+        text: '',
+        start,
+        end,
+      };
+      const updated = [...prev];
+      updated.splice(insertAt, 0, newSentence);
+      // Reindex all sentences 1-based
+      for (let i = 0; i < updated.length; i++) {
+        updated[i] = { ...updated[i], index: i + 1 };
+      }
+      return updated;
+    });
+    // Select the newly created sentence
+    setSentences(prev => {
+      // Find it by matching start/end
+      const idx = prev.findIndex(s => s.start === start && s.end === end && s.text === '');
+      if (idx >= 0) setSelectedIndex(idx);
+      return prev;
+    });
+    setHasChanges(true);
+  }, [pushUndo]);
+
+  // Listen for drag-create custom events from WaveSurfer init
+  useEffect(() => {
+    const container = waveformRef.current;
+    if (!container) return;
+    const handler = (e: Event) => {
+      const { start, end } = (e as CustomEvent).detail;
+      handleCreateFromDrag(start, end);
+    };
+    container.addEventListener('create-sentence-from-drag', handler);
+    return () => container.removeEventListener('create-sentence-from-drag', handler);
+  }, [handleCreateFromDrag]);
+
   // Auto-scroll selected sentence to center
   useEffect(() => {
     if (selectedItemRef.current) {
@@ -1631,6 +1717,7 @@ const TimestampEditorScreen: React.FC = () => {
                 <Typography variant="caption" display="block">B: 아래에 빈 문장 추가</Typography>
                 <Typography variant="caption" display="block">Esc: 텍스트 편집 나가기</Typography>
                 <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
+                <Typography variant="caption" display="block">⌘+드래그: 파형에서 새 문장 생성</Typography>
                 <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
                 <Typography variant="caption" display="block">⌘S: 저장</Typography>
               </>

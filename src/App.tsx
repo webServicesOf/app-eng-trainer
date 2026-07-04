@@ -8,6 +8,8 @@ import SentenceLearningScreen from './screens/SentenceLearningScreen';
 import SavedSentencesScreen from './screens/SavedSentencesScreen';
 import AudioLearningScreen from './screens/AudioLearningScreen';
 import TimestampEditorScreen from './screens/TimestampEditorScreen';
+import GlobalAuthManager from './components/GlobalAuthManager';
+import ReAuthDialog from './components/ReAuthDialog';
 import { useAppStore } from './stores/appStore';
 
 // Create Material-UI theme
@@ -54,6 +56,8 @@ const App: React.FC = () => {
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
+        <GlobalAuthManager />
+        <ReAuthDialog />
         <Router>
           <Routes>
             <Route path="/" element={<HomeScreen />} />

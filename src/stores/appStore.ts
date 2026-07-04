@@ -19,6 +19,8 @@ interface AppStore extends AppState {
   // OAuth state
   accessToken: string | null;
   isAuthenticated: boolean;
+  needsReAuth: boolean;
+  triggerLogin: (() => void) | null;
 
   // Audio articles (Drive-backed, discriminated union)
   audioArticles: StoreArticle[];
@@ -71,6 +73,9 @@ interface AppStore extends AppState {
   setAccessToken: (token: string | null, expiresIn?: number) => void;
   loadAccessToken: () => void;
   logout: () => void;
+  setNeedsReAuth: (needs: boolean) => void;
+  setTriggerLogin: (fn: (() => void) | null) => void;
+  retryAfterReAuth: () => Promise<void>;
 
   // Google Sheets config actions
   setGoogleSheetsConfig: (config: GoogleSheetsConfig) => void;
@@ -154,6 +159,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   googleSheetsConfig: null,
   accessToken: null,
   isAuthenticated: false,
+  needsReAuth: false,
+  triggerLogin: null,
 
   // Basic actions
   setLoading: (loading: boolean) => set({ isLoading: loading }),
@@ -318,8 +325,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ audioArticles: articles, cleanAudioIntervals: cleanIntervals, cleanAudioSnapshots: cleanSnapshots });
     } catch (error) {
       if (error instanceof DriveAuthError) {
-        localDB.clearAccessToken();
-        set({ accessToken: null, isAuthenticated: false, error: '토큰 만료 — 재로그인 후 다시 시도' });
+        set({ needsReAuth: true, error: '토큰 만료 — 재로그인 후 자동 저장됩니다' });
       } else {
         const errorMessage = error instanceof Error ? error.message : 'Failed to load audio articles';
         set({ error: errorMessage });
@@ -370,8 +376,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ cleanAudioSnapshots: cleanSnapshots, cleanAudioIntervals: cleanIntervals });
     } catch (error) {
       if (error instanceof DriveAuthError) {
-        localDB.clearAccessToken();
-        set({ accessToken: null, isAuthenticated: false, error: '토큰 만료 — 재로그인 후 다시 시도' });
+        set({ needsReAuth: true, error: '토큰 만료 — 재로그인 후 자동 저장됩니다' });
       } else {
         const errorMessage = error instanceof Error ? error.message : 'Failed to load article';
         set({ error: errorMessage });
@@ -402,8 +407,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().loadAudioArticles();
     } catch (error) {
       if (error instanceof DriveAuthError) {
-        localDB.clearAccessToken();
-        set({ accessToken: null, isAuthenticated: false, error: '토큰 만료 — 재로그인 후 다시 시도' });
+        set({ needsReAuth: true, error: '토큰 만료 — 재로그인 후 자동 저장됩니다' });
       } else {
         const errorMessage = error instanceof Error ? error.message : 'Failed to save audio article';
         set({ error: errorMessage });
@@ -602,8 +606,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       set({ dirtyAudioIds: new Set(), cleanAudioIntervals: cleanIntervals, cleanAudioSnapshots: cleanSnapshots });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Drive 저장 실패';
-      set({ error: errorMessage });
+      if (error instanceof DriveAuthError) {
+        // Dirty IDs preserved — re-auth dialog will trigger retry
+        set({ needsReAuth: true, error: '토큰 만료 — 재로그인 후 자동 저장됩니다' });
+      } else {
+        const errorMessage = error instanceof Error ? error.message : 'Drive 저장 실패';
+        set({ error: errorMessage });
+      }
     } finally {
       set({ isLoading: false });
     }
@@ -800,7 +809,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setAccessToken: (token: string | null, expiresIn?: number) => {
     if (token) {
       localDB.saveAccessToken(token, expiresIn);
-      set({ accessToken: token, isAuthenticated: true });
+      set({ accessToken: token, isAuthenticated: true, needsReAuth: false });
     } else {
       localDB.clearAccessToken();
       set({ accessToken: null, isAuthenticated: false });
@@ -816,7 +825,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   logout: () => {
     localDB.clearAccessToken();
-    set({ accessToken: null, isAuthenticated: false });
+    set({ accessToken: null, isAuthenticated: false, needsReAuth: false });
+  },
+
+  setNeedsReAuth: (needs: boolean) => set({ needsReAuth: needs }),
+
+  setTriggerLogin: (fn: (() => void) | null) => set({ triggerLogin: fn }),
+
+  retryAfterReAuth: async () => {
+    // After successful re-auth, retry saving dirty articles
+    const dirtyIds = get().dirtyAudioIds;
+    if (dirtyIds.size > 0) {
+      console.log('[auth] retrying save for', dirtyIds.size, 'dirty articles after re-auth');
+      await get().saveDirtyArticles();
+    }
   },
 
   // Google Sheets config actions
