@@ -204,8 +204,8 @@ const TimestampEditorScreen: React.FC = () => {
     // Handle user-created regions (from Cmd+drag)
     const onRegionCreated = (region: { id: string; start: number; end: number; remove: () => void }) => {
       if (destroyed) return;
-      // Skip programmatic regions (our IDs start with bg-, s-, w-)
-      if (/^(bg-|s-|w-)/.test(region.id)) return;
+      // Skip programmatic regions (our IDs start with bg-, s-, sn-, w-)
+      if (/^(bg-|s-|sn-|w-)/.test(region.id)) return;
       // Not a Cmd+drag — remove the accidental drag region
       if (!dragCreatingRef.current) {
         region.remove();
