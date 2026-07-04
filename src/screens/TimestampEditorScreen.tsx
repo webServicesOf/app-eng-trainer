@@ -569,12 +569,23 @@ const TimestampEditorScreen: React.FC = () => {
     const s = sentences[selectedIndex];
 
     if (!ws.isPlaying()) {
-      // Resume from current position, stop at sentence end
       const curTime = ws.getCurrentTime();
-      if (s?.end != null) {
+
+      // If cursor is inside current sentence, play to sentence end
+      if (s?.start != null && s?.end != null && curTime >= s.start && curTime <= s.end) {
         syncPlay(curTime, s.end);
+      } else if (s?.end != null && curTime < (s.start ?? 0)) {
+        // Cursor before sentence — play from cursor to sentence start
+        syncPlay(curTime, s.start!);
       } else {
-        ws.play();
+        // Cursor is outside/after current sentence — play to next sentence start
+        const nextSentence = sentences.find(ns => ns.start != null && ns.start! > curTime);
+        if (nextSentence?.start != null) {
+          syncPlay(curTime, nextSentence.start!);
+        } else {
+          // No next sentence — play to end of audio
+          ws.play();
+        }
       }
     } else {
       ws.pause();
