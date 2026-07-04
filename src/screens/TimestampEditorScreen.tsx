@@ -13,6 +13,9 @@ import {
   Stack,
   Chip,
   TextField,
+  Dialog,
+  DialogTitle,
+  DialogContent,
   useTheme,
   CircularProgress,
 } from '@mui/material';
@@ -30,6 +33,7 @@ import {
   Visibility,
   FileDownload,
   Replay,
+  Keyboard as KeyboardIcon,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
@@ -76,6 +80,7 @@ const TimestampEditorScreen: React.FC = () => {
   const [wordEditMode, setWordEditMode] = useState(false);
   const [editingWordIndex, setEditingWordIndex] = useState(-1);
   const [isSaving, setIsSaving] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const handleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const undoStackRef = useRef<SentenceEntry[][]>([]);
   const redoStackRef = useRef<SentenceEntry[][]>([]);
@@ -1137,6 +1142,22 @@ const TimestampEditorScreen: React.FC = () => {
     setHasChanges(true);
   }, [selectedIndex, pushUndo]);
 
+  /** Delete current sentence */
+  const handleDeleteSentence = useCallback(() => {
+    if (sentences.length <= 1) return; // keep at least 1 sentence
+    pushUndo();
+    setSentences(prev => {
+      const updated = prev.filter((_, i) => i !== selectedIndex);
+      // Reindex 1-based
+      for (let i = 0; i < updated.length; i++) {
+        updated[i] = { ...updated[i], index: i + 1 };
+      }
+      return updated;
+    });
+    setSelectedIndex(prev => Math.min(prev, sentences.length - 2));
+    setHasChanges(true);
+  }, [selectedIndex, sentences.length, pushUndo]);
+
   /** Alt+drag on waveform → create new sentence at dragged time range */
   const handleCreateFromDrag = useCallback((start: number, end: number) => {
     pushUndo();
@@ -1319,6 +1340,9 @@ const TimestampEditorScreen: React.FC = () => {
       } else if (code === 'KeyB' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         handleInsertBelow();
+      } else if ((code === 'Backspace' || code === 'Delete') && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        handleDeleteSentence();
       } else if (code === 'KeyZ' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         if (e.shiftKey) handleRedo();
@@ -1342,7 +1366,7 @@ const TimestampEditorScreen: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, enterWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, handleInsertAbove, handleInsertBelow, sentences]);
+  }, [handlePlaySentence, handlePlayPause, handlePlayFromEnd, handlePrevSentence, handleNextSentence, handleHideSentence, handleUnhideSentence, handleSave, handleMergeSentences, handleUndo, handleRedo, handleTextEdit, toggleSplitMarker, selectedIndex, wordEditMode, exitWordEditMode, enterWordEditMode, handlePlayWord, handlePullWords, handlePullSentences, handleInsertAbove, handleInsertBelow, handleDeleteSentence, sentences]);
 
   if (!article) {
     return (
@@ -1703,37 +1727,42 @@ const TimestampEditorScreen: React.FC = () => {
             </>
           )}
 
-          {/* Shortcuts */}
-          <Box sx={{ color: theme.palette.text.secondary, display: { xs: 'none', sm: 'block' } }}>
-            {wordEditMode ? (
-              <>
-                <Typography variant="caption" display="block">←→: 이전/다음 단어</Typography>
-                <Typography variant="caption" display="block">Space: 재생/일시정지 토글</Typography>
-                <Typography variant="caption" display="block">S: 선택 단어 처음부터 재생</Typography>
-                <Typography variant="caption" display="block">P: 이후 단어 당기기</Typography>
-                <Typography variant="caption" display="block">Esc: 문장 모드로 돌아가기</Typography>
-              </>
-            ) : (
-              <>
-                <Typography variant="caption" display="block">Space: 재생/일시정지 토글</Typography>
-                <Typography variant="caption" display="block">S: 문장 처음부터 재생</Typography>
-                <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
-                <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
-                <Typography variant="caption" display="block">→: 문장 숨기기 / ←: 숨김 해제</Typography>
-                <Typography variant="caption" display="block">W: 단어 편집 모드</Typography>
-                <Typography variant="caption" display="block">D: 문장 분할</Typography>
-                <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
-                <Typography variant="caption" display="block">P: 이후 문장 당기기</Typography>
-                <Typography variant="caption" display="block">A: 위에 빈 문장 추가</Typography>
-                <Typography variant="caption" display="block">B: 아래에 빈 문장 추가</Typography>
-                <Typography variant="caption" display="block">Esc: 텍스트 편집 나가기</Typography>
-                <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
-                <Typography variant="caption" display="block">⌘+드래그: 파형에서 새 문장 생성</Typography>
-                <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
-                <Typography variant="caption" display="block">⌘S: 저장</Typography>
-              </>
-            )}
+          {/* Shortcuts button */}
+          <Box sx={{ textAlign: 'center', mt: 1 }}>
+            <Button size="small" startIcon={<KeyboardIcon />} onClick={() => setShortcutsOpen(true)} color="inherit">
+              단축키
+            </Button>
           </Box>
+          <Dialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} maxWidth="xs" fullWidth>
+            <DialogTitle>단축키 목록</DialogTitle>
+            <DialogContent>
+              <Typography variant="subtitle2" gutterBottom sx={{ mt: 1 }}>문장 모드</Typography>
+              <Typography variant="caption" display="block">Space: 재생/일시정지 토글</Typography>
+              <Typography variant="caption" display="block">S: 문장 처음부터 재생</Typography>
+              <Typography variant="caption" display="block">E: 끝 3초 전</Typography>
+              <Typography variant="caption" display="block">↑↓: 이전/다음 문장</Typography>
+              <Typography variant="caption" display="block">→: 문장 숨기기 / ←: 숨김 해제</Typography>
+              <Typography variant="caption" display="block">W: 단어 편집 모드</Typography>
+              <Typography variant="caption" display="block">D: 문장 분할</Typography>
+              <Typography variant="caption" display="block">M: 다음 문장과 합치기</Typography>
+              <Typography variant="caption" display="block">P: 이후 문장 당기기</Typography>
+              <Typography variant="caption" display="block">A: 위에 빈 문장 추가</Typography>
+              <Typography variant="caption" display="block">B: 아래에 빈 문장 추가</Typography>
+              <Typography variant="caption" display="block">Backspace: 문장 삭제</Typography>
+              <Typography variant="caption" display="block">Esc: 텍스트 편집 나가기</Typography>
+              <Typography variant="caption" display="block">⌘D: 덱 분할점 토글</Typography>
+              <Typography variant="caption" display="block">⌘+드래그: 파형에서 새 문장 생성</Typography>
+              <Typography variant="caption" display="block">⌘Z: 되돌리기 / ⌘⇧Z: 다시하기</Typography>
+              <Typography variant="caption" display="block">⌘S: 저장</Typography>
+
+              <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>단어 편집 모드</Typography>
+              <Typography variant="caption" display="block">←→: 이전/다음 단어</Typography>
+              <Typography variant="caption" display="block">Space: 재생/일시정지 토글</Typography>
+              <Typography variant="caption" display="block">S: 선택 단어 처음부터 재생</Typography>
+              <Typography variant="caption" display="block">P: 이후 단어 당기기</Typography>
+              <Typography variant="caption" display="block">Esc: 문장 모드로 돌아가기</Typography>
+            </DialogContent>
+          </Dialog>
         </Paper>
 
         {/* Sentence List */}
