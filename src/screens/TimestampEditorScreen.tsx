@@ -724,11 +724,16 @@ const TimestampEditorScreen: React.FC = () => {
     const current = sentences[selectedIndex];
     const next = sentences[selectedIndex + 1];
 
+    const mergedWords = (current.words && next.words)
+      ? [...current.words, ...next.words]
+      : current.words ?? next.words;
+
     const merged: SentenceEntry = {
       index: current.index,
       text: current.text.trimEnd() + ' ' + next.text.trimStart(),
       start: current.start,
       end: next.end,
+      ...(mergedWords && { words: mergedWords }),
     };
 
     const updated = [...sentences];
