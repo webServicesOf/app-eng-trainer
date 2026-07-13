@@ -760,12 +760,14 @@ const TimestampEditorScreen: React.FC = () => {
       text: words.slice(0, wordIndex).join(' '),
       start: current.start,
       end: splitTime,
+      ...(current.words && { words: current.words.slice(0, wordIndex) }),
     };
     const second: SentenceEntry = {
       index: current.index + 1,
       text: words.slice(wordIndex).join(' '),
       start: splitTime,
       end: current.end,
+      ...(current.words && { words: current.words.slice(wordIndex) }),
     };
 
     const updated = [...sentences];
