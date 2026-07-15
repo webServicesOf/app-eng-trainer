@@ -359,7 +359,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         savedAsDeck: prev?.savedAsDeck ?? rawArticle.savedAsDeck,
         savedSentenceIndices: prev?.savedSentenceIndices ?? rawArticle.savedSentenceIndices,
         savedSentenceReview: prev?.savedSentenceReview ?? rawArticle.savedSentenceReview,
-        source: rawArticle.source,
+        source: prev?.source ?? rawArticle.source,
         nextReviewDate: prev?.nextReviewDate ?? rawArticle.nextReviewDate,
         reviewInterval: prev?.reviewInterval ?? rawArticle.reviewInterval ?? 0,
         createdAt: rawArticle.createdAt,
