@@ -103,6 +103,25 @@ const AudioLearningScreen: React.FC = () => {
   const displaySentencesRef = React.useRef(displaySentences);
   React.useEffect(() => { displaySentencesRef.current = displaySentences; }, [displaySentences]);
 
+  // Wake Lock — keep screen on during learning (joystick/keyboard control)
+  React.useEffect(() => {
+    let wakeLock: any = null;
+    const request = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await (navigator as any).wakeLock.request('screen');
+        }
+      } catch { /* user denied or not supported */ }
+    };
+    request();
+    const onVisibility = () => { if (document.visibilityState === 'visible') request(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      wakeLock?.release();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
   // Scroll active word into view when it changes
   React.useEffect(() => {
     if (activeWordRef.current) {

@@ -69,6 +69,25 @@ const SentenceLearningScreen: React.FC = () => {
     }
   }, [navigate]);
 
+  // Wake Lock — keep screen on during learning
+  useEffect(() => {
+    let wakeLock: any = null;
+    const request = async () => {
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await (navigator as any).wakeLock.request('screen');
+        }
+      } catch { /* user denied or not supported */ }
+    };
+    request();
+    const onVisibility = () => { if (document.visibilityState === 'visible') request(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      wakeLock?.release();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
   useEffect(() => {
     if (id) {
       loadArticle(id);
