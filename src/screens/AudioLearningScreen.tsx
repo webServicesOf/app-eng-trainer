@@ -79,7 +79,6 @@ const AudioLearningScreen: React.FC = () => {
 
   const [article, setArticle] = useState<FullArticle | null>(null);
   // Phase 4 exit resume guards
-  const currentIndexRef = useRef(1);              // 최신 currentIndex (exit-save 시 참조)
   const plainOpenRef = useRef(false);             // remap 모드(저장덱/subdeck) 제외 — 실제 index 공간일 때만 true
   const resumeRestoredRef = useRef(false);        // lastIndex 복원 1회 가드
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -108,19 +107,6 @@ const AudioLearningScreen: React.FC = () => {
   const ytEndTimeRef = React.useRef<number>(0);
   const displaySentencesRef = React.useRef(displaySentences);
   React.useEffect(() => { displaySentencesRef.current = displaySentences; }, [displaySentences]);
-
-  // Phase 4 resume 저장 헬퍼. currentIndex(네비 커서) 저장. plain/명시 모드만.
-  // 주의: displaySentences는 currentIndex 주변 윈도우라 재생이 앞서가도 currentIndex는 안 따라감
-  //       → video 앞선 위치까지 추적하려면 폴링이 currentIndex를 갱신해야 함(별도 과제).
-  currentIndexRef.current = currentIndex;
-  const saveResume = React.useCallback(() => {
-    // resumeRestoredRef 가드: 로드/복원 완료 전엔 저장 금지. StrictMode 이중 마운트의
-    // throwaway cleanup이 restore 전 currentIndex(=1)를 저장해 lastIndex를 오염시키는 것 차단.
-    if (!id || !plainOpenRef.current || !resumeRestoredRef.current) return;
-    const store = useAppStore.getState();
-    store.setLastIndex(id, currentIndexRef.current); // 값 바뀔 때만 dirty
-    store.saveDirtyArticles();
-  }, [id]);
 
   // Wake Lock — keep screen on during learning (joystick/keyboard control)
   React.useEffect(() => {
@@ -314,12 +300,11 @@ const AudioLearningScreen: React.FC = () => {
     }
 
     return () => {
-      saveResume(); // 홈 이동/종료/아티클 전환 시 resume 위치 저장 (reset 전에)
       resetLearningState();
       audioSeekService.stop();
       if (ytPollingRef.current) clearInterval(ytPollingRef.current);
     };
-  }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative, saveResume]);
+  }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative]);
 
   const updateDisplayText = React.useCallback(() => {
     if (!article) return;
@@ -876,7 +861,7 @@ const AudioLearningScreen: React.FC = () => {
   useEffect(() => { setMediaPlaybackState(isPlaying); }, [isPlaying]);
   useEffect(() => () => { stopMediaSession(); }, []);
 
-  // Phase 4: exit resume — 로드 시 lastIndex 복원
+  // Phase 4: resume — 로드 시 Drive의 lastIndex로 위치 복원
   useEffect(() => {
     if (!article || resumeRestoredRef.current || !plainOpenRef.current) return;
     resumeRestoredRef.current = true;
@@ -888,17 +873,12 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, setCurrentIndex, setIsCumulative]);
 
+  // 문장 이동 시 lastIndex를 dirty 마킹 → 저장 버튼 활성화. Save 눌러야 Drive 반영(auto-save 없음).
+  // 복원(restore)으로 currentIndex=article.lastIndex 세팅 시엔 setLastIndex가 값 동일 → no-op(dirty 안 뜸).
   useEffect(() => {
-    // ponytail: visibilitychange(hidden)=모바일 백그라운드 신뢰 신호. pagehide=보조(async Drive
-    //           저장 미완 가능, best effort). 홈 이동/언마운트는 mount effect cleanup의 saveResume가 담당.
-    const onVis = () => { if (document.visibilityState === 'hidden') saveResume(); };
-    document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('pagehide', saveResume);
-    return () => {
-      document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('pagehide', saveResume);
-    };
-  }, [saveResume]);
+    if (!id || !plainOpenRef.current || !resumeRestoredRef.current) return;
+    useAppStore.getState().setLastIndex(id, currentIndex);
+  }, [id, currentIndex]);
 
   if (!article || !audioLoaded) {
     return (
