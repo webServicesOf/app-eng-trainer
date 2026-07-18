@@ -109,6 +109,17 @@ const AudioLearningScreen: React.FC = () => {
   const displaySentencesRef = React.useRef(displaySentences);
   React.useEffect(() => { displaySentencesRef.current = displaySentences; }, [displaySentences]);
 
+  // Phase 4 resume 저장 헬퍼. currentIndex(네비 커서) 저장. plain/명시 모드만.
+  // 주의: displaySentences는 currentIndex 주변 윈도우라 재생이 앞서가도 currentIndex는 안 따라감
+  //       → video 앞선 위치까지 추적하려면 폴링이 currentIndex를 갱신해야 함(별도 과제).
+  currentIndexRef.current = currentIndex;
+  const saveResume = React.useCallback(() => {
+    if (!id || !plainOpenRef.current) return;
+    const store = useAppStore.getState();
+    store.setLastIndex(id, currentIndexRef.current); // 값 바뀔 때만 dirty
+    store.saveDirtyArticles();
+  }, [id]);
+
   // Wake Lock — keep screen on during learning (joystick/keyboard control)
   React.useEffect(() => {
     let wakeLock: any = null;
@@ -301,11 +312,12 @@ const AudioLearningScreen: React.FC = () => {
     }
 
     return () => {
+      saveResume(); // 홈 이동/종료/아티클 전환 시 resume 위치 저장 (reset 전에)
       resetLearningState();
       audioSeekService.stop();
       if (ytPollingRef.current) clearInterval(ytPollingRef.current);
     };
-  }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative]);
+  }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative, saveResume]);
 
   const updateDisplayText = React.useCallback(() => {
     if (!article) return;
@@ -896,9 +908,7 @@ const AudioLearningScreen: React.FC = () => {
   useEffect(() => { setMediaPlaybackState(isPlaying); }, [isPlaying]);
   useEffect(() => () => { stopMediaSession(); }, []);
 
-  // Phase 4: exit resume — 로드 시 lastIndex 복원, 백그라운드/종료 시 저장
-  currentIndexRef.current = currentIndex;
-
+  // Phase 4: exit resume — 로드 시 lastIndex 복원
   useEffect(() => {
     if (!article || resumeRestoredRef.current || !plainOpenRef.current) return;
     resumeRestoredRef.current = true;
@@ -911,22 +921,16 @@ const AudioLearningScreen: React.FC = () => {
   }, [article, setCurrentIndex, setIsCumulative]);
 
   useEffect(() => {
-    // ponytail: visibilitychange(hidden)가 모바일 백그라운드 신뢰 신호. pagehide는 보조(async Drive
-    //           저장이 완료 못할 수 있음 — best effort). 하드킬 대비 별도 주기저장 미구현.
-    const save = () => {
-      if (!id || !plainOpenRef.current) return;
-      const store = useAppStore.getState();
-      store.setLastIndex(id, currentIndexRef.current); // 값 바뀔 때만 dirty
-      store.saveDirtyArticles();
-    };
-    const onVis = () => { if (document.visibilityState === 'hidden') save(); };
+    // ponytail: visibilitychange(hidden)=모바일 백그라운드 신뢰 신호. pagehide=보조(async Drive
+    //           저장 미완 가능, best effort). 홈 이동/언마운트는 mount effect cleanup의 saveResume가 담당.
+    const onVis = () => { if (document.visibilityState === 'hidden') saveResume(); };
     document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('pagehide', save);
+    window.addEventListener('pagehide', saveResume);
     return () => {
       document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('pagehide', save);
+      window.removeEventListener('pagehide', saveResume);
     };
-  }, [id]);
+  }, [saveResume]);
 
   if (!article || !audioLoaded) {
     return (
