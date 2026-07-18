@@ -17,6 +17,7 @@ interface AudioArticleMeta {
   savedSentenceIndices?: number[];
   savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null };
   source?: string;
+  lastIndex?: number;
   nextReviewDate?: string | null;
   reviewInterval?: number;
   createdAt: string;
@@ -208,6 +209,7 @@ export class GoogleDriveService {
       savedSentenceIndices: article.savedSentenceIndices,
       savedSentenceReview: article.savedSentenceReview,
       source: article.source,
+      lastIndex: article.lastIndex,
       nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
       reviewInterval: article.reviewInterval || 0,
       createdAt: new Date(article.createdAt).toISOString(),
@@ -226,6 +228,7 @@ export class GoogleDriveService {
       savedSentenceIndices: meta.savedSentenceIndices,
       savedSentenceReview: meta.savedSentenceReview,
       source: meta.source,
+      lastIndex: meta.lastIndex,
       nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
       reviewInterval: meta.reviewInterval || 0,
       createdAt: new Date(meta.createdAt),
@@ -397,6 +400,7 @@ export class GoogleDriveService {
       subDeckReviews: article.subDeckReviews,
       splitPoints: article.splitPoints,
       source: article.source,
+      lastIndex: article.lastIndex,
       createdAt: new Date(article.createdAt).toISOString(),
       lastAccessed: new Date(article.lastAccessed).toISOString(),
     };

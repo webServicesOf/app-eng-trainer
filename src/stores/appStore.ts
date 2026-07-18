@@ -68,6 +68,7 @@ interface AppStore extends AppState {
   toggleSavedDeck: (articleId: string, subDeckId?: string) => void;
   updateArticleSentences: (articleId: string, sentences: SentenceEntry[]) => void;
   updateArticleSource: (articleId: string, source: string) => void;
+  setLastIndex: (articleId: string, index: number) => void;
 
   // OAuth actions
   setAccessToken: (token: string | null, expiresIn?: number) => void;
@@ -96,6 +97,7 @@ function snapshotArticle(a: StoreArticle): string {
       .sort((a, b) => a.s - b.s || a.e - b.e),
     hidden: a.kind === 'loaded' ? a.sentences.filter(s => s.hidden).map(s => s.index) : [],
     src: a.source || '',
+    li: a.lastIndex ?? null,
   });
 }
 
@@ -113,6 +115,7 @@ function toIndexSummary(a: StoreArticle): ArticleSummary {
     subDeckReviews: a.subDeckReviews,
     splitPoints: a.splitPoints,
     source: a.source,
+    lastIndex: a.lastIndex,
     createdAt: a.createdAt.toISOString(),
     lastAccessed: a.lastAccessed.toISOString(),
   };
@@ -267,6 +270,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
               savedSentenceIndices: s.savedSentenceIndices ?? existing.savedSentenceIndices,
               savedSentenceReview: s.savedSentenceReview ?? existing.savedSentenceReview,
               subDeckReviews: s.subDeckReviews ?? existing.subDeckReviews,
+              lastIndex: s.lastIndex ?? existing.lastIndex,
             };
           }
           // Create SummaryArticle — no sentences field
@@ -281,6 +285,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
             savedSentenceIndices: s.savedSentenceIndices,
             savedSentenceReview: s.savedSentenceReview,
             source: s.source,
+            lastIndex: s.lastIndex,
             nextReviewDate: s.nextReviewDate ? new Date(s.nextReviewDate) : null,
             reviewInterval: s.reviewInterval || 0,
             createdAt: new Date(s.createdAt),
@@ -313,6 +318,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         savedSentenceIndices: a.savedSentenceIndices,
         savedSentenceReview: a.savedSentenceReview,
         source: a.source,
+        lastIndex: a.lastIndex,
         nextReviewDate: a.nextReviewDate,
         reviewInterval: a.reviewInterval || 0,
         createdAt: a.createdAt,
@@ -360,6 +366,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         savedSentenceIndices: prev?.savedSentenceIndices ?? rawArticle.savedSentenceIndices,
         savedSentenceReview: prev?.savedSentenceReview ?? rawArticle.savedSentenceReview,
         source: prev?.source ?? rawArticle.source,
+        lastIndex: prev?.lastIndex ?? rawArticle.lastIndex,
         nextReviewDate: prev?.nextReviewDate ?? rawArticle.nextReviewDate,
         reviewInterval: prev?.reviewInterval ?? rawArticle.reviewInterval ?? 0,
         createdAt: rawArticle.createdAt,
@@ -745,6 +752,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const article = get().audioArticles.find(a => a.id === articleId);
     if (!article) return;
     set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? { ...a, source: source || undefined } : a) });
+    checkCleanAndUpdateDirty(get, set, articleId);
+  },
+
+  // resume 위치 저장 — 학습 종료/백그라운드 시 현재 문장 index를 dirty 마킹 → Save로 Drive 영속
+  setLastIndex: (articleId: string, index: number) => {
+    const article = get().audioArticles.find(a => a.id === articleId);
+    if (!article || article.lastIndex === index) return;
+    set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? { ...a, lastIndex: index } : a) });
     checkCleanAndUpdateDirty(get, set, articleId);
   },
 

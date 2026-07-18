@@ -35,6 +35,7 @@ import {
   KeyboardDoubleArrowRight,
   PlayArrow,
   Pause,
+  PlaylistPlay,
   Replay,
   Home,
   Bookmark,
@@ -55,6 +56,7 @@ import { FullArticle, StoreArticle, SentenceEntry } from '../types';
 import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
+import { startMediaSession, setMediaPlaybackState, stopMediaSession } from '../services/mediaSession';
 import { GoogleDriveService } from '../services/googleDriveService';
 import YouTubePlayer from 'react-youtube';
 
@@ -76,6 +78,10 @@ const AudioLearningScreen: React.FC = () => {
   const { dirtyAudioIds, saveDirtyArticles } = useAppStore();
 
   const [article, setArticle] = useState<FullArticle | null>(null);
+  // Phase 4 exit resume guards
+  const currentIndexRef = useRef(1);              // 최신 currentIndex (exit-save 시 참조)
+  const plainOpenRef = useRef(false);             // remap 모드(저장덱/subdeck) 제외 — 실제 index 공간일 때만 true
+  const resumeRestoredRef = useRef(false);        // lastIndex 복원 1회 가드
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [subDeckRange, setSubDeckRange] = useState<{ start: number; end: number } | null>(null);
   const [displaySentences, setDisplaySentences] = useState<SentenceEntry[]>([]);
@@ -259,6 +265,9 @@ const AudioLearningScreen: React.FC = () => {
       const endParam = params.get('end');
       const sentenceParam = params.get('sentence');
       const sentencesParam = params.get('sentences');
+      // resume 대상 = 실제 index 공간(plain / 명시 sentence). 저장덱·subdeck은 remap → 제외
+      resumeRestoredRef.current = false;
+      plainOpenRef.current = !sentencesParam && !(startParam && endParam);
 
       if (sentencesParam) {
         // Specific sentence indices (saved sentences deck)
@@ -409,6 +418,11 @@ const AudioLearningScreen: React.FC = () => {
   const handleDownArrow = React.useCallback(() => {
     setIsCumulative(false);
   }, [setIsCumulative]);
+
+  // 키/미디어키용: 누적↔단일 토글 (화면 버튼은 up/down 개별 유지)
+  const handleToggleCumulative = React.useCallback(() => {
+    setIsCumulative(!isCumulative);
+  }, [setIsCumulative, isCumulative]);
 
   const handleSpeakRef = React.useRef<() => void>(() => {});
   const speakTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -645,6 +659,61 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
+  // ← 통합 (키/미디어키): 1탭=처음부터 재생(즉시), 350ms 내 2탭=이전 문장
+  const leftTapTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleLeftAction = React.useCallback(() => {
+    if (leftTapTimerRef.current) {
+      clearTimeout(leftTapTimerRef.current);
+      leftTapTimerRef.current = null;
+      handleLeftArrow(); // 내부에서 현재 재생 stop + 이전 이동
+    } else {
+      handlePlayFromStart();
+      leftTapTimerRef.current = setTimeout(() => { leftTapTimerRef.current = null; }, 350);
+    }
+  }, [handleLeftArrow, handlePlayFromStart]);
+
+  // Phase 5: 전체재생 — 문장 1..N 전부(hidden 제외) 순차 재생. 모드/currentIndex 무관.
+  const handlePlayAll = React.useCallback(() => {
+    if (!article) return;
+    const visible = article.sentences.filter(s => !s.hidden && s.start != null && s.end != null);
+    if (visible.length === 0) return;
+    if (videoId) {
+      const player = ytPlayerRef.current;
+      if (!player) return;
+      player.seekTo(visible[0].start!, true);
+      ytEndTimeRef.current = visible[visible.length - 1].end!;
+      player.playVideo();
+      setActiveSentenceLocalIdx(0);
+      setActiveWordIdx(-1);
+      setIsPlaying(true);
+      startYouTubePolling();
+      return;
+    }
+    if (!audioLoaded) return;
+    setActiveSentenceLocalIdx(0);
+    setActiveWordIdx(-1);
+    setIsPlaying(true);
+    audioSeekService.playSegments(
+      visible,
+      onPlayEnd,
+      (localIdx) => setActiveSentenceLocalIdx(localIdx),
+      onWordUpdate,
+    );
+  }, [article, audioLoaded, videoId, onPlayEnd, onWordUpdate, startYouTubePolling]);
+
+  // 전체재생 버튼: YouTube 아티클은 외부 YouTube 앱(백그라운드/잠금 재생은 앱이 네이티브 처리),
+  // MP3는 인앱 handlePlayAll(포그라운드). ponytail: 백그라운드 MP3 재생은 HTMLAudioElement
+  //         재작업 필요 — 현재 Web Audio는 잠금 시 suspend. 향후 과제.
+  const handlePlayAllButton = React.useCallback(() => {
+    if (videoId) {
+      const start = article?.sentences.find(s => !s.hidden && s.start != null)?.start;
+      const t = start != null ? `&t=${Math.floor(start)}s` : '';
+      window.open(`https://www.youtube.com/watch?v=${videoId}${t}`, '_blank');
+      return;
+    }
+    handlePlayAll();
+  }, [videoId, article, handlePlayAll]);
+
   // Tap sentence to play from it
   const handleSentenceTap = React.useCallback((sentLocalIdx: number) => {
     if (!article) return;
@@ -737,7 +806,7 @@ const AudioLearningScreen: React.FC = () => {
     }
   };
 
-  const handleSaveSentence = async () => {
+  const handleSaveSentence = React.useCallback(async () => {
     if (!article || isCumulative) return;
 
     const sentence = article.sentences.find((s) => s.index === currentIndex);
@@ -765,7 +834,7 @@ const AudioLearningScreen: React.FC = () => {
         useAppStore.getState().updateSavedSentenceIndices(id, indices);
       }
     }
-  };
+  }, [article, isCumulative, currentIndex, isSaved, id]);
 
   const handleToggleHideSentence = React.useCallback(() => {
     if (!article || !id) return;
@@ -793,12 +862,12 @@ const AudioLearningScreen: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Use e.code for letter keys (IME-safe: works with Korean input mode)
       // Use e.key for special keys (arrows, space)
-      if (e.key === 'ArrowUp') { e.preventDefault(); handleUpArrow(); return; }
-      if (e.key === 'ArrowDown') { e.preventDefault(); handleDownArrow(); return; }
-      if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftArrow(); return; }
+      // ArrowUp: 해제(미사용). ↓=누적/단일 토글, ←=처음부터/이전(더블탭), S=저장
+      if (e.key === 'ArrowDown') { e.preventDefault(); handleToggleCumulative(); return; }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftAction(); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); handleRightArrow(); return; }
       if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); handleTogglePlay(); return; }
-      if (e.code === 'KeyS') { e.preventDefault(); handlePlayFromStart(); return; }
+      if (e.code === 'KeyS') { e.preventDefault(); handleSaveSentence(); return; }
       if (e.code === 'KeyY') { e.preventDefault(); handleToggleYouTubeMode(); return; }
     };
 
@@ -810,7 +879,54 @@ const AudioLearningScreen: React.FC = () => {
       }
     }, 500);
     return () => { window.removeEventListener('keydown', handleKeyDown); clearInterval(focusInterval); };
-  }, [handleUpArrow, handleDownArrow, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleToggleYouTubeMode]);
+  }, [handleToggleCumulative, handleLeftAction, handleRightArrow, handleTogglePlay, handleSaveSentence, handleToggleYouTubeMode]);
+
+  // Phase 3: MediaSession — 잠금화면 미디어키(Android). 키보드와 동일 shared handler 공유.
+  // prev=처음부터/이전(더블탭), next=다음, play/pause=재생정지, stop=저장.
+  useEffect(() => {
+    if (!article) return;
+    startMediaSession(article.title, {
+      prev: handleLeftAction,
+      next: handleRightArrow,
+      togglePlay: handleTogglePlay,
+      save: handleSaveSentence,
+    });
+  }, [article, handleLeftAction, handleRightArrow, handleTogglePlay, handleSaveSentence]);
+
+  useEffect(() => { setMediaPlaybackState(isPlaying); }, [isPlaying]);
+  useEffect(() => () => { stopMediaSession(); }, []);
+
+  // Phase 4: exit resume — 로드 시 lastIndex 복원, 백그라운드/종료 시 저장
+  currentIndexRef.current = currentIndex;
+
+  useEffect(() => {
+    if (!article || resumeRestoredRef.current || !plainOpenRef.current) return;
+    resumeRestoredRef.current = true;
+    if (new URLSearchParams(window.location.search).get('sentence')) return; // URL 위치 우선
+    const li = article.lastIndex;
+    if (li && li >= 1 && li <= article.sentences.length) {
+      setCurrentIndex(li);
+      setIsCumulative(false);
+    }
+  }, [article, setCurrentIndex, setIsCumulative]);
+
+  useEffect(() => {
+    // ponytail: visibilitychange(hidden)가 모바일 백그라운드 신뢰 신호. pagehide는 보조(async Drive
+    //           저장이 완료 못할 수 있음 — best effort). 하드킬 대비 별도 주기저장 미구현.
+    const save = () => {
+      if (!id || !plainOpenRef.current) return;
+      const store = useAppStore.getState();
+      store.setLastIndex(id, currentIndexRef.current); // 값 바뀔 때만 dirty
+      store.saveDirtyArticles();
+    };
+    const onVis = () => { if (document.visibilityState === 'hidden') save(); };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pagehide', save);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pagehide', save);
+    };
+  }, [id]);
 
   if (!article || !audioLoaded) {
     return (
@@ -895,6 +1011,11 @@ const AudioLearningScreen: React.FC = () => {
                 </IconButton>
               </>
             )}
+            <Tooltip title={videoId ? '전체재생 (YouTube 앱)' : '전체재생'}>
+              <IconButton onClick={handlePlayAllButton} size="small" color="success">
+                <PlaylistPlay />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="숨김 목록">
               <IconButton onClick={() => setShowHiddenList(true)} size="small">
                 <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
