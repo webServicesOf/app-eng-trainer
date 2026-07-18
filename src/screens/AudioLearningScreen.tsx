@@ -11,6 +11,7 @@ import {
   Chip,
   Stack,
   Slider,
+  TextField,
   useTheme,
   Dialog,
   DialogTitle,
@@ -410,9 +411,11 @@ const AudioLearningScreen: React.FC = () => {
     setIsYouTubeMode(prev => !prev);
   }, []);
 
+  // ↑ = 윈도우 크기 1~5 순환 (5에서 다시 1). 'full'이면 1부터.
   const handleUpArrow = React.useCallback(() => {
-    setIsCumulative(true);
-  }, [setIsCumulative]);
+    const cur = typeof windowSize === 'number' ? windowSize : 0;
+    setWindowSize(cur >= 5 || cur < 1 ? 1 : cur + 1);
+  }, [windowSize, setWindowSize]);
 
   const handleDownArrow = React.useCallback(() => {
     setIsCumulative(false);
@@ -658,18 +661,6 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, audioLoaded, isCumulative, currentIndex, windowSize, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
-  // ← 통합 (키/미디어키): 1탭=처음부터 재생(즉시), 350ms 내 2탭=이전 문장
-  const leftTapTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleLeftAction = React.useCallback(() => {
-    if (leftTapTimerRef.current) {
-      clearTimeout(leftTapTimerRef.current);
-      leftTapTimerRef.current = null;
-      handleLeftArrow(); // 내부에서 현재 재생 stop + 이전 이동
-    } else {
-      handlePlayFromStart();
-      leftTapTimerRef.current = setTimeout(() => { leftTapTimerRef.current = null; }, 350);
-    }
-  }, [handleLeftArrow, handlePlayFromStart]);
 
   // YouTube 앱 열기(easy access) — 첫 문장 start 지점으로 deep link. YouTube 아티클에서만 노출.
   const handleOpenYouTubeApp = React.useCallback(() => {
@@ -777,27 +768,33 @@ const AudioLearningScreen: React.FC = () => {
     const sentence = article.sentences.find((s) => s.index === currentIndex);
     if (!sentence) return;
 
-    if (isSaved) return;
+    const savedId = `${article.id}-${currentIndex}`;
+    const store = useAppStore.getState();
+    const meta = id ? store.audioArticles.find(a => a.id === id) : undefined;
 
-    const savedSentence = {
-      id: `${article.id}-${currentIndex}`,
+    if (isSaved) {
+      // 토글: 저장 취소
+      await localDB.deleteSavedSentence(savedId);
+      setIsSaved(false);
+      if (id && meta) {
+        const indices = (meta.savedSentenceIndices || []).filter(i => i !== currentIndex);
+        store.updateSavedSentenceIndices(id, indices);
+      }
+      return;
+    }
+
+    await localDB.saveSentence({
+      id: savedId,
       articleId: article.id,
       articleTitle: article.title,
       sentenceIndex: currentIndex,
       text: sentence.text,
       savedAt: new Date(),
-    };
-
-    await localDB.saveSentence(savedSentence);
+    });
     setIsSaved(true);
-
-    // Sync savedSentenceIndices to store (flush on "저장")
-    if (id) {
-      const meta = useAppStore.getState().audioArticles.find(a => a.id === id);
-      if (meta) {
-        const indices = Array.from(new Set([...(meta.savedSentenceIndices || []), currentIndex]));
-        useAppStore.getState().updateSavedSentenceIndices(id, indices);
-      }
+    if (id && meta) {
+      const indices = Array.from(new Set([...(meta.savedSentenceIndices || []), currentIndex]));
+      store.updateSavedSentenceIndices(id, indices);
     }
   }, [article, isCumulative, currentIndex, isSaved, id]);
 
@@ -827,11 +824,13 @@ const AudioLearningScreen: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Use e.code for letter keys (IME-safe: works with Korean input mode)
       // Use e.key for special keys (arrows, space)
-      // ArrowUp: 해제(미사용). ↓=누적/단일 토글, ←=처음부터/이전(더블탭), S=저장
+      // ↑=윈도우 크기(1~5 순환), ↓=누적/단일 토글, ←=이전 문장, →=다음, R=처음부터 재생, S=저장 토글
+      if (e.key === 'ArrowUp') { e.preventDefault(); handleUpArrow(); return; }
       if (e.key === 'ArrowDown') { e.preventDefault(); handleToggleCumulative(); return; }
-      if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftAction(); return; }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftArrow(); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); handleRightArrow(); return; }
       if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); handleTogglePlay(); return; }
+      if (e.code === 'KeyR') { e.preventDefault(); handlePlayFromStart(); return; }
       if (e.code === 'KeyS') { e.preventDefault(); handleSaveSentence(); return; }
       if (e.code === 'KeyY') { e.preventDefault(); handleToggleYouTubeMode(); return; }
     };
@@ -844,19 +843,19 @@ const AudioLearningScreen: React.FC = () => {
       }
     }, 500);
     return () => { window.removeEventListener('keydown', handleKeyDown); clearInterval(focusInterval); };
-  }, [handleToggleCumulative, handleLeftAction, handleRightArrow, handleTogglePlay, handleSaveSentence, handleToggleYouTubeMode]);
+  }, [handleUpArrow, handleToggleCumulative, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleSaveSentence, handleToggleYouTubeMode]);
 
   // Phase 3: MediaSession — 잠금화면 미디어키(Android). 키보드와 동일 shared handler 공유.
-  // prev=처음부터/이전(더블탭), next=다음, play/pause=재생정지, stop=저장.
+  // prev=이전 문장, next=다음, play/pause=재생정지, stop=저장. (처음부터 재생은 R 키 전용)
   useEffect(() => {
     if (!article) return;
     startMediaSession(article.title, {
-      prev: handleLeftAction,
+      prev: handleLeftArrow,
       next: handleRightArrow,
       togglePlay: handleTogglePlay,
       save: handleSaveSentence,
     });
-  }, [article, handleLeftAction, handleRightArrow, handleTogglePlay, handleSaveSentence]);
+  }, [article, handleLeftArrow, handleRightArrow, handleTogglePlay, handleSaveSentence]);
 
   useEffect(() => { setMediaPlaybackState(isPlaying); }, [isPlaying]);
   useEffect(() => () => { stopMediaSession(); }, []);
@@ -1051,20 +1050,30 @@ const AudioLearningScreen: React.FC = () => {
             size="small"
           />
 
-          <Typography variant="caption" color="text.secondary">윈도우 크기: {windowSize === 'full' ? '전체' : windowSize}</Typography>
-          <Slider
-            value={windowSize === 'full' ? article.sentences.length : (windowSize as number)}
-            onChange={(_, v) => {
-              const val = v as number;
-              setWindowSize(val >= article.sentences.length ? 'full' : val);
-            }}
-            min={1}
-            max={article.sentences.length}
-            step={1}
-            valueLabelDisplay="auto"
-            valueLabelFormat={(v) => v >= article.sentences.length ? '전체' : `${v}`}
-            size="small"
-          />
+          <Typography variant="caption" color="text.secondary">윈도우 크기</Typography>
+          <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 0.5 }}>
+            <TextField
+              type="number"
+              size="small"
+              value={windowSize === 'full' ? '' : windowSize}
+              placeholder={windowSize === 'full' ? '전체' : ''}
+              disabled={windowSize === 'full'}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (isNaN(n)) return;
+                setWindowSize(Math.max(1, Math.min(n, article.sentences.length)));
+              }}
+              inputProps={{ min: 1, max: article.sentences.length }}
+              sx={{ width: 100 }}
+            />
+            <Button
+              size="small"
+              variant={windowSize === 'full' ? 'contained' : 'outlined'}
+              onClick={() => setWindowSize(windowSize === 'full' ? 1 : 'full')}
+            >
+              전체
+            </Button>
+          </Box>
 
           <FormControlLabel
             control={
