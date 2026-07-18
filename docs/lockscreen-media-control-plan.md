@@ -108,10 +108,10 @@ Android 알림 실제로 띄우는지 미검증 — 안 뜨면 극저볼륨 tone
 visibilitychange(hidden)+pagehide 시 `setLastIndex`+`saveDirtyArticles`. remap 모드(저장덱/subdeck)
 제외(`plainOpenRef`). 하드킬 대비 주기저장 미구현(best effort).
 
-**Phase 5 — 전체재생. ✅ 완료.** 헤더 `PlaylistPlay` 버튼 → `handlePlayAllButton`:
-YouTube 아티클=외부 YouTube 앱 열기(start deep link, 백그라운드/잠금은 앱 네이티브), MP3=인앱
-`handlePlayAll`(포그라운드). YouTube 화면 클릭=토글 유지. **defer**: 백그라운드 MP3 재생 =
-HTMLAudioElement 재작업 필요(Web Audio는 잠금 시 suspend).
+**Phase 5 — 전체재생 제거 (재고 후 철회).** 전체재생 기능은 존재 이유 없음 → 삭제.
+문장 단위 재생만 유지하고 거기서 currentIndex가 네비 따라 움직이므로 resume는 이미 성립.
+헤더에는 **YouTube 앱 열기 버튼(`OpenInNew`)만** easy-access용으로 남김(YouTube 아티클 한정,
+`handleOpenYouTubeApp`, 첫 문장 start deep link). MP3 인앱 전체재생 제거.
 
 ---
 

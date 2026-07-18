@@ -35,7 +35,7 @@ import {
   KeyboardDoubleArrowRight,
   PlayArrow,
   Pause,
-  PlaylistPlay,
+  OpenInNew,
   Replay,
   Home,
   Bookmark,
@@ -684,47 +684,13 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [handleLeftArrow, handlePlayFromStart]);
 
-  // Phase 5: 전체재생 — 문장 1..N 전부(hidden 제외) 순차 재생. 모드/currentIndex 무관.
-  const handlePlayAll = React.useCallback(() => {
-    if (!article) return;
-    const visible = article.sentences.filter(s => !s.hidden && s.start != null && s.end != null);
-    if (visible.length === 0) return;
-    if (videoId) {
-      const player = ytPlayerRef.current;
-      if (!player) return;
-      player.seekTo(visible[0].start!, true);
-      ytEndTimeRef.current = visible[visible.length - 1].end!;
-      player.playVideo();
-      setActiveSentenceLocalIdx(0);
-      setActiveWordIdx(-1);
-      setIsPlaying(true);
-      startYouTubePolling();
-      return;
-    }
-    if (!audioLoaded) return;
-    setActiveSentenceLocalIdx(0);
-    setActiveWordIdx(-1);
-    setIsPlaying(true);
-    audioSeekService.playSegments(
-      visible,
-      onPlayEnd,
-      (localIdx) => setActiveSentenceLocalIdx(localIdx),
-      onWordUpdate,
-    );
-  }, [article, audioLoaded, videoId, onPlayEnd, onWordUpdate, startYouTubePolling]);
-
-  // 전체재생 버튼: YouTube 아티클은 외부 YouTube 앱(백그라운드/잠금 재생은 앱이 네이티브 처리),
-  // MP3는 인앱 handlePlayAll(포그라운드). ponytail: 백그라운드 MP3 재생은 HTMLAudioElement
-  //         재작업 필요 — 현재 Web Audio는 잠금 시 suspend. 향후 과제.
-  const handlePlayAllButton = React.useCallback(() => {
-    if (videoId) {
-      const start = article?.sentences.find(s => !s.hidden && s.start != null)?.start;
-      const t = start != null ? `&t=${Math.floor(start)}s` : '';
-      window.open(`https://www.youtube.com/watch?v=${videoId}${t}`, '_blank');
-      return;
-    }
-    handlePlayAll();
-  }, [videoId, article, handlePlayAll]);
+  // YouTube 앱 열기(easy access) — 첫 문장 start 지점으로 deep link. YouTube 아티클에서만 노출.
+  const handleOpenYouTubeApp = React.useCallback(() => {
+    if (!videoId) return;
+    const start = article?.sentences.find(s => !s.hidden && s.start != null)?.start;
+    const t = start != null ? `&t=${Math.floor(start)}s` : '';
+    window.open(`https://www.youtube.com/watch?v=${videoId}${t}`, '_blank');
+  }, [videoId, article]);
 
   // Tap sentence to play from it
   const handleSentenceTap = React.useCallback((sentLocalIdx: number) => {
@@ -1015,11 +981,13 @@ const AudioLearningScreen: React.FC = () => {
                 </IconButton>
               </>
             )}
-            <Tooltip title={videoId ? '전체재생 (YouTube 앱)' : '전체재생'}>
-              <IconButton onClick={handlePlayAllButton} size="small" color="success">
-                <PlaylistPlay />
-              </IconButton>
-            </Tooltip>
+            {videoId && (
+              <Tooltip title="YouTube 앱에서 열기">
+                <IconButton onClick={handleOpenYouTubeApp} size="small" color="success">
+                  <OpenInNew />
+                </IconButton>
+              </Tooltip>
+            )}
             <Tooltip title="숨김 목록">
               <IconButton onClick={() => setShowHiddenList(true)} size="small">
                 <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
