@@ -114,7 +114,9 @@ const AudioLearningScreen: React.FC = () => {
   //       → video 앞선 위치까지 추적하려면 폴링이 currentIndex를 갱신해야 함(별도 과제).
   currentIndexRef.current = currentIndex;
   const saveResume = React.useCallback(() => {
-    if (!id || !plainOpenRef.current) return;
+    // resumeRestoredRef 가드: 로드/복원 완료 전엔 저장 금지. StrictMode 이중 마운트의
+    // throwaway cleanup이 restore 전 currentIndex(=1)를 저장해 lastIndex를 오염시키는 것 차단.
+    if (!id || !plainOpenRef.current || !resumeRestoredRef.current) return;
     const store = useAppStore.getState();
     store.setLastIndex(id, currentIndexRef.current); // 값 바뀔 때만 dirty
     store.saveDirtyArticles();

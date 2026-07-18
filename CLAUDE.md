@@ -72,6 +72,10 @@ npm run build
 - Blind mode: blurs all words except active word during playback
 - Hide toggle: `hidden: true/false` on sentence → dirty mark → Save syncs to Drive
 - Hidden list dialog: view/unhide hidden sentences
+- 재생 = 문장 단위(단일: 현재 1문장 / 누적: 윈도우 연속). 전체재생 기능 없음(의도적 제거)
+- 키보드: `↓`=누적/단일 토글, `←`=1탭 처음부터·더블탭(350ms) 이전, `→`=다음, `Space`=재생/정지, `S`=문장 저장, `Y`=YouTube/MP3 토글. `↑` 미사용
+- **Resume**: `lastIndex`(현재 문장 커서)를 exit 시 Drive 저장 → 재오픈 복원. 저장 트리거 = mount effect cleanup(홈이동/아티클전환/언마운트) + `visibilitychange(hidden)`/`pagehide`. `saveResume()` 단일 헬퍼. remap 모드(저장덱/subdeck)는 `plainOpenRef`로 제외
+- **MediaSession** (`services/mediaSession.ts`): 잠금화면 미디어키 → 키보드와 동일 shared handler(prev=처음부터/이전, next=다음, play/pause=토글, stop=저장). 무음 `<audio>` 앵커로 세션 점유(Web Audio 단독은 잠금 위젯 안 뜸). ⚠️ Android 실측 미완 — 미디어키 내보내는 입력기기 필요(예: 8BitDo Micro는 미디어키 미지원)
 
 ### YouTube Integration
 - Toggle button replaces header play button (only when `article.source` has YouTube URL)
@@ -79,6 +83,7 @@ npm run build
 - 100ms polling: `player.getCurrentTime()` → sentence/word highlight sync
 - Sentence/word click → `player.seekTo()`. End-time auto-pause via `ytEndTimeRef`
 - `handleToggleYouTubeMode()` cleans up audio/polling state on switch
+- 헤더 `OpenInNew` 버튼(YouTube 아티클 한정): `handleOpenYouTubeApp()` → 외부 YouTube 앱을 첫 문장 start 지점으로 deep link (easy access)
 
 ### Lazy Loading (index.json)
 - App start: download `index.json` (1 file) instead of N individual JSONs
@@ -93,6 +98,7 @@ npm run build
 - `FullArticle` (kind:'loaded'): ArticleBase + sentences[] + audioBlob?. Drive write 안전
 - `AudioArticle`: persistence type (Drive JSON + IndexedDB). kind 필드 없음. Drive I/O 경계에서만 사용
 - `SentenceEntry`: index, text, start?, end?, words? (WordTimestamp[]), memo?, hidden?
+- `lastIndex?: number` (ArticleBase/AudioArticle/ArticleSummary): resume 위치. snapshot dirty에 포함, 전 직렬화 경로 round-trip
 - `WordTimestamp`: word, start, end
 - `SubDeck`: parentId article range reference with own review schedule
 - `ArticleSummary`: index.json용 JSON 직렬화 타입 (string dates)
