@@ -59,6 +59,7 @@ export interface AudioArticle {
   savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null }; // 저장 문장 덱 복습
   source?: string; // YouTube URL 등
   sentenceCount?: number; // index summary count (before full sentences loaded)
+  lastIndex?: number; // 마지막 학습 문장 index (resume 위치)
   nextReviewDate: Date | null;
   reviewInterval: number; // days
   createdAt: Date;
@@ -79,6 +80,7 @@ export interface ArticleBase {
   subDeckReviews?: SubDeckReview[];
   splitPoints?: number[];
   source?: string;
+  lastIndex?: number; // 마지막 학습 문장 index (resume 위치)
   createdAt: Date;
   lastAccessed: Date;
 }
@@ -126,6 +128,7 @@ export interface ArticleSummary {
   subDeckReviews?: SubDeckReview[];
   splitPoints?: number[];
   source?: string;
+  lastIndex?: number; // 마지막 학습 문장 index (resume 위치)
   createdAt: string;
   lastAccessed: string;
 }
