@@ -923,16 +923,6 @@ const AudioLearningScreen: React.FC = () => {
             <IconButton onClick={() => navigate('/')} color="primary" size="small">
               <Home />
             </IconButton>
-            {dirtyAudioIds.size > 0 && (
-              <IconButton
-                onClick={() => saveDirtyArticles()}
-                color="warning"
-                size="small"
-                title="변경사항 저장"
-              >
-                <Save />
-              </IconButton>
-            )}
           </Box>
 
           <Stack direction="row" spacing={0.5} alignItems="center">
@@ -992,6 +982,19 @@ const AudioLearningScreen: React.FC = () => {
               <IconButton onClick={() => setShowControls(prev => !prev)} size="small" color={showControls ? 'primary' : 'default'}>
                 <Gamepad />
               </IconButton>
+            </Tooltip>
+            {/* Save = 항상 far-right에 고정 렌더. dirty 없으면 disabled(공간 유지 → 다른 버튼 안 밀림) */}
+            <Tooltip title="변경사항 저장">
+              <span>
+                <IconButton
+                  onClick={() => saveDirtyArticles()}
+                  color="warning"
+                  size="small"
+                  disabled={dirtyAudioIds.size === 0}
+                >
+                  <Save />
+                </IconButton>
+              </span>
             </Tooltip>
           </Stack>
         </Box>
