@@ -18,6 +18,8 @@ import {
   DialogContent,
   useTheme,
   CircularProgress,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
 import {
   Home,
@@ -38,7 +40,8 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { FullArticle, SentenceEntry, WordTimestamp } from '../types';
+import { FullArticle, SentenceEntry, WordTimestamp, VariantKey } from '../types';
+import { hasVariants, foldActive, applyVariant } from '../utils/variants';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
 import { GoogleDriveService } from '../services/googleDriveService';
@@ -67,6 +70,8 @@ const TimestampEditorScreen: React.FC = () => {
 
   const [article, setArticle] = useState<FullArticle | null>(null);
   const [sentences, setSentences] = useState<SentenceEntry[]>([]);
+  // variant 상태는 article.variants / article.activeVariant가 SSOT (별도 state 없음).
+  // metaToArticle가 활성 variant를 top-level로 hydrate → loaded.sentences 등은 활성본.
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [wsReady, setWsReady] = useState(false);
@@ -127,6 +132,7 @@ const TimestampEditorScreen: React.FC = () => {
       const loaded: FullArticle = { ...full, audioBlob };
       setArticle(loaded);
 
+      // top-level은 이미 활성 variant로 hydrate됨 (metaToArticle)
       setSentences([...loaded.sentences]);
 
       if (loaded.splitPoints?.length) {
@@ -778,6 +784,27 @@ const TimestampEditorScreen: React.FC = () => {
     setSplitMode(false);
   }, [sentences, selectedIndex, pushUndo]);
 
+  // variant 전환: 나가는 variant 슬롯에 현재 라이브 편집(sentences+split)을 fold하고,
+  // 들어오는 variant 슬롯을 top-level 미러로 hoist. 각 variant 편집 독립 보존.
+  const handleVariantChange = useCallback((_e: React.MouseEvent<HTMLElement>, next: VariantKey | null) => {
+    if (!next || !article || !hasVariants(article) || next === article.activeVariant) return;
+    const live: FullArticle = { ...article, sentences, splitPoints: Array.from(splitMarkers).sort((a, b) => a - b) };
+    const swapped = applyVariant(foldActive(live), next);
+    setArticle(swapped);
+    setSentences([...swapped.sentences]);
+    const nextSplits = new Set(swapped.splitPoints ?? []);
+    setSplitMarkers(nextSplits);
+    setSavedSplitMarkers(new Set(nextSplits));
+    setSelectedIndex(0);
+    setHasChanges(true);
+    // 다른 화면(학습/홈)도 전환 반영
+    if (id) {
+      useAppStore.setState(state => ({
+        audioArticles: state.audioArticles.map(a => a.id === id ? swapped : a),
+      }));
+    }
+  }, [article, sentences, splitMarkers, id]);
+
   const handleSave = useCallback(async () => {
     if (!article) return;
     if (!accessToken) {
@@ -786,10 +813,9 @@ const TimestampEditorScreen: React.FC = () => {
     }
     setIsSaving(true);
     try {
-      const updated: FullArticle = {
-        ...article,
-        sentences,
-      };
+      // 현재 편집본을 활성 variant 슬롯에 fold (variant 아티클만). 분할은 별도(분할 저장).
+      const live: FullArticle = { ...article, sentences };
+      const updated: FullArticle = hasVariants(article) ? foldActive(live) : live;
       const drive = new GoogleDriveService(accessToken);
       await drive.saveArticle(updated);
       setArticle(updated);
@@ -797,7 +823,7 @@ const TimestampEditorScreen: React.FC = () => {
       // Sync store cache so other screens (learning mode) see fresh sentences
       if (id) {
         useAppStore.setState(state => ({
-          audioArticles: state.audioArticles.map(a => a.id === id ? { ...a, sentences: updated.sentences, splitPoints: updated.splitPoints } : a),
+          audioArticles: state.audioArticles.map(a => a.id === id ? updated : a),
         }));
       }
       await loadAudioArticles();
@@ -1407,6 +1433,19 @@ const TimestampEditorScreen: React.FC = () => {
           </Typography>
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {article.variants && (
+            <ToggleButtonGroup
+              value={article.activeVariant}
+              exclusive
+              size="small"
+              onChange={handleVariantChange}
+              disabled={isSaving}
+              aria-label="트랜스크립트 소스"
+            >
+              {article.variants.vtt && <ToggleButton value="vtt">VTT</ToggleButton>}
+              {article.variants.whisperx && <ToggleButton value="whisperx">whisperX</ToggleButton>}
+            </ToggleButtonGroup>
+          )}
           {hasChanges && <Chip label="변경됨" color="warning" size="small" />}
           <Button
             variant="outlined"

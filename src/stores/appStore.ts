@@ -98,6 +98,7 @@ function snapshotArticle(a: StoreArticle): string {
     hidden: a.kind === 'loaded' ? a.sentences.filter(s => s.hidden).map(s => s.index) : [],
     src: a.source || '',
     li: a.lastIndex ?? null,
+    av: a.activeVariant ?? null,
   });
 }
 
@@ -360,6 +361,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         id: rawArticle.id,
         title: rawArticle.title,
         sentences: rawArticle.sentences,
+        variants: rawArticle.variants,
+        activeVariant: rawArticle.activeVariant,
         splitPoints: rawArticle.splitPoints,
         subDeckReviews: rawArticle.subDeckReviews,
         savedAsDeck: prev?.savedAsDeck ?? rawArticle.savedAsDeck,

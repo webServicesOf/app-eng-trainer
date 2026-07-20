@@ -46,10 +46,14 @@ import {
   DriveFileRenameOutline as RenameIcon,
 } from '@mui/icons-material';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence, AudioArticle, SentenceEntry } from '../types';
+import { SavedSentence, AudioArticle, SentenceEntry, TranscriptVariants, VariantKey } from '../types';
+import { applyVariant } from '../utils/variants';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
+
+// yt2mp3 폴더에서 감지한 변형 파일들
+type VariantFiles = { vtt?: File; whisperx?: File; legacy?: File };
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -120,11 +124,12 @@ export const HomeScreen: React.FC = () => {
   const [sheetTabs, setSheetTabs] = useState<string[]>([]);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [uploadMp3File, setUploadMp3File] = useState<File | null>(null);
-  const [uploadJsonFile, setUploadJsonFile] = useState<File | null>(null);
+  // variant files: sentences_VTT.json / sentences_whisperx.json (+ legacy sentences.json)
+  const [uploadVariantFiles, setUploadVariantFiles] = useState<VariantFiles | null>(null);
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadSource, setUploadSource] = useState('');
   // Batch upload state
-  const [batchFolders, setBatchFolders] = useState<{ name: string; mp3: File; json: File; skip: boolean }[]>([]);
+  const [batchFolders, setBatchFolders] = useState<{ name: string; mp3: File; files: VariantFiles; skip: boolean }[]>([]);
   const [batchMode, setBatchMode] = useState(false);
   const [batchProgress, setBatchProgress] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
@@ -266,14 +271,13 @@ export const HomeScreen: React.FC = () => {
     setEditingTitleId(null);
   };
 
-  /** Upload a single article from mp3 + json + title */
-  const uploadSingleArticle = async (mp3: File, json: File, title: string, source?: string) => {
-    const jsonText = await json.text();
-    const parsed = JSON.parse(jsonText);
+  /** Parse a sentences_*.json file → normalized SentenceEntry[] (+ embedded source) */
+  const parseSentencesFile = async (f: File): Promise<{ sentences: SentenceEntry[]; source?: string }> => {
+    const parsed = JSON.parse(await f.text());
     // Support both array format and object format {source, sentences}
-    const rawSentences = Array.isArray(parsed) ? parsed : parsed.sentences;
-    const jsonSource = Array.isArray(parsed) ? undefined : parsed.source;
-    const sentences: SentenceEntry[] = rawSentences.map((s: any, i: number) => ({
+    const raw = Array.isArray(parsed) ? parsed : parsed.sentences;
+    const source = Array.isArray(parsed) ? undefined : parsed.source;
+    const sentences: SentenceEntry[] = raw.map((s: any, i: number) => ({
       index: s.index ?? i + 1,
       text: s.text,
       start: s.start ?? 0,
@@ -281,36 +285,63 @@ export const HomeScreen: React.FC = () => {
       words: s.words,
       memo: s.memo,
     }));
+    return { sentences, source };
+  };
+
+  /** Upload a single article from mp3 + variant files (VTT/whisperX, or legacy single) + title */
+  const uploadSingleArticle = async (mp3: File, files: VariantFiles, title: string, source?: string) => {
+    let jsonSource: string | undefined;
+    let sentences: SentenceEntry[] = [];
+    let variants: TranscriptVariants | undefined;
+    let activeVariant: VariantKey | undefined;
+
+    if (files.vtt || files.whisperx) {
+      // 각 variant = 자기 sentences만 담은 독립 번들 (split/subdeck/saved는 편집하며 생성됨)
+      variants = {};
+      if (files.vtt) { const r = await parseSentencesFile(files.vtt); variants.vtt = { sentences: r.sentences }; jsonSource = jsonSource ?? r.source; }
+      if (files.whisperx) { const r = await parseSentencesFile(files.whisperx); variants.whisperx = { sentences: r.sentences }; jsonSource = jsonSource ?? r.source; }
+      activeVariant = variants.vtt ? 'vtt' : 'whisperx'; // default active = VTT, else whisperX
+    } else if (files.legacy) {
+      const r = await parseSentencesFile(files.legacy);
+      sentences = r.sentences; jsonSource = r.source; // old folder → single transcript, no variants
+    } else {
+      throw new Error('sentences 파일이 없습니다 (sentences_VTT.json / sentences_whisperx.json / sentences.json)');
+    }
 
     const audioBlob = new Blob([await mp3.arrayBuffer()], { type: 'audio/mpeg' });
 
-    const audioArticle: AudioArticle = {
+    let audioArticle: AudioArticle = {
       id: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title,
       audioBlob,
       sentences,
+      variants,
+      activeVariant,
       source: source || jsonSource || undefined,
       nextReviewDate: null,
       reviewInterval: 0,
       createdAt: new Date(),
       lastAccessed: new Date(),
     };
+    // variant 아티클: 활성 슬롯을 top-level 미러로 끌어올림 (sentences 등)
+    if (variants && activeVariant) audioArticle = applyVariant(audioArticle, activeVariant);
 
     await saveAudioArticle(audioArticle);
   };
 
   const handleUploadAudioArticle = async () => {
-    if (!uploadMp3File || !uploadJsonFile || !uploadTitle.trim()) {
-      alert('제목, MP3, sentences.json 모두 필요합니다. 로컬에서 yt2mp3 실행 후 업로드하세요.');
+    const hasJson = uploadVariantFiles && (uploadVariantFiles.vtt || uploadVariantFiles.whisperx || uploadVariantFiles.legacy);
+    if (!uploadMp3File || !hasJson || !uploadTitle.trim()) {
+      alert('제목, MP3, sentences 파일 모두 필요합니다. 로컬에서 yt2mp3 실행 후 업로드하세요.');
       return;
     }
 
     try {
       setLoading(true);
-      await uploadSingleArticle(uploadMp3File, uploadJsonFile, uploadTitle.trim(), uploadSource.trim());
+      await uploadSingleArticle(uploadMp3File, uploadVariantFiles!, uploadTitle.trim(), uploadSource.trim());
 
       setUploadMp3File(null);
-      setUploadJsonFile(null);
+      setUploadVariantFiles(null);
       setUploadTitle('');
       setUploadSource('');
       setUploadDialogOpen(false);
@@ -333,7 +364,7 @@ export const HomeScreen: React.FC = () => {
       for (const folder of toUpload) {
         try {
           setBatchProgress(`${uploaded + 1}/${toUpload.length}: ${folder.name}`);
-          await uploadSingleArticle(folder.mp3, folder.json, folder.name);
+          await uploadSingleArticle(folder.mp3, folder.files, folder.name);
           uploaded++;
         } catch (e) {
           console.error(`Failed to upload ${folder.name}:`, e);
@@ -1426,11 +1457,11 @@ export const HomeScreen: React.FC = () => {
             >
               {batchMode
                 ? `📁 ${batchFolders.length}개 폴더 감지`
-                : uploadMp3File && uploadJsonFile
-                  ? `📁 ${uploadMp3File.name} + ${uploadJsonFile.name}`
+                : uploadMp3File && uploadVariantFiles
+                  ? `📁 ${uploadMp3File.name} + ${[uploadVariantFiles.vtt && 'VTT', uploadVariantFiles.whisperx && 'whisperX', uploadVariantFiles.legacy && 'json'].filter(Boolean).join('/')}`
                   : uploadMp3File
                     ? `MP3: ${uploadMp3File.name} (JSON 없음)`
-                    : '폴더 선택 (MP3 + sentences.json)'}
+                    : '폴더 선택 (MP3 + sentences_*.json)'}
               <input
                 type="file"
                 hidden
@@ -1440,24 +1471,26 @@ export const HomeScreen: React.FC = () => {
                   if (!files || files.length === 0) return;
 
                   // Group files by subfolder
-                  const groups: Record<string, { mp3?: File; json?: File }> = {};
+                  const groups: Record<string, { mp3?: File; files: VariantFiles }> = {};
                   for (let i = 0; i < files.length; i++) {
                     const f = files[i];
                     const parts = ((f as any).webkitRelativePath || f.name).split('/');
                     // depth 1: "folder/file" → single, depth 2+: "parent/sub/file" → batch
                     const key = parts.length >= 3 ? parts[1] : parts[0];
-                    if (!groups[key]) groups[key] = {};
+                    if (!groups[key]) groups[key] = { files: {} };
                     if (f.name.endsWith('.mp3')) groups[key].mp3 = f;
-                    if (f.name === 'sentences.json') groups[key].json = f;
+                    else if (f.name === 'sentences_VTT.json') groups[key].files.vtt = f;
+                    else if (f.name === 'sentences_whisperx.json') groups[key].files.whisperx = f;
+                    else if (f.name === 'sentences.json') groups[key].files.legacy = f; // 구 폴더 호환
                   }
 
-                  // Filter valid folders (have both mp3 + json)
+                  // Filter valid folders (mp3 + at least one sentences file)
                   const validFolders = Object.entries(groups)
-                    .filter(([, g]) => g.mp3 && g.json)
-                    .map(([name, g]) => ({ name, mp3: g.mp3!, json: g.json!, skip: false }));
+                    .filter(([, g]) => g.mp3 && (g.files.vtt || g.files.whisperx || g.files.legacy))
+                    .map(([name, g]) => ({ name, mp3: g.mp3!, files: g.files, skip: false }));
 
                   if (validFolders.length === 0) {
-                    alert('MP3 + sentences.json이 있는 폴더를 찾을 수 없습니다.');
+                    alert('MP3 + sentences_*.json이 있는 폴더를 찾을 수 없습니다.');
                     return;
                   }
 
@@ -1466,7 +1499,7 @@ export const HomeScreen: React.FC = () => {
                     setBatchMode(false);
                     setBatchFolders([]);
                     setUploadMp3File(validFolders[0].mp3);
-                    setUploadJsonFile(validFolders[0].json);
+                    setUploadVariantFiles(validFolders[0].files);
                     setUploadTitle(validFolders[0].name);
                   } else {
                     // Batch mode: mark existing titles as skip
@@ -1478,7 +1511,7 @@ export const HomeScreen: React.FC = () => {
                     setBatchMode(true);
                     setBatchFolders(marked);
                     setUploadMp3File(null);
-                    setUploadJsonFile(null);
+                    setUploadVariantFiles(null);
                     setUploadTitle('');
                   }
                 }}
@@ -1556,7 +1589,7 @@ export const HomeScreen: React.FC = () => {
             <Button
               onClick={handleUploadAudioArticle}
               variant="contained"
-              disabled={!uploadMp3File || !uploadJsonFile || !uploadTitle.trim() || isLoading}
+              disabled={!uploadMp3File || !uploadVariantFiles || !uploadTitle.trim() || isLoading}
             >
               업로드
             </Button>

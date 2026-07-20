@@ -1,4 +1,5 @@
-import { AudioArticle, ArticleSummary, SentenceEntry, SubDeckReview } from '../types';
+import { AudioArticle, ArticleSummary, SentenceEntry, SubDeckReview, TranscriptVariants, VariantKey } from '../types';
+import { hasVariants, foldActive, applyVariant } from '../utils/variants';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
@@ -11,6 +12,8 @@ interface AudioArticleMeta {
   id: string;
   title: string;
   sentences: SentenceEntry[];
+  variants?: TranscriptVariants;
+  activeVariant?: VariantKey;
   splitPoints?: number[];
   subDeckReviews?: SubDeckReview[];
   savedAsDeck?: boolean;
@@ -199,29 +202,37 @@ export class GoogleDriveService {
   // ── helpers ────────────────────────────────────────────
 
   private articleToMeta(article: AudioArticle): AudioArticleMeta {
+    // variant 아티클: 현재 활성 미러를 variants[active]에 fold. index 종속 필드는
+    // variants 안에만 저장(top-level omit) → 디스크에 variant 간 공유 상태 0.
+    const isVariant = hasVariants(article);
+    const a = isVariant ? foldActive(article) : article;
     return {
-      id: article.id,
-      title: article.title,
-      sentences: article.sentences,
-      splitPoints: article.splitPoints,
-      subDeckReviews: article.subDeckReviews,
-      savedAsDeck: article.savedAsDeck,
-      savedSentenceIndices: article.savedSentenceIndices,
-      savedSentenceReview: article.savedSentenceReview,
-      source: article.source,
-      lastIndex: article.lastIndex,
-      nextReviewDate: article.nextReviewDate ? new Date(article.nextReviewDate).toISOString() : null,
-      reviewInterval: article.reviewInterval || 0,
-      createdAt: new Date(article.createdAt).toISOString(),
-      lastAccessed: new Date(article.lastAccessed).toISOString(),
+      id: a.id,
+      title: a.title,
+      sentences: a.sentences, // 미러(활성): 비어있지 않음 보장 + 레거시 리더 호환
+      variants: a.variants,
+      activeVariant: a.activeVariant,
+      splitPoints: isVariant ? undefined : a.splitPoints,
+      subDeckReviews: isVariant ? undefined : a.subDeckReviews,
+      savedAsDeck: isVariant ? undefined : a.savedAsDeck,
+      savedSentenceIndices: isVariant ? undefined : a.savedSentenceIndices,
+      savedSentenceReview: isVariant ? undefined : a.savedSentenceReview,
+      source: a.source,
+      lastIndex: isVariant ? undefined : a.lastIndex,
+      nextReviewDate: a.nextReviewDate ? new Date(a.nextReviewDate).toISOString() : null,
+      reviewInterval: a.reviewInterval || 0,
+      createdAt: new Date(a.createdAt).toISOString(),
+      lastAccessed: new Date(a.lastAccessed).toISOString(),
     };
   }
 
   private metaToArticle(meta: AudioArticleMeta): AudioArticle {
-    return {
+    const base: AudioArticle = {
       id: meta.id,
       title: meta.title,
       sentences: meta.sentences || [],
+      variants: meta.variants,
+      activeVariant: meta.activeVariant,
       splitPoints: meta.splitPoints,
       subDeckReviews: meta.subDeckReviews,
       savedAsDeck: meta.savedAsDeck,
@@ -234,6 +245,8 @@ export class GoogleDriveService {
       createdAt: new Date(meta.createdAt),
       lastAccessed: new Date(meta.lastAccessed),
     };
+    // variant 아티클: 활성 슬롯을 top-level 미러로 hydrate (index 종속 필드 복원).
+    return hasVariants(base) && base.activeVariant ? applyVariant(base, base.activeVariant) : base;
   }
 
   // ── migration: move legacy flat files into data/ ───────
