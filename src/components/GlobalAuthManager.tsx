@@ -14,6 +14,7 @@ const GlobalAuthManager: React.FC = () => {
     isAuthenticated,
     setAccessToken,
     setTriggerLogin,
+    setNeedsReAuth,
     loadAudioArticles,
     retryAfterReAuth,
   } = useAppStore();
@@ -25,8 +26,8 @@ const GlobalAuthManager: React.FC = () => {
     // Refresh 5 minutes before expiry
     const refreshMs = Math.max((expiresIn - 300) * 1000, 60000);
     tokenRefreshTimerRef.current = setTimeout(() => {
-      console.log('[auth] auto-refreshing token...');
-      login();
+      console.log('[auth] auto-refreshing token (silent)...');
+      login({ prompt: '' }); // silent: 세션 유효+동의완료면 팝업 없이 갱신
     }, refreshMs);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -41,14 +42,17 @@ const GlobalAuthManager: React.FC = () => {
       await loadAudioArticles();
     },
     onError: () => {
-      console.error('[auth] Login failed');
+      // silent 갱신 실패(세션 만료/동의 철회 등) → 수동 재로그인 필요 표시(팝업 강제 안 함)
+      console.error('[auth] Login failed — needs manual re-auth');
+      setNeedsReAuth(true);
     },
     scope: 'https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.file',
   });
 
-  // Register login function in store so any component/screen can trigger it
+  // Register login function in store so any component/screen can trigger it.
+  // 프로그램적 재로그인(401 등)은 silent 우선. 첫 로그인은 필요 시 GIS가 consent 표시.
   useEffect(() => {
-    setTriggerLogin(() => login());
+    setTriggerLogin(() => login({ prompt: '' }));
     return () => setTriggerLogin(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setTriggerLogin]);
@@ -61,7 +65,7 @@ const GlobalAuthManager: React.FC = () => {
       if (remainingSec > 0) {
         scheduleTokenRefresh(remainingSec);
       } else {
-        login();
+        login({ prompt: '' }); // 만료 상태로 켜짐 → silent 갱신 시도
       }
     }
     return () => {
