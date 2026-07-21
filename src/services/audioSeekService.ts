@@ -239,6 +239,17 @@ class AudioSeekService {
       });
   }
 
+  /** Decoded full-article buffer (for RecordCompare reference waveform slicing). */
+  getBuffer(): AudioBuffer | null {
+    return this.buffer;
+  }
+
+  /** Current playback position in buffer seconds, or null when not playing (for cursor tracking). */
+  getPosition(): number | null {
+    if (!this._isPlaying || !this.ctx) return null;
+    return this.startOffset + (this.ctx.currentTime - this.startedAt) * this._playbackRate;
+  }
+
   playSentence(
     start: number,
     end: number,
