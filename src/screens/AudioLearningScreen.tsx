@@ -51,12 +51,14 @@ import {
   Audiotrack,
   Settings,
   Gamepad,
+  Mic,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { FullArticle, StoreArticle, SentenceEntry } from '../types';
 import { useLearningStore, useAppStore } from '../stores/appStore';
 import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
+import RecordCompare from '../components/RecordCompare';
 import { startMediaSession, setMediaPlaybackState, stopMediaSession } from '../services/mediaSession';
 import { GoogleDriveService } from '../services/googleDriveService';
 import YouTubePlayer from 'react-youtube';
@@ -97,6 +99,7 @@ const AudioLearningScreen: React.FC = () => {
   const [showControls, setShowControls] = useState(true);
   const [windowStepMode, setWindowStepMode] = useState(false);
   const [settingsAnchorEl, setSettingsAnchorEl] = useState<HTMLElement | null>(null);
+  const [recordMode, setRecordMode] = useState(false);
 
   const sentenceRefs = useRef<(HTMLDivElement | null)[]>([]);
   const activeWordRef = useRef<HTMLSpanElement | null>(null);
@@ -830,7 +833,9 @@ const AudioLearningScreen: React.FC = () => {
       if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftArrow(); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); handleRightArrow(); return; }
       if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); handleTogglePlay(); return; }
-      if (e.code === 'KeyR') { e.preventDefault(); handlePlayFromStart(); return; }
+      // In record mode, RecordCompare owns 'r' (plays reference with a cursor) → don't double-play.
+      if (e.code === 'KeyR') { if (recordMode) return; e.preventDefault(); handlePlayFromStart(); return; }
+      if (e.code === 'KeyM') { e.preventDefault(); setRecordMode(m => !m); return; }
       if (e.code === 'KeyS') { e.preventDefault(); handleSaveSentence(); return; }
       if (e.code === 'KeyY') { e.preventDefault(); handleToggleYouTubeMode(); return; }
     };
@@ -843,7 +848,7 @@ const AudioLearningScreen: React.FC = () => {
       }
     }, 500);
     return () => { window.removeEventListener('keydown', handleKeyDown); clearInterval(focusInterval); };
-  }, [handleUpArrow, handleToggleCumulative, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleSaveSentence, handleToggleYouTubeMode]);
+  }, [handleUpArrow, handleToggleCumulative, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleSaveSentence, handleToggleYouTubeMode, recordMode]);
 
   // Phase 3: MediaSession — 잠금화면 미디어키(Android). 키보드와 동일 shared handler 공유.
   // prev=이전 문장, next=다음, play/pause=재생정지, stop=저장. (처음부터 재생은 R 키 전용)
@@ -878,6 +883,56 @@ const AudioLearningScreen: React.FC = () => {
     if (!id || !plainOpenRef.current || !resumeRestoredRef.current) return;
     useAppStore.getState().setLastIndex(id, currentIndex);
   }, [id, currentIndex]);
+
+  // Exit → auto-persist dirty (incl. lastIndex resume cursor) so Save button doesn't
+  // leak into the home screen. Documented design: cleanup(홈이동/아티클전환/언마운트) = save trigger.
+  useEffect(() => {
+    return () => { void useAppStore.getState().saveDirtyArticles(); };
+  }, [id]);
+
+  // Record-compare needs the decoded MP3 buffer for the reference waveform. YouTube articles
+  // skip MP3 load (iframe playback), so lazily fetch it the first time record mode opens.
+  const [, setBufferTick] = useState(0);
+  useEffect(() => {
+    if (!recordMode || !id || audioSeekService.getBuffer()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = useAppStore.getState().accessToken;
+        let blob = await localDB.getCachedMp3(id);
+        if (!blob && token) {
+          const drive = new GoogleDriveService(token);
+          blob = (await drive.downloadMp3(id)) || undefined;
+          if (blob) await localDB.cacheMp3(id, blob);
+        }
+        if (blob && !cancelled) {
+          await audioSeekService.load(URL.createObjectURL(blob));
+          if (!cancelled) setBufferTick(t => t + 1);
+        }
+      } catch (e) {
+        console.warn('record buffer load failed', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [recordMode, id]);
+
+  // RecordCompare reference playback bridges (r key): reuse the parent's YT/MP3 playback + rate,
+  // and expose position so the panel can sweep a cursor over the reference waveform.
+  const getRefPlayPosition = React.useCallback((): number | null => {
+    if (videoId) {
+      const p = ytPlayerRef.current;
+      return p && typeof p.getCurrentTime === 'function' ? p.getCurrentTime() : null;
+    }
+    return audioSeekService.getPosition();
+  }, [videoId]);
+  const stopRefPlayback = React.useCallback(() => {
+    audioSeekService.stop();
+    if (videoId) {
+      stopYouTubePolling();
+      const p = ytPlayerRef.current;
+      if (p && typeof p.pauseVideo === 'function') p.pauseVideo();
+    }
+  }, [videoId, stopYouTubePolling]);
 
   if (!article || !audioLoaded) {
     return (
@@ -933,24 +988,23 @@ const AudioLearningScreen: React.FC = () => {
             >
               {isBlindMode ? <VisibilityOff /> : <Visibility />}
             </IconButton>
+            <Tooltip title={recordMode ? '녹음 비교 끄기 (m)' : '녹음 비교 (m)'}>
+              <IconButton
+                onClick={() => setRecordMode(m => !m)}
+                color={recordMode ? 'error' : 'default'}
+                size="small"
+              >
+                <Mic />
+              </IconButton>
+            </Tooltip>
             {!isCumulative && (
-              <>
-                <IconButton
-                  onClick={handleSaveSentence}
-                  color={isSaved ? 'primary' : 'default'}
-                  size="small"
-                >
-                  {isSaved ? <Bookmark /> : <BookmarkBorder />}
-                </IconButton>
-                <IconButton
-                  onClick={handleToggleHideSentence}
-                  size="small"
-                  color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
-                  title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}
-                >
-                  {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
-                </IconButton>
-              </>
+              <IconButton
+                onClick={handleSaveSentence}
+                color={isSaved ? 'primary' : 'default'}
+                size="small"
+              >
+                {isSaved ? <Bookmark /> : <BookmarkBorder />}
+              </IconButton>
             )}
             {videoId && (
               <Tooltip title="YouTube 앱에서 열기">
@@ -959,28 +1013,9 @@ const AudioLearningScreen: React.FC = () => {
                 </IconButton>
               </Tooltip>
             )}
-            <Tooltip title="숨김 목록">
-              <IconButton onClick={() => setShowHiddenList(true)} size="small">
-                <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
-                  <FormatListBulleted />
-                </Badge>
-              </IconButton>
-            </Tooltip>
-            {videoId ? (
-              <Tooltip title={isYouTubeMode ? 'MP3로 전환 (y)' : 'YouTube로 전환 (y)'}>
-                <IconButton onClick={handleToggleYouTubeMode} size="small" color={isYouTubeMode ? 'error' : 'default'}>
-                  {isYouTubeMode ? <Audiotrack /> : <YouTubeIcon />}
-                </IconButton>
-              </Tooltip>
-            ) : null}
             <Tooltip title="설정">
               <IconButton onClick={(e) => setSettingsAnchorEl(e.currentTarget)} size="small">
                 <Settings />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title={showControls ? '패드 숨기기' : '패드 보이기'}>
-              <IconButton onClick={() => setShowControls(prev => !prev)} size="small" color={showControls ? 'primary' : 'default'}>
-                <Gamepad />
               </IconButton>
             </Tooltip>
             {/* Save = 항상 far-right에 고정 렌더. dirty 없으면 disabled(공간 유지 → 다른 버튼 안 밀림) */}
@@ -1041,6 +1076,40 @@ const AudioLearningScreen: React.FC = () => {
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
         <Box sx={{ p: 2, width: 260 }}>
+          {/* 이동된 토글: 음성 모드 전환 · 패드 숨기기 · (단일)숨김 · 숨김 문장 보기 */}
+          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center" sx={{ mb: 1.5 }}>
+            {videoId && (
+              <Tooltip title={isYouTubeMode ? 'MP3로 전환 (y)' : 'YouTube로 전환 (y)'}>
+                <IconButton onClick={handleToggleYouTubeMode} size="small" color={isYouTubeMode ? 'error' : 'default'}>
+                  {isYouTubeMode ? <Audiotrack /> : <YouTubeIcon />}
+                </IconButton>
+              </Tooltip>
+            )}
+            <Tooltip title={showControls ? '패드 숨기기' : '패드 보이기'}>
+              <IconButton onClick={() => setShowControls(prev => !prev)} size="small" color={showControls ? 'primary' : 'default'}>
+                <Gamepad />
+              </IconButton>
+            </Tooltip>
+            {!isCumulative && (
+              <Tooltip title={article.sentences.find(s => s.index === currentIndex)?.hidden ? '숨김 해제' : '숨기기'}>
+                <IconButton
+                  onClick={handleToggleHideSentence}
+                  size="small"
+                  color={article.sentences.find(s => s.index === currentIndex)?.hidden ? 'warning' : 'default'}
+                >
+                  {article.sentences.find(s => s.index === currentIndex)?.hidden ? <VisibilityOff /> : <VisibilityOffOutlined />}
+                </IconButton>
+              </Tooltip>
+            )}
+            <Tooltip title="숨김 목록">
+              <IconButton onClick={() => setShowHiddenList(true)} size="small">
+                <Badge badgeContent={hiddenCount} color="warning" max={99} invisible={hiddenCount === 0}>
+                  <FormatListBulleted />
+                </Badge>
+              </IconButton>
+            </Tooltip>
+          </Stack>
+
           <Typography variant="caption" color="text.secondary">재생속도: {playbackRate.toFixed(1)}x</Typography>
           <Slider
             value={playbackRate}
@@ -1253,6 +1322,19 @@ const AudioLearningScreen: React.FC = () => {
           </Box>
         </CardContent>
       </Card>
+
+      {/* Record & compare panel — toggle via 🎙️/m. OFF = 기존 동작 무변경 (unmount) */}
+      {recordMode && (
+        <RecordCompare
+          audioBuffer={audioSeekService.getBuffer()}
+          rangeStart={displaySentences[0]?.start ?? 0}
+          rangeEnd={displaySentences[displaySentences.length - 1]?.end ?? 0}
+          rate={playbackRate}
+          onPlayOriginal={handlePlayFromStart}
+          onStopOriginal={stopRefPlayback}
+          getPlayPosition={getRefPlayPosition}
+        />
+      )}
 
       {/* Hidden Sentences List */}
       <Dialog open={showHiddenList} onClose={() => setShowHiddenList(false)} maxWidth="sm" fullWidth>
