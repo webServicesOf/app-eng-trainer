@@ -68,7 +68,9 @@ interface AppStore extends AppState {
   toggleSavedDeck: (articleId: string, subDeckId?: string) => void;
   updateArticleSentences: (articleId: string, sentences: SentenceEntry[]) => void;
   updateArticleSource: (articleId: string, source: string) => void;
-  setLastIndex: (articleId: string, index: number) => void;
+  setResumeCursor: (articleId: string, index: number) => void;
+  persistLastIndex: (articleId: string, index: number) => Promise<void>;
+  discardArticleEdits: (articleId: string) => Promise<void>;
 
   // OAuth actions
   setAccessToken: (token: string | null, expiresIn?: number) => void;
@@ -97,7 +99,7 @@ function snapshotArticle(a: StoreArticle): string {
       .sort((a, b) => a.s - b.s || a.e - b.e),
     hidden: a.kind === 'loaded' ? a.sentences.filter(s => s.hidden).map(s => s.index) : [],
     src: a.source || '',
-    li: a.lastIndex ?? null,
+    // lastIndex(resume 커서)는 dirty/Save 대상 아님 — persistLastIndex가 index.json에 조용히 write.
     av: a.activeVariant ?? null,
   });
 }
@@ -758,12 +760,68 @@ export const useAppStore = create<AppStore>((set, get) => ({
     checkCleanAndUpdateDirty(get, set, articleId);
   },
 
-  // resume 위치 저장 — 학습 종료/백그라운드 시 현재 문장 index를 dirty 마킹 → Save로 Drive 영속
-  setLastIndex: (articleId: string, index: number) => {
+  // resume 커서 로컬 반영 — Save 버튼/dirty와 무관(snapshot에서 li 제외). 저장 경로가 최신 커서를 쓰도록 동기 세팅.
+  setResumeCursor: (articleId: string, index: number) => {
     const article = get().audioArticles.find(a => a.id === articleId);
     if (!article || article.lastIndex === index) return;
     set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? { ...a, lastIndex: index } : a) });
-    checkCleanAndUpdateDirty(get, set, articleId);
+  },
+
+  // 커서 자동저장(exit/백그라운드) — index.json에 이 아티클 lastIndex만 surgical write(조용히, 경고 없음).
+  // Drive의 마지막 저장 index를 읽어 lastIndex만 patch → 미저장 콘텐츠 편집(hidden 등) 유출 없음.
+  // ponytail: exit마다 index GET+PUT 1회. 위치 안 바뀌면 setResumeCursor early-return. 과하면 로컬 캐시 후 배치.
+  persistLastIndex: async (articleId: string, index: number) => {
+    get().setResumeCursor(articleId, index);
+    const drive = getDriveService(get().accessToken);
+    if (!drive) return;
+    try {
+      const summaries = await drive.loadIndex();
+      if (!summaries) return;
+      await drive.saveIndex(summaries.map(s => s.id === articleId ? { ...s, lastIndex: index } : s));
+    } catch (e) {
+      console.warn('[resume] lastIndex persist failed', e);
+    }
+  },
+
+  // 미저장 콘텐츠 편집 버리기 — 저장 안 하고 나갈 때 경고 후 확정 discard.
+  // dirty 즉시 해제(Home Save 버튼에서 사라짐) + Drive에서 재로드해 in-memory 편집(hidden/save 등) 되돌림.
+  // 커서(lastIndex)는 유지(req: 자동저장) — set 시점의 live 값을 씀.
+  discardArticleEdits: async (articleId: string) => {
+    if (!get().dirtyAudioIds.has(articleId)) return;
+    const d = new Set(get().dirtyAudioIds);
+    d.delete(articleId);
+    set({ dirtyAudioIds: d });
+    const drive = getDriveService(get().accessToken);
+    if (!drive) return;
+    try {
+      const raw = await drive.getArticle(articleId);
+      if (!raw) return;
+      const cur = get().audioArticles.find(a => a.id === articleId); // live — setResumeCursor로 갱신된 커서 보존
+      const loaded: FullArticle = {
+        kind: 'loaded',
+        id: raw.id,
+        title: raw.title,
+        sentences: raw.sentences,
+        variants: raw.variants,
+        activeVariant: raw.activeVariant,
+        splitPoints: raw.splitPoints,
+        subDeckReviews: raw.subDeckReviews,
+        savedAsDeck: raw.savedAsDeck,
+        savedSentenceIndices: raw.savedSentenceIndices,
+        savedSentenceReview: raw.savedSentenceReview,
+        source: raw.source,
+        lastIndex: cur?.lastIndex ?? raw.lastIndex,
+        nextReviewDate: raw.nextReviewDate,
+        reviewInterval: raw.reviewInterval ?? 0,
+        createdAt: raw.createdAt,
+        lastAccessed: raw.lastAccessed,
+      };
+      const snaps = new Map(get().cleanAudioSnapshots);
+      snaps.set(articleId, snapshotArticle(loaded));
+      set({ audioArticles: get().audioArticles.map(a => a.id === articleId ? loaded : a), cleanAudioSnapshots: snaps });
+    } catch (e) {
+      console.warn('[discard] reload failed', e);
+    }
   },
 
   updateArticleSentences: (articleId: string, sentences: SentenceEntry[]) => {

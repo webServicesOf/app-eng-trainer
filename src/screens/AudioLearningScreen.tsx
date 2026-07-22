@@ -95,6 +95,7 @@ const AudioLearningScreen: React.FC = () => {
   const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
   const [showHiddenList, setShowHiddenList] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false); // 미저장 콘텐츠 편집 두고 홈 이동 경고
   const [isYouTubeMode, setIsYouTubeMode] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [windowStepMode, setWindowStepMode] = useState(false);
@@ -458,6 +459,33 @@ const AudioLearningScreen: React.FC = () => {
     }
     debouncedSpeak();
   }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize]);
+
+  // 진행률 바 클릭 → 해당 위치 문장으로 이동(정지 + 커서 이동). 숨김 문장은 가장 가까운 표시 문장으로.
+  const handleProgressJump = React.useCallback((e: React.MouseEvent<HTMLElement>) => {
+    if (!article || article.sentences.length === 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const n = article.sentences.length;
+    let target = Math.min(n, Math.max(1, Math.round(frac * n)));
+    let t = target;
+    while (t <= n && article.sentences[t - 1]?.hidden) t++;          // 앞으로 표시 문장 탐색
+    if (t > n) { t = target; while (t >= 1 && article.sentences[t - 1]?.hidden) t--; } // 없으면 뒤로
+    if (t < 1) return;
+    target = t;
+    audioSeekService.stop();
+    const player = ytPlayerRef.current;
+    if (videoId && player) {
+      stopYouTubePolling();
+      const sent = article.sentences[target - 1];
+      if (sent?.start != null && typeof player.seekTo === 'function') player.seekTo(sent.start, true);
+      if (typeof player.pauseVideo === 'function') player.pauseVideo();
+    }
+    setIsPlaying(false);
+    setActiveSentenceLocalIdx(-1);
+    setActiveWordIdx(-1);
+    setIsCumulative(false);
+    setCurrentIndex(target);
+  }, [article, videoId, stopYouTubePolling, setCurrentIndex, setIsCumulative]);
 
   const handleRightArrow = React.useCallback(() => {
     if (!article) return;
@@ -877,17 +905,43 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, setCurrentIndex, setIsCumulative]);
 
-  // 문장 이동 시 lastIndex를 dirty 마킹 → 저장 버튼 활성화. Save 눌러야 Drive 반영(auto-save 없음).
-  // 복원(restore)으로 currentIndex=article.lastIndex 세팅 시엔 setLastIndex가 값 동일 → no-op(dirty 안 뜸).
-  useEffect(() => {
-    if (!id || !plainOpenRef.current || !resumeRestoredRef.current) return;
-    useAppStore.getState().setLastIndex(id, currentIndex);
-  }, [id, currentIndex]);
+  // resume 커서: 현재 학습 위치를 ref로 추적 → exit 시점에 최신값 참조. Save 버튼/dirty와 무관.
+  const currentIndexRef = useRef(currentIndex);
+  useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
 
-  // Exit → auto-persist dirty (incl. lastIndex resume cursor) so Save button doesn't
-  // leak into the home screen. Documented design: cleanup(홈이동/아티클전환/언마운트) = save trigger.
+  // req2: 자동 편집(current index) — 홈이동/아티클전환/언마운트 시 커서 자동저장(조용히). 콘텐츠는 안 건드림.
   useEffect(() => {
-    return () => { void useAppStore.getState().saveDirtyArticles(); };
+    return () => {
+      if (!(id && plainOpenRef.current && resumeRestoredRef.current)) return;
+      void useAppStore.getState().persistLastIndex(id, currentIndexRef.current);
+    };
+  }, [id]);
+
+  // 앱 종료/백그라운드(탭 전환·최소화·닫기) 처리:
+  //  - req2: 커서를 index.json에 자동저장(best-effort — 하드 종료 시 async 미완 가능, ponytail 수용).
+  //  - req1: 미저장 콘텐츠 편집 있으면 beforeunload 네이티브 경고(브라우저 제어, 커스텀 다이얼로그 불가).
+  useEffect(() => {
+    if (!id || !plainOpenRef.current) return;
+    const onHide = () => {
+      if (!resumeRestoredRef.current) return;
+      if (document.visibilityState === 'hidden') {
+        void useAppStore.getState().persistLastIndex(id, currentIndexRef.current);
+      }
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (useAppStore.getState().dirtyAudioIds.has(id)) {
+        e.preventDefault();
+        e.returnValue = ''; // 네이티브 "저장 안 함" 경고 트리거
+      }
+    };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', onHide);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+    };
   }, [id]);
 
   // Record-compare needs the decoded MP3 buffer for the reference waveform. YouTube articles
@@ -975,7 +1029,11 @@ const AudioLearningScreen: React.FC = () => {
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <IconButton onClick={() => navigate('/')} color="primary" size="small">
+            <IconButton
+              onClick={() => { if (id && dirtyAudioIds.has(id)) setShowLeaveConfirm(true); else navigate('/'); }}
+              color="primary"
+              size="small"
+            >
               <Home />
             </IconButton>
           </Box>
@@ -1162,8 +1220,10 @@ const AudioLearningScreen: React.FC = () => {
         </Box>
       </Popover>
 
-      {/* Progress Bar */}
-      <LinearProgress variant="determinate" value={progress} sx={{ mb: 1, height: 6, borderRadius: 3, flexShrink: 0 }} />
+      {/* Progress Bar — 클릭해서 해당 위치 문장으로 이동 */}
+      <Box onClick={handleProgressJump} sx={{ cursor: 'pointer', py: 0.5, mb: 1, flexShrink: 0 }}>
+        <LinearProgress variant="determinate" value={progress} sx={{ height: 6, borderRadius: 3 }} />
+      </Box>
 
       {/* Main Content Area */}
       <Card
@@ -1335,6 +1395,30 @@ const AudioLearningScreen: React.FC = () => {
           getPlayPosition={getRefPlayPosition}
         />
       )}
+
+      {/* 미저장 콘텐츠 편집 두고 홈 이동 경고 (req1: 저장 안 하고 나가면 편집 버림) */}
+      <Dialog open={showLeaveConfirm} onClose={() => setShowLeaveConfirm(false)} maxWidth="xs">
+        <DialogTitle>저장하지 않은 편집이 있습니다</DialogTitle>
+        <DialogContent>
+          <Typography>나가면 저장하지 않은 편집(숨김·저장 등)이 사라집니다. 학습 위치는 유지됩니다.</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowLeaveConfirm(false)}>취소</Button>
+          <Button
+            color="error"
+            onClick={() => {
+              setShowLeaveConfirm(false);
+              if (id) {
+                useAppStore.getState().setResumeCursor(id, currentIndexRef.current);
+                void useAppStore.getState().discardArticleEdits(id);
+              }
+              navigate('/');
+            }}
+          >
+            저장 안 하고 나가기
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Hidden Sentences List */}
       <Dialog open={showHiddenList} onClose={() => setShowHiddenList(false)} maxWidth="sm" fullWidth>
