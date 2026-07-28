@@ -1400,37 +1400,42 @@ export const HomeScreen: React.FC = () => {
 
               {/* Saved Sentences — grouped by deck */}
               <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>
-                Saved Sentences ({savedSentences.length})
+                Saved Sentences ({audioArticles.reduce((n, aa) => n + (aa.savedSentenceIndices?.length || 0), 0)})
               </Typography>
-              {savedSentences.length === 0 ? (
+              {audioArticles.reduce((n, aa) => n + (aa.savedSentenceIndices?.length || 0), 0) === 0 ? (
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
                   단일 모드에서 문장을 저장해보세요
                 </Typography>
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {(() => {
-                    // Group sentences by articleTitle
-                    const groups = new Map<string, SavedSentence[]>();
-                    savedSentences.forEach(s => {
-                      const key = s.articleTitle || s.articleId;
-                      if (!groups.has(key)) groups.set(key, []);
-                      groups.get(key)!.push(s);
-                    });
-                    return Array.from(groups.entries()).map(([title, sentences]) => {
-                      const articleId = sentences[0].articleId;
-                      const aa = audioArticles.find(a => a.id === articleId);
-                      const sgReview = aa?.savedSentenceReview;
+                    // Drive SSOT(savedSentenceIndices) 기준으로 덱 구성.
+                    // Dexie 로컬 행은 문장 텍스트 표시용 — 스토어에 없는 아티클의 잔재 행은 렌더하지 않음.
+                    const groups = audioArticles
+                      .filter(aa => aa.savedSentenceIndices?.length)
+                      .map(aa => ({
+                        aa,
+                        indices: aa.savedSentenceIndices!,
+                        rows: savedSentences.filter(
+                          s => s.articleId === aa.id && aa.savedSentenceIndices!.includes(s.sentenceIndex),
+                        ),
+                      }));
+                    return groups.map(({ aa, indices, rows }) => {
+                      const articleId = aa.id;
+                      const title = aa.title;
+                      const sentences = rows;
+                      const sgReview = aa.savedSentenceReview;
                       const sgDue = sgReview?.nextReviewDate ? new Date(sgReview.nextReviewDate) <= new Date() : false;
-                      const sentenceIndices = sentences.map(s => s.sentenceIndex);
+                      const sentenceIndices = indices;
                       return (
-                      <Card key={title} variant="outlined" sx={{
+                      <Card key={articleId} variant="outlined" sx={{
                         border: sgDue ? 2 : undefined,
                         borderColor: sgDue ? 'error.main' : undefined,
                       }}>
                         <CardContent sx={{ pb: 1 }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
                             <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                              {title} ({sentences.length}문장)
+                              {title} ({sentenceIndices.length}문장)
                             </Typography>
                             <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
                               <Button
@@ -1497,6 +1502,11 @@ export const HomeScreen: React.FC = () => {
                               )}
                             </Box>
                           ))}
+                          {sentenceIndices.length > sentences.length && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', pt: 0.5 }}>
+                              외 {sentenceIndices.length - sentences.length}문장 — 텍스트는 학습 화면에서 표시
+                            </Typography>
+                          )}
                         </CardContent>
                       </Card>
                     );});
