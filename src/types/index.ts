@@ -162,6 +162,7 @@ export interface Playlist {
   name: string;
   articleIds: string[]; // manual 순서
   sortMode: 'manual' | 'alpha';
+  mode?: 'full' | 'saved'; // full(기본): 전체 영상 묶음 / saved: 각 영상의 저장 문장 덱 묶음
 }
 
 // Google Sheets 설정

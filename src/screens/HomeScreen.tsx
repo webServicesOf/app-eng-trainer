@@ -94,6 +94,7 @@ export const HomeScreen: React.FC = () => {
     triggerLogin,
     playlists,
     setPlaylists,
+    playlistsDirty,
   } = useAppStore();
 
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -844,7 +845,7 @@ export const HomeScreen: React.FC = () => {
               >
                 MP3 업로드
               </Button>
-              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0) && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || playlistsDirty) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -853,7 +854,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + (playlistsDirty ? 1 : 0)})
                 </Button>
               )}
             </Box>
@@ -886,7 +887,7 @@ export const HomeScreen: React.FC = () => {
               >
                 {savedManagementMode ? '완료' : '관리'}
               </Button>
-              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0) && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0 || playlistsDirty) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -898,7 +899,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size + (playlistsDirty ? 1 : 0)})
                 </Button>
               )}
             </Box>
@@ -1271,10 +1272,11 @@ export const HomeScreen: React.FC = () => {
                 <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
                   {playlists.map((pl) => {
                     const orderedIds = playlistOrderedIds(pl);
-                    // 추출 재생 시작점: 저장 문장이 있는 첫 아티클
-                    const extractStart = orderedIds
+                    // saved 모드 재생 시작점: 저장 문장이 있는 첫 아티클
+                    const savedStart = orderedIds
                       .map((aid) => audioArticles.find((a) => a.id === aid))
                       .find((a) => a?.savedSentenceIndices?.length);
+                    const isSavedMode = pl.mode === 'saved';
                     return (
                       <Card key={pl.id} variant="outlined">
                         <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
@@ -1282,29 +1284,32 @@ export const HomeScreen: React.FC = () => {
                             <Box sx={{ minWidth: 0 }}>
                               <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{pl.name}</Typography>
                               <Typography variant="caption" color="text.secondary">
-                                {orderedIds.length}영상 · {pl.sortMode === 'alpha' ? '알파벳순' : '수동 순서'}
+                                {orderedIds.length}영상 · {isSavedMode ? '저장 문장' : '전체'} · {pl.sortMode === 'alpha' ? '알파벳순' : '수동 순서'}
                               </Typography>
                             </Box>
                             <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexShrink: 0 }}>
                               <Button
                                 size="small"
                                 color="primary"
-                                disabled={orderedIds.length === 0}
-                                onClick={() => navigate(`/learn-audio/${orderedIds[0]}?playlist=${pl.id}`)}
+                                disabled={isSavedMode ? !savedStart : orderedIds.length === 0}
+                                onClick={() => {
+                                  if (isSavedMode && savedStart) {
+                                    navigate(`/learn-audio/${savedStart.id}?playlist=${pl.id}&sentences=${savedStart.savedSentenceIndices!.join(',')}`);
+                                  } else if (orderedIds.length > 0) {
+                                    navigate(`/learn-audio/${orderedIds[0]}?playlist=${pl.id}`);
+                                  }
+                                }}
                               >
                                 재생
                               </Button>
-                              <Button
+                              <IconButton
                                 size="small"
-                                color="secondary"
-                                disabled={!extractStart}
-                                title="각 아티클의 저장 문장만 이어서 재생"
-                                onClick={() => extractStart && navigate(
-                                  `/learn-audio/${extractStart.id}?playlist=${pl.id}&sentences=${extractStart.savedSentenceIndices!.join(',')}`,
-                                )}
+                                color={isSavedMode ? 'secondary' : 'default'}
+                                onClick={() => updatePlaylist(pl.id, { mode: isSavedMode ? 'full' : 'saved' })}
+                                title={isSavedMode ? '저장 문장 묶음 → 전체 영상 묶음으로 전환' : '전체 영상 묶음 → 저장 문장 묶음으로 전환'}
                               >
-                                추출
-                              </Button>
+                                <Bookmark sx={{ fontSize: 16 }} />
+                              </IconButton>
                               <IconButton
                                 size="small"
                                 color={pl.sortMode === 'alpha' ? 'info' : 'default'}

@@ -92,8 +92,8 @@ const AudioLearningScreen: React.FC = () => {
     if (!pl) return null;
     // 삭제된 아티클 제외
     let existing = pl.articleIds.filter((aid) => storeArticles.some((a) => a.id === aid));
-    // 추출(저장문장) 세션: 저장 문장 없는 아티클은 건너뛰어 체인 유지
-    if (new URLSearchParams(window.location.search).has('sentences')) {
+    // saved 모드 플레이리스트: 저장 문장 없는 아티클은 건너뛰어 체인 유지
+    if (pl.mode === 'saved') {
       existing = existing.filter((aid) =>
         aid === id || storeArticles.find((a) => a.id === aid)?.savedSentenceIndices?.length,
       );
@@ -109,6 +109,7 @@ const AudioLearningScreen: React.FC = () => {
     if (pos === -1) return null;
     return {
       name: pl.name,
+      mode: pl.mode,
       pos,
       total: ids.length,
       prevId: pos > 0 ? ids[pos - 1] : null,
@@ -119,16 +120,14 @@ const AudioLearningScreen: React.FC = () => {
   const goToPlaylistArticle = React.useCallback((targetId: string, autoplay: boolean) => {
     if (!playlistId) return;
     audioSeekService.stop();
-    // 저장문장(추출) 세션에서 이동 시: 대상 아티클의 저장 인덱스로 추출 모드 유지.
-    // plain/subdeck 세션은 기존대로 plain 오픈.
-    const inExtract = new URLSearchParams(window.location.search).has('sentences');
-    const targetSaved = inExtract
+    // saved 모드 플레이리스트: 대상 아티클의 저장 문장 덱으로 이동. full 모드는 plain 오픈.
+    const targetSaved = playlistNav?.mode === 'saved'
       ? storeArticles.find((a) => a.id === targetId)?.savedSentenceIndices
       : undefined;
-    const extractParam = targetSaved?.length ? `&sentences=${targetSaved.join(',')}` : '';
+    const savedParam = targetSaved?.length ? `&sentences=${targetSaved.join(',')}` : '';
     // id 변경 → App.tsx의 key={id}로 강제 remount, 로컬 state 전부 리셋
-    navigate(`/learn-audio/${targetId}?playlist=${playlistId}${extractParam}${autoplay ? '&autoplay=1' : ''}`);
-  }, [playlistId, navigate, storeArticles]);
+    navigate(`/learn-audio/${targetId}?playlist=${playlistId}${savedParam}${autoplay ? '&autoplay=1' : ''}`);
+  }, [playlistId, navigate, storeArticles, playlistNav?.mode]);
 
   const [article, setArticle] = useState<FullArticle | null>(null);
   // Phase 4 exit resume guards
