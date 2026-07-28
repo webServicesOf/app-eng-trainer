@@ -156,6 +156,14 @@ export interface ArticleSummary {
   lastAccessed: string;
 }
 
+// 플레이리스트 — AudioArticle 순차 학습 (Drive sys/playlists.json SSOT)
+export interface Playlist {
+  id: string;
+  name: string;
+  articleIds: string[]; // manual 순서
+  sortMode: 'manual' | 'alpha';
+}
+
 // Google Sheets 설정
 export interface GoogleSheetsConfig {
   spreadsheetId: string;
