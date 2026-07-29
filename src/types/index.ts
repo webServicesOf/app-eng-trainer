@@ -63,6 +63,13 @@ export interface TranscriptVariants {
   whisperx?: TranscriptVariant;
 }
 
+// 표현 태그 — yt2mp3 파이프라인 meta.json의 exprs (sent_idx는 원본 영상 전체 문장 index)
+export interface ExprTag {
+  surface: string;
+  tier?: number;
+  sent_idx?: number;
+}
+
 // Audio 기반 Article (full mp3 + sentences.json 업로드)
 // persistence type — Drive JSON + IndexedDB. kind 필드 없음.
 export interface AudioArticle {
@@ -79,6 +86,8 @@ export interface AudioArticle {
   savedSentenceIndices?: number[]; // 저장된 문장 인덱스 (Drive SSOT)
   savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null }; // 저장 문장 덱 복습
   source?: string; // YouTube URL 등
+  exprs?: ExprTag[]; // meta.json 표현 태그 (업로드 시 병합, Drive SSOT)
+  starred?: boolean; // 목록 최상단 고정 (Drive SSOT)
   sentenceCount?: number; // index summary count (before full sentences loaded)
   lastIndex?: number; // 마지막 학습 문장 index (resume 위치)
   nextReviewDate: Date | null;
@@ -101,6 +110,7 @@ export interface ArticleBase {
   subDeckReviews?: SubDeckReview[];
   splitPoints?: number[];
   source?: string;
+  starred?: boolean; // 목록 최상단 고정
   lastIndex?: number; // 마지막 학습 문장 index (resume 위치)
   activeVariant?: VariantKey; // 활성 트랜스크립트 variant (신규 아티클만)
   createdAt: Date;
@@ -117,6 +127,7 @@ export interface SummaryArticle extends ArticleBase {
 export interface FullArticle extends ArticleBase {
   kind: 'loaded';
   sentences: SentenceEntry[];
+  exprs?: ExprTag[]; // meta.json 표현 태그
   variants?: TranscriptVariants; // VTT/whisperX 편집본 (신규 아티클만)
   audioBlob?: Blob;
   audioUrl?: string;
@@ -151,6 +162,7 @@ export interface ArticleSummary {
   subDeckReviews?: SubDeckReview[];
   splitPoints?: number[];
   source?: string;
+  starred?: boolean;
   lastIndex?: number; // 마지막 학습 문장 index (resume 위치)
   createdAt: string;
   lastAccessed: string;
@@ -163,6 +175,7 @@ export interface Playlist {
   articleIds: string[]; // manual 순서
   sortMode: 'manual' | 'alpha';
   mode?: 'full' | 'saved'; // full(기본): 전체 영상 묶음 / saved: 각 영상의 저장 문장 덱 묶음
+  lastArticleId?: string; // 최근 학습 영상 커서 — lastIndex처럼 dirty/Save 대상 아님, 조용히 write
 }
 
 // Google Sheets 설정
