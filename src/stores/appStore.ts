@@ -32,6 +32,7 @@ interface AppStore extends AppState {
   // Playlists (Drive sys/playlists.json SSOT)
   playlists: Playlist[];
   playlistsDirty: boolean; // 편집됨 — Save 버튼으로만 Drive 반영 (다른 편집과 동일 규칙)
+  pendingDeletePlaylistIds: Set<string>; // pendingDeleteIds와 동일 패턴 — Save 전까지 흐림 표시
 
   // Dirty tracking — IDs of articles with unsaved review changes
   dirtyAudioIds: Set<string>;
@@ -67,6 +68,9 @@ interface AppStore extends AppState {
   // Playlist actions
   loadPlaylists: () => Promise<void>;
   setPlaylists: (playlists: Playlist[]) => void; // state + dirty 마크 (Drive 반영은 saveDirtyArticles)
+  togglePlaylistDelete: (id: string) => void; // pending 삭제 토글 — 실제 삭제는 saveDirtyArticles
+  toggleStarArticle: (id: string) => void; // 최상단 고정 토글 — dirty 경유 lazy 저장
+  setPlaylistCursor: (plId: string, articleId: string) => Promise<void>; // 최근 학습 영상 커서 — 조용히 write
 
   // Review actions
   markReviewDone: (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => Promise<void>;
@@ -108,6 +112,7 @@ function snapshotArticle(a: StoreArticle): string {
       .sort((a, b) => a.s - b.s || a.e - b.e),
     hidden: a.kind === 'loaded' ? a.sentences.filter(s => s.hidden).map(s => s.index) : [],
     src: a.source || '',
+    star: a.starred || false,
     // lastIndex(resume 커서)는 dirty/Save 대상 아님 — persistLastIndex가 index.json에 조용히 write.
     av: a.activeVariant ?? null,
   });
@@ -127,6 +132,7 @@ function toIndexSummary(a: StoreArticle): ArticleSummary {
     subDeckReviews: a.subDeckReviews,
     splitPoints: a.splitPoints,
     source: a.source,
+    starred: a.starred,
     lastIndex: a.lastIndex,
     createdAt: a.createdAt.toISOString(),
     lastAccessed: a.lastAccessed.toISOString(),
@@ -166,6 +172,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   subDecks: [],
   playlists: [],
   playlistsDirty: false,
+  pendingDeletePlaylistIds: new Set<string>(),
   dirtyAudioIds: new Set<string>(),
   pendingDeleteIds: new Set<string>(),
   cleanAudioIntervals: new Map<string, number>(),
@@ -300,6 +307,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
             savedSentenceIndices: s.savedSentenceIndices,
             savedSentenceReview: s.savedSentenceReview,
             source: s.source,
+            starred: s.starred,
             lastIndex: s.lastIndex,
             nextReviewDate: s.nextReviewDate ? new Date(s.nextReviewDate) : null,
             reviewInterval: s.reviewInterval || 0,
@@ -333,6 +341,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         savedSentenceIndices: a.savedSentenceIndices,
         savedSentenceReview: a.savedSentenceReview,
         source: a.source,
+        exprs: a.exprs,
+        starred: a.starred,
         lastIndex: a.lastIndex,
         nextReviewDate: a.nextReviewDate,
         reviewInterval: a.reviewInterval || 0,
@@ -368,6 +378,44 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ playlists, playlistsDirty: true });
   },
 
+  togglePlaylistDelete: (id: string) => {
+    // deleteAudioArticle과 동일 패턴 — 재클릭 시 삭제 취소
+    const pending = new Set(get().pendingDeletePlaylistIds);
+    if (pending.has(id)) {
+      pending.delete(id);
+    } else {
+      pending.add(id);
+    }
+    set({ pendingDeletePlaylistIds: pending });
+  },
+
+  toggleStarArticle: (id: string) => {
+    const article = get().audioArticles.find(a => a.id === id);
+    if (!article) return;
+    const updated = { ...article, starred: !article.starred } as StoreArticle;
+    set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
+    checkCleanAndUpdateDirty(get, set, id);
+  },
+
+  // 플레이리스트 커서 — lastIndex(persistLastIndex)와 동일 규칙: dirty/Save 대상 아님.
+  // 원격 기준 surgical patch → 미저장 로컬 플레이리스트 편집 유출 없음.
+  setPlaylistCursor: async (plId: string, articleId: string) => {
+    const local = get().playlists;
+    if (local.find(p => p.id === plId)?.lastArticleId === articleId) return;
+    if (local.length > 0) {
+      set({ playlists: local.map(p => p.id === plId ? { ...p, lastArticleId: articleId } : p) });
+    }
+    const drive = getDriveService(get().accessToken);
+    if (!drive) return;
+    try {
+      const remote = await drive.loadPlaylists();
+      if (!remote) return;
+      await drive.savePlaylists(remote.map(p => p.id === plId ? { ...p, lastArticleId: articleId } : p));
+    } catch (e) {
+      console.warn('[playlist] cursor persist failed', e);
+    }
+  },
+
   loadFullArticle: async (id: string) => {
     console.log('[loadFullArticle] START', id);
     // Skip if already loaded
@@ -397,6 +445,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         savedSentenceIndices: prev?.savedSentenceIndices ?? rawArticle.savedSentenceIndices,
         savedSentenceReview: prev?.savedSentenceReview ?? rawArticle.savedSentenceReview,
         source: prev?.source ?? rawArticle.source,
+        exprs: rawArticle.exprs,
+        starred: prev?.starred ?? rawArticle.starred,
         lastIndex: prev?.lastIndex ?? rawArticle.lastIndex,
         nextReviewDate: prev?.nextReviewDate ?? rawArticle.nextReviewDate,
         reviewInterval: prev?.reviewInterval ?? rawArticle.reviewInterval ?? 0,
@@ -584,7 +634,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const dirtyIds = get().dirtyAudioIds;
     const pendingDeletes = get().pendingDeleteIds;
     const playlistsDirty = get().playlistsDirty;
-    if (dirtyIds.size === 0 && pendingDeletes.size === 0 && !playlistsDirty) return;
+    const pendingPlaylistDeletes = get().pendingDeletePlaylistIds;
+    if (dirtyIds.size === 0 && pendingDeletes.size === 0 && !playlistsDirty && pendingPlaylistDeletes.size === 0) return;
 
     try {
       set({ isLoading: true });
@@ -665,9 +716,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       // 5. Flush playlist edits (create/rename/reorder/delete/mode 전부 lazy 경유)
-      if (playlistsDirty) {
-        await drive.savePlaylists(get().playlists);
-        set({ playlistsDirty: false });
+      if (playlistsDirty || pendingPlaylistDeletes.size > 0) {
+        const remaining = get().playlists.filter(p => !pendingPlaylistDeletes.has(p.id));
+        await drive.savePlaylists(remaining);
+        set({ playlists: remaining, playlistsDirty: false, pendingDeletePlaylistIds: new Set() });
       }
     } catch (error) {
       if (error instanceof DriveAuthError) {
@@ -862,6 +914,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         savedSentenceIndices: raw.savedSentenceIndices,
         savedSentenceReview: raw.savedSentenceReview,
         source: raw.source,
+        exprs: raw.exprs,
+        starred: raw.starred,
         lastIndex: cur?.lastIndex ?? raw.lastIndex,
         nextReviewDate: raw.nextReviewDate,
         reviewInterval: raw.reviewInterval ?? 0,

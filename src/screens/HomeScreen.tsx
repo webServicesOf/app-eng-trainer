@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -49,16 +49,18 @@ import {
   ArrowUpward,
   ArrowDownward,
   SortByAlpha,
+  Star as StarIcon,
+  StarBorder as StarBorderIcon,
 } from '@mui/icons-material';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence, AudioArticle, Playlist, SentenceEntry, TranscriptVariants, VariantKey } from '../types';
+import { SavedSentence, AudioArticle, ExprTag, Playlist, SentenceEntry, TranscriptVariants, VariantKey } from '../types';
 import { applyVariant } from '../utils/variants';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService } from '../services/googleDriveService';
 
 // yt2mp3 폴더에서 감지한 변형 파일들
-type VariantFiles = { vtt?: File; whisperx?: File; legacy?: File };
+type VariantFiles = { vtt?: File; whisperx?: File; legacy?: File; meta?: File };
 
 export const HomeScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -95,6 +97,9 @@ export const HomeScreen: React.FC = () => {
     playlists,
     setPlaylists,
     playlistsDirty,
+    pendingDeletePlaylistIds,
+    togglePlaylistDelete,
+    toggleStarArticle,
   } = useAppStore();
 
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -146,7 +151,8 @@ export const HomeScreen: React.FC = () => {
   const [editSourceValue, setEditSourceValue] = useState('');
   const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
   const [addAnchorId, setAddAnchorId] = useState<string | null>(null); // shift-click 범위 추가 기준점
-  useEffect(() => { setAddAnchorId(null); }, [editingPlaylistId]);
+  const plScrolledRef = useRef(false); // 다이얼로그 열릴 때 last video 중앙 스크롤 1회 가드
+  useEffect(() => { setAddAnchorId(null); plScrolledRef.current = false; }, [editingPlaylistId]);
 
   // login is now global — use triggerLogin from store
   const login = useCallback(() => {
@@ -299,6 +305,20 @@ export const HomeScreen: React.FC = () => {
     return { sentences, source };
   };
 
+  /** meta.json → ExprTag[] (없거나 깨지면 undefined) */
+  const parseMetaFile = async (f: File): Promise<ExprTag[] | undefined> => {
+    try {
+      const m = JSON.parse(await f.text());
+      if (Array.isArray(m?.exprs)) {
+        const valid = m.exprs.filter((x: any) => typeof x?.surface === 'string');
+        if (valid.length > 0) return valid.map((x: any) => ({ surface: x.surface, tier: x.tier, sent_idx: x.sent_idx }));
+      }
+    } catch (e) {
+      console.warn('meta.json parse failed:', e);
+    }
+    return undefined;
+  };
+
   /** Upload a single article from mp3 + variant files (VTT/whisperX, or legacy single) + title */
   const uploadSingleArticle = async (mp3: File, files: VariantFiles, title: string, source?: string) => {
     let jsonSource: string | undefined;
@@ -319,6 +339,9 @@ export const HomeScreen: React.FC = () => {
       throw new Error('sentences 파일이 없습니다 (sentences_VTT.json / sentences_whisperx.json / sentences.json)');
     }
 
+    // meta.json → 표현 태그 (없거나 깨져도 업로드는 진행)
+    const exprs = files.meta ? await parseMetaFile(files.meta) : undefined;
+
     const audioBlob = new Blob([await mp3.arrayBuffer()], { type: 'audio/mpeg' });
 
     let audioArticle: AudioArticle = {
@@ -329,6 +352,7 @@ export const HomeScreen: React.FC = () => {
       variants,
       activeVariant,
       source: source || jsonSource || undefined,
+      exprs,
       nextReviewDate: null,
       reviewInterval: 0,
       createdAt: new Date(),
@@ -366,7 +390,9 @@ export const HomeScreen: React.FC = () => {
 
   const handleBatchUpload = async () => {
     const toUpload = batchFolders.filter(f => !f.skip);
-    if (toUpload.length === 0) return;
+    // 이미 존재하는 아티클(스킵)이라도 meta.json 있으면 태그만 갱신 — mp3/문장 재업로드 없이 {id}.json 재기록
+    const metaOnly = batchFolders.filter(f => f.skip && f.files.meta);
+    if (toUpload.length === 0 && metaOnly.length === 0) return;
 
     try {
       setLoading(true);
@@ -382,8 +408,35 @@ export const HomeScreen: React.FC = () => {
           failed++;
         }
       }
-      const skipped = batchFolders.filter(f => f.skip).length;
-      alert(`완료: ${uploaded}개 업로드${skipped ? `, ${skipped}개 스킵 (이미 존재)` : ''}${failed ? `, ${failed}개 실패` : ''}`);
+
+      let tagged = 0;
+      if (metaOnly.length > 0 && accessToken) {
+        const drive = new GoogleDriveService(accessToken);
+        const byTitle = new Map(useAppStore.getState().audioArticles.map(a => [a.title, a.id]));
+        for (const folder of metaOnly) {
+          try {
+            const articleId = byTitle.get(folder.name);
+            if (!articleId) continue;
+            const exprs = await parseMetaFile(folder.files.meta!);
+            if (!exprs) continue;
+            setBatchProgress(`태그 갱신 ${tagged + 1}/${metaOnly.length}: ${folder.name}`);
+            const raw = await drive.getArticle(articleId);
+            if (!raw) continue;
+            await drive.saveArticle({ ...raw, exprs });
+            useAppStore.setState(state => ({
+              audioArticles: state.audioArticles.map(a =>
+                a.id === articleId && a.kind === 'loaded' ? { ...a, exprs } : a),
+            }));
+            tagged++;
+          } catch (e) {
+            console.error(`Failed to update tags for ${folder.name}:`, e);
+            failed++;
+          }
+        }
+      }
+
+      const skipped = batchFolders.filter(f => f.skip).length - tagged;
+      alert(`완료: ${uploaded}개 업로드${tagged ? `, ${tagged}개 태그 갱신` : ''}${skipped > 0 ? `, ${skipped}개 스킵 (이미 존재)` : ''}${failed ? `, ${failed}개 실패` : ''}`);
 
       setBatchFolders([]);
       setBatchMode(false);
@@ -719,8 +772,8 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleDeletePlaylist = (plId: string) => {
-    // lazy 경유(저장 버튼 전까지 미반영)라 확인 다이얼로그 불필요 — audio 아티클 삭제와 동일 규칙
-    setPlaylists(playlists.filter(p => p.id !== plId));
+    // audio 아티클과 동일 규칙 — pending 표시(흐림) 후 저장 버튼에서 실제 삭제, 재클릭 시 취소
+    togglePlaylistDelete(plId);
   };
 
   const movePlaylistItem = (pl: Playlist, index: number, dir: -1 | 1) => {
@@ -846,7 +899,7 @@ export const HomeScreen: React.FC = () => {
               >
                 MP3 업로드
               </Button>
-              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || playlistsDirty) && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || playlistsDirty || pendingDeletePlaylistIds.size > 0) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -855,7 +908,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + (playlistsDirty ? 1 : 0)})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingDeletePlaylistIds.size + (playlistsDirty ? 1 : 0)})
                 </Button>
               )}
             </Box>
@@ -888,7 +941,7 @@ export const HomeScreen: React.FC = () => {
               >
                 {savedManagementMode ? '완료' : '관리'}
               </Button>
-              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0 || playlistsDirty) && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0 || playlistsDirty || pendingDeletePlaylistIds.size > 0) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -900,7 +953,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size + (playlistsDirty ? 1 : 0)})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size + pendingDeletePlaylistIds.size + (playlistsDirty ? 1 : 0)})
                 </Button>
               )}
             </Box>
@@ -1094,6 +1147,9 @@ export const HomeScreen: React.FC = () => {
           ) : (
             <List dense disablePadding>
               {[...audioArticles].sort((a, b) => {
+                // starred 최상단 고정 — 어떤 정렬이든 우선
+                const starDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
+                if (starDiff !== 0) return starDiff;
                 if (sortBy === 'name') return a.title.localeCompare(b.title);
                 const aDue = isDue(a.nextReviewDate) ? 0 : 1;
                 const bDue = isDue(b.nextReviewDate) ? 0 : 1;
@@ -1153,6 +1209,14 @@ export const HomeScreen: React.FC = () => {
                       </IconButton>
                       <IconButton size="small" sx={{ p: 0.3 }} color="secondary" onClick={() => navigate(`/edit-timestamps/${aa.id}`)} title="편집">
                         <EditIcon sx={{ fontSize: 16 }} />
+                      </IconButton>
+                      <IconButton
+                        size="small" sx={{ p: 0.3 }}
+                        color={aa.starred ? 'warning' : 'default'}
+                        onClick={() => toggleStarArticle(aa.id)}
+                        title={aa.starred ? '고정 해제' : '최상단 고정'}
+                      >
+                        {aa.starred ? <StarIcon sx={{ fontSize: 16 }} /> : <StarBorderIcon sx={{ fontSize: 16 }} />}
                       </IconButton>
                       <IconButton
                         size="small" sx={{ p: 0.3 }}
@@ -1273,13 +1337,9 @@ export const HomeScreen: React.FC = () => {
                 <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
                   {playlists.map((pl) => {
                     const orderedIds = playlistOrderedIds(pl);
-                    // saved 모드 재생 시작점: 저장 문장이 있는 첫 아티클
-                    const savedStart = orderedIds
-                      .map((aid) => audioArticles.find((a) => a.id === aid))
-                      .find((a) => a?.savedSentenceIndices?.length);
                     const isSavedMode = pl.mode === 'saved';
                     return (
-                      <Card key={pl.id} variant="outlined">
+                      <Card key={pl.id} variant="outlined" sx={{ opacity: pendingDeletePlaylistIds.has(pl.id) ? 0.4 : 1 }}>
                         <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <Box sx={{ minWidth: 0 }}>
@@ -1292,14 +1352,7 @@ export const HomeScreen: React.FC = () => {
                               <Button
                                 size="small"
                                 color="primary"
-                                disabled={isSavedMode ? !savedStart : orderedIds.length === 0}
-                                onClick={() => {
-                                  if (isSavedMode && savedStart) {
-                                    navigate(`/learn-audio/${savedStart.id}?playlist=${pl.id}&sentences=${savedStart.savedSentenceIndices!.join(',')}`);
-                                  } else if (orderedIds.length > 0) {
-                                    navigate(`/learn-audio/${orderedIds[0]}?playlist=${pl.id}`);
-                                  }
-                                }}
+                                onClick={() => setEditingPlaylistId(pl.id)}
                               >
                                 학습
                               </Button>
@@ -1318,9 +1371,6 @@ export const HomeScreen: React.FC = () => {
                                 title={pl.sortMode === 'alpha' ? '수동 순서로 전환' : '알파벳순으로 전환'}
                               >
                                 <SortByAlpha sx={{ fontSize: 16 }} />
-                              </IconButton>
-                              <IconButton size="small" onClick={() => setEditingPlaylistId(pl.id)} title="영상 편집">
-                                <EditIcon sx={{ fontSize: 16 }} />
                               </IconButton>
                               <IconButton size="small" color="error" onClick={() => handleDeletePlaylist(pl.id)} title="삭제">
                                 <DeleteIcon sx={{ fontSize: 16 }} />
@@ -1619,6 +1669,7 @@ export const HomeScreen: React.FC = () => {
                     else if (f.name === 'sentences_VTT.json') groups[key].files.vtt = f;
                     else if (f.name === 'sentences_whisperx.json') groups[key].files.whisperx = f;
                     else if (f.name === 'sentences.json') groups[key].files.legacy = f; // 구 폴더 호환
+                    else if (f.name === 'meta.json') groups[key].files.meta = f; // 표현 태그 (exprs)
                   }
 
                   // Filter valid folders (mp3 + at least one sentences file)
@@ -1718,9 +1769,11 @@ export const HomeScreen: React.FC = () => {
             <Button
               onClick={handleBatchUpload}
               variant="contained"
-              disabled={batchFolders.filter(f => !f.skip).length === 0 || isLoading}
+              disabled={(batchFolders.filter(f => !f.skip).length === 0 && batchFolders.filter(f => f.skip && f.files.meta).length === 0) || isLoading}
             >
-              {isLoading ? batchProgress || '업로드 중...' : `${batchFolders.filter(f => !f.skip).length}개 업로드`}
+              {isLoading
+                ? batchProgress || '업로드 중...'
+                : `${batchFolders.filter(f => !f.skip).length}개 업로드${batchFolders.filter(f => f.skip && f.files.meta).length > 0 ? ` + ${batchFolders.filter(f => f.skip && f.files.meta).length}개 태그 갱신` : ''}`}
             </Button>
           ) : (
             <Button
@@ -1885,22 +1938,49 @@ export const HomeScreen: React.FC = () => {
           <Dialog open={!!editingPl} onClose={() => setEditingPlaylistId(null)} maxWidth="sm" fullWidth>
             {editingPl && (
               <>
-                <DialogTitle sx={{ pb: 1 }}>{editingPl.name} — 영상 편집</DialogTitle>
+                <DialogTitle sx={{ pb: 1 }}>{editingPl.name} — 학습 / 편집</DialogTitle>
                 <DialogContent dividers>
                   <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
                     포함된 영상 ({editingPl.articleIds.length})
+                    <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                      클릭 = 학습 시작
+                    </Typography>
                     {editingPl.sortMode === 'alpha' && ' · 알파벳순 정렬 중 (순서 변경은 수동 모드에서)'}
                   </Typography>
                   {editingPl.articleIds.length === 0 ? (
                     <Typography variant="body2" color="text.secondary">아래 목록에서 영상을 추가하세요</Typography>
                   ) : (
-                    <List dense disablePadding>
+                    <List dense disablePadding sx={{ maxHeight: 320, overflowY: 'auto' }}>
                       {(editingPl.sortMode === 'alpha' ? playlistOrderedIds(editingPl) : editingPl.articleIds).map((aid, i, arr) => (
-                        <ListItem key={aid} disablePadding sx={{ py: 0.25 }}>
-                          <ListItemText
-                            primary={`${i + 1}. ${playlistTitleOf(aid)}`}
-                            primaryTypographyProps={{ variant: 'body2', noWrap: true }}
-                          />
+                        <ListItem
+                          key={aid}
+                          disablePadding
+                          sx={{ py: 0.25 }}
+                          ref={(el: HTMLLIElement | null) => {
+                            // last video를 다이얼로그 열릴 때 1회 중앙 스크롤
+                            if (el && aid === editingPl.lastArticleId && !plScrolledRef.current) {
+                              plScrolledRef.current = true;
+                              el.scrollIntoView({ block: 'center' });
+                            }
+                          }}
+                        >
+                          <ListItemButton
+                            sx={{ py: 0.25, minWidth: 0 }}
+                            selected={aid === editingPl.lastArticleId}
+                            onClick={() => {
+                              // saved 모드: 저장 문장 덱으로 진입 (플레이리스트 체인과 동일 규칙)
+                              const a = audioArticles.find(x => x.id === aid);
+                              const savedParam = editingPl.mode === 'saved' && a?.savedSentenceIndices?.length
+                                ? `&sentences=${a.savedSentenceIndices.join(',')}`
+                                : '';
+                              navigate(`/learn-audio/${aid}?playlist=${editingPl.id}${savedParam}`);
+                            }}
+                          >
+                            <ListItemText
+                              primary={`${i + 1}. ${playlistTitleOf(aid)}${aid === editingPl.lastArticleId ? ' ·▶ 최근' : ''}`}
+                              primaryTypographyProps={{ variant: 'body2', noWrap: true }}
+                            />
+                          </ListItemButton>
                           <Box sx={{ display: 'flex', flexShrink: 0 }}>
                             {editingPl.sortMode === 'manual' && (
                               <>

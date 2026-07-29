@@ -49,6 +49,7 @@ import {
   RestoreFromTrash,
   YouTube as YouTubeIcon,
   Audiotrack,
+  Edit as EditIcon,
   Settings,
   Gamepad,
   Mic,
@@ -80,7 +81,7 @@ const AudioLearningScreen: React.FC = () => {
     resetLearningState,
   } = useLearningStore();
 
-  const { dirtyAudioIds, saveDirtyArticles } = useAppStore();
+  const { dirtyAudioIds, saveDirtyArticles, cycleReviewInterval } = useAppStore();
 
   // ── Playlist context (?playlist=<id>) — 이전/다음 영상 내비게이션 ──
   const playlists = useAppStore((s) => s.playlists);
@@ -129,6 +130,12 @@ const AudioLearningScreen: React.FC = () => {
     navigate(`/learn-audio/${targetId}?playlist=${playlistId}${savedParam}${autoplay ? '&autoplay=1' : ''}`);
   }, [playlistId, navigate, storeArticles, playlistNav?.mode]);
 
+  // 플레이리스트 커서 — 이 영상이 최근 학습 위치로 기록 (조용히 write, Save 무관)
+  const setPlaylistCursor = useAppStore((s) => s.setPlaylistCursor);
+  useEffect(() => {
+    if (playlistId && id) setPlaylistCursor(playlistId, id);
+  }, [playlistId, id, setPlaylistCursor]);
+
   const [article, setArticle] = useState<FullArticle | null>(null);
   // Phase 4 exit resume guards
   const plainOpenRef = useRef(false);             // remap 모드(저장덱/subdeck) 제외 — 실제 index 공간일 때만 true
@@ -149,6 +156,7 @@ const AudioLearningScreen: React.FC = () => {
   const [showControls, setShowControls] = useState(true);
   const [windowStepMode, setWindowStepMode] = useState(false);
   const [settingsAnchorEl, setSettingsAnchorEl] = useState<HTMLElement | null>(null);
+  const [exprAnchorEl, setExprAnchorEl] = useState<HTMLElement | null>(null);
   const [recordMode, setRecordMode] = useState(false);
 
   const sentenceRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -412,6 +420,50 @@ const AudioLearningScreen: React.FC = () => {
     const match = article.source.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/))([^?&#]+)/);
     return match?.[1] || null;
   }, [article?.source]);
+
+  // 편집 화면 점프용 — 저장덱/서브덱은 로컬 index로 remap되므로 전체 아티클 index 공간으로 환산
+  const realCurrentIndex = React.useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    const sentencesParam = params.get('sentences');
+    if (sentencesParam) {
+      const indices = sentencesParam.split(',').map(Number).filter(n => !isNaN(n)).sort((a, b) => a - b);
+      return indices[currentIndex - 1] ?? currentIndex;
+    }
+    if (subDeckRange) return subDeckRange.start + currentIndex; // slice(start,end) 로컬 i → start+i
+    return currentIndex;
+  }, [currentIndex, subDeckRange]);
+
+  const handleGoEdit = React.useCallback(() => {
+    if (!id) return;
+    navigate(`/edit-timestamps/${id}?sentence=${realCurrentIndex}`);
+  }, [id, navigate, realCurrentIndex]);
+
+  // ── 덱 완주 시 자동 복습 체크 — 마지막 문장 도달하면 interval 사다리 1단 전진 (0d→1d→3d…) ──
+  // resume이 마지막 문장에서 바로 시작하는 경우 오발동 방지: 이번 세션에서 마지막 이전 문장을 본 적 있어야 발동
+  const completedRef = useRef(false);
+  const sawEarlierRef = useRef(false);
+  useEffect(() => { completedRef.current = false; sawEarlierRef.current = false; }, [id]);
+  useEffect(() => {
+    if (!article || article.sentences.length === 0) return;
+    if (currentIndex < article.sentences.length) { sawEarlierRef.current = true; return; }
+    if (completedRef.current || !sawEarlierRef.current || !id) return;
+    completedRef.current = true;
+
+    const isSavedDeck = !!new URLSearchParams(window.location.search).get('sentences');
+    const state = useAppStore.getState();
+    // ponytail: 최대 간격(사다리 끝)에서는 자동 순환 안 함 — 120d→0d wrap 방지
+    const advances = (cur: number) => localDB.cycleInterval(cur) > cur;
+    if (subDeckRange) {
+      const sd = state.subDecks.find(d => d.parentId === id && d.startIndex === subDeckRange.start && d.endIndex === subDeckRange.end);
+      if (sd && advances(sd.reviewInterval || 0)) cycleReviewInterval('subdeck', sd.id);
+    } else if (isSavedDeck) {
+      const a = state.audioArticles.find(x => x.id === id);
+      if (a && advances(a.savedSentenceReview?.reviewInterval || 0)) cycleReviewInterval('saved-sentences', id);
+    } else {
+      const a = state.audioArticles.find(x => x.id === id);
+      if (a && advances(a.reviewInterval || 0)) cycleReviewInterval('audio', id);
+    }
+  }, [article, currentIndex, id, subDeckRange, cycleReviewInterval]);
 
   const stopYouTubePolling = React.useCallback(() => {
     if (ytPollingRef.current) {
@@ -1136,6 +1188,11 @@ const AudioLearningScreen: React.FC = () => {
                 </IconButton>
               </Tooltip>
             )}
+            <Tooltip title="타임스탬프 편집 (현재 문장)">
+              <IconButton onClick={handleGoEdit} size="small" color="secondary">
+                <EditIcon />
+              </IconButton>
+            </Tooltip>
             <Tooltip title="설정">
               <IconButton onClick={(e) => setSettingsAnchorEl(e.currentTarget)} size="small">
                 <Settings />
@@ -1194,9 +1251,36 @@ const AudioLearningScreen: React.FC = () => {
               />
             )}
             {windowStepMode && <Chip label="Window Step" size="small" color="success" variant="outlined" />}
+            {article.exprs && article.exprs.length > 0 && (
+              <Chip
+                label={`#${article.exprs[0].surface}${article.exprs.length > 1 ? ` +${article.exprs.length - 1}` : ''}`}
+                size="small"
+                variant="outlined"
+                onClick={(e) => setExprAnchorEl(e.currentTarget)}
+              />
+            )}
           </Stack>
         </Stack>
       </Paper>
+
+      {/* 표현 태그 전체 리스트 Popover */}
+      <Popover
+        open={!!exprAnchorEl}
+        anchorEl={exprAnchorEl}
+        onClose={() => setExprAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Box sx={{ p: 1.5, maxWidth: 320 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+            표현 태그 ({article.exprs?.length ?? 0})
+          </Typography>
+          {article.exprs?.map((ex, i) => (
+            <Typography key={i} variant="body2">
+              #{ex.surface}{ex.tier != null ? ` · T${ex.tier}` : ''}
+            </Typography>
+          ))}
+        </Box>
+      </Popover>
 
       {/* Settings Popover */}
       <Popover

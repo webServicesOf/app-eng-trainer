@@ -27,6 +27,7 @@ npm run build
 | State, dirty tracking, Drive sync actions | `src/stores/appStore.ts` |
 | Drive CRUD + `index.json` manifest | `src/services/googleDriveService.ts` |
 | Audio playback (WebAudio seek) | `src/services/audioSeekService.ts` |
+| UI 전면 통일 계획 (theme.ts 도입, 착수 전) | `docs/handoff-ui.md` |
 
 ## Code Modification Protocol
 

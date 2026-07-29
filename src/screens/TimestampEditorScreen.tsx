@@ -20,6 +20,7 @@ import {
   CircularProgress,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
 } from '@mui/material';
 import {
   Home,
@@ -36,6 +37,7 @@ import {
   FileDownload,
   Replay,
   Keyboard as KeyboardIcon,
+  School,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
@@ -158,22 +160,38 @@ const TimestampEditorScreen: React.FC = () => {
         setSplitMarkers(pts);
         setSavedSplitMarkers(new Set(pts));
       }
+
+      // 학습 화면에서 점프해온 경우 해당 문장 선택 (?sentence=<index>)
+      const sentenceParam = new URLSearchParams(window.location.search).get('sentence');
+      if (sentenceParam) {
+        const n = parseInt(sentenceParam, 10);
+        const pos = loaded.sentences.findIndex(s => s.index === n);
+        if (pos >= 0) setSelectedIndex(pos);
+      }
     };
     load();
   }, [id, navigate, accessToken, audioArticles]);
 
   // Navigation guard: prompt save/discard on exit
-  const handleNavigateAway = useCallback(async () => {
-    if (!hasChanges || isSaving) {
-      navigate('/');
-      return;
-    }
+  const confirmLeave = useCallback(async () => {
+    if (!hasChanges || isSaving) return;
     const choice = window.confirm('변경사항이 있습니다. 저장하시겠습니까?\n\n확인 = 저장 후 나가기\n취소 = 변경사항 버리기');
     if (choice) {
       await handleSaveRef.current();
     }
+  }, [hasChanges, isSaving]);
+
+  const handleNavigateAway = useCallback(async () => {
+    await confirmLeave();
     navigate('/');
-  }, [hasChanges, isSaving, navigate]);
+  }, [confirmLeave, navigate]);
+
+  // 학습 화면으로 — 현재 선택 문장에서 시작
+  const handleGoLearn = useCallback(async () => {
+    await confirmLeave();
+    const n = sentences[selectedIndex]?.index ?? 1;
+    navigate(`/learn-audio/${id}?sentence=${n}`);
+  }, [confirmLeave, navigate, id, sentences, selectedIndex]);
 
   // Browser tab close/refresh guard
   useEffect(() => {
@@ -1496,6 +1514,11 @@ const TimestampEditorScreen: React.FC = () => {
           <IconButton onClick={handleNavigateAway} color="primary" size="small" disabled={isSaving}>
             <Home />
           </IconButton>
+          <Tooltip title="학습 화면으로 (현재 문장)">
+            <IconButton onClick={handleGoLearn} color="secondary" size="small" disabled={isSaving}>
+              <School />
+            </IconButton>
+          </Tooltip>
           <Typography variant="h6" sx={{ fontSize: { xs: '0.9rem', sm: '1.25rem' } }} noWrap>
             Timestamp Editor — {article.title}
           </Typography>

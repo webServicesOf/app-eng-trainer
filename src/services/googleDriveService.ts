@@ -1,4 +1,4 @@
-import { AudioArticle, ArticleSummary, Playlist, SentenceEntry, SubDeckReview, TranscriptVariants, VariantKey } from '../types';
+import { AudioArticle, ArticleSummary, ExprTag, Playlist, SentenceEntry, SubDeckReview, TranscriptVariants, VariantKey } from '../types';
 import { hasVariants, foldActive, applyVariant } from '../utils/variants';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -20,6 +20,8 @@ interface AudioArticleMeta {
   savedSentenceIndices?: number[];
   savedSentenceReview?: { reviewInterval: number; nextReviewDate: string | null };
   source?: string;
+  exprs?: ExprTag[];
+  starred?: boolean;
   lastIndex?: number;
   nextReviewDate?: string | null;
   reviewInterval?: number;
@@ -224,6 +226,8 @@ export class GoogleDriveService {
       savedSentenceIndices: isVariant ? undefined : a.savedSentenceIndices,
       savedSentenceReview: isVariant ? undefined : a.savedSentenceReview,
       source: a.source,
+      exprs: a.exprs, // variant 무관 정적 태그
+      starred: a.starred,
       lastIndex: isVariant ? undefined : a.lastIndex,
       nextReviewDate: a.nextReviewDate ? new Date(a.nextReviewDate).toISOString() : null,
       reviewInterval: a.reviewInterval || 0,
@@ -245,6 +249,8 @@ export class GoogleDriveService {
       savedSentenceIndices: meta.savedSentenceIndices,
       savedSentenceReview: meta.savedSentenceReview,
       source: meta.source,
+      exprs: meta.exprs,
+      starred: meta.starred,
       lastIndex: meta.lastIndex,
       nextReviewDate: meta.nextReviewDate ? new Date(meta.nextReviewDate) : null,
       reviewInterval: meta.reviewInterval || 0,
