@@ -44,9 +44,14 @@ import {
   BookmarkBorder,
   Link as LinkIcon,
   DriveFileRenameOutline as RenameIcon,
+  Add as AddIcon,
+  Close as CloseIcon,
+  ArrowUpward,
+  ArrowDownward,
+  SortByAlpha,
 } from '@mui/icons-material';
 import { useAppStore } from '../stores/appStore';
-import { SavedSentence, AudioArticle, SentenceEntry, TranscriptVariants, VariantKey } from '../types';
+import { SavedSentence, AudioArticle, Playlist, SentenceEntry, TranscriptVariants, VariantKey } from '../types';
 import { applyVariant } from '../utils/variants';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
@@ -87,6 +92,9 @@ export const HomeScreen: React.FC = () => {
     updateSavedSentenceIndices,
     toggleSavedDeck,
     triggerLogin,
+    playlists,
+    setPlaylists,
+    playlistsDirty,
   } = useAppStore();
 
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -136,6 +144,9 @@ export const HomeScreen: React.FC = () => {
   const [editingTitleValue, setEditingTitleValue] = useState('');
   const [editSourceId, setEditSourceId] = useState<string | null>(null);
   const [editSourceValue, setEditSourceValue] = useState('');
+  const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
+  const [addAnchorId, setAddAnchorId] = useState<string | null>(null); // shift-click 범위 추가 기준점
+  useEffect(() => { setAddAnchorId(null); }, [editingPlaylistId]);
 
   // login is now global — use triggerLogin from store
   const login = useCallback(() => {
@@ -683,6 +694,43 @@ export const HomeScreen: React.FC = () => {
 
 
 
+  // ── Playlist handlers (Drive sys/playlists.json SSOT — setPlaylists가 저장까지) ──
+  const playlistTitleOf = useCallback(
+    (aid: string) => audioArticles.find(a => a.id === aid)?.title || '(삭제된 영상)',
+    [audioArticles]
+  );
+  const playlistOrderedIds = useCallback((pl: Playlist) => {
+    const existing = pl.articleIds.filter(aid => audioArticles.some(a => a.id === aid));
+    return pl.sortMode === 'alpha'
+      ? [...existing].sort((x, y) => playlistTitleOf(x).localeCompare(playlistTitleOf(y)))
+      : existing;
+  }, [audioArticles, playlistTitleOf]);
+
+  const handleCreatePlaylist = () => {
+    const name = window.prompt('플레이리스트 이름');
+    if (!name?.trim()) return;
+    const pl: Playlist = { id: `pl-${Date.now()}`, name: name.trim(), articleIds: [], sortMode: 'manual' };
+    setPlaylists([...playlists, pl]);
+    setEditingPlaylistId(pl.id);
+  };
+
+  const updatePlaylist = (plId: string, patch: Partial<Playlist>) => {
+    setPlaylists(playlists.map(p => (p.id === plId ? { ...p, ...patch } : p)));
+  };
+
+  const handleDeletePlaylist = (plId: string) => {
+    // lazy 경유(저장 버튼 전까지 미반영)라 확인 다이얼로그 불필요 — audio 아티클 삭제와 동일 규칙
+    setPlaylists(playlists.filter(p => p.id !== plId));
+  };
+
+  const movePlaylistItem = (pl: Playlist, index: number, dir: -1 | 1) => {
+    const ids = [...pl.articleIds];
+    const j = index + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[index], ids[j]] = [ids[j], ids[index]];
+    updatePlaylist(pl.id, { articleIds: ids });
+  };
+
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setCurrentTab(newValue);
     setManagementMode(false);
@@ -716,7 +764,8 @@ export const HomeScreen: React.FC = () => {
 
   const handleBulkDeleteSentences = async () => {
     if (selectedSentences.size === 0) return;
-    if (window.confirm(`선택한 ${selectedSentences.size}개의 문장을 저장 해제하시겠습니까?`)) {
+    // SSOT 반영은 dirty→저장 버튼 경유 — 확인 다이얼로그 불필요
+    {
       // Group selected sentences by articleId for Drive sync
       const toRemove = savedSentences.filter(s => selectedSentences.has(s.id));
       const byArticle = new Map<string, number[]>();
@@ -797,7 +846,7 @@ export const HomeScreen: React.FC = () => {
               >
                 MP3 업로드
               </Button>
-              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0) && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || playlistsDirty) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -806,7 +855,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + (playlistsDirty ? 1 : 0)})
                 </Button>
               )}
             </Box>
@@ -839,7 +888,7 @@ export const HomeScreen: React.FC = () => {
               >
                 {savedManagementMode ? '완료' : '관리'}
               </Button>
-              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0) && (
+              {(dirtyAudioIds.size > 0 || pendingDeleteIds.size > 0 || pendingUnsaveSentences.size > 0 || playlistsDirty) && (
                 <Button
                   variant="contained"
                   color="warning"
@@ -851,7 +900,7 @@ export const HomeScreen: React.FC = () => {
                   size="small"
                   disabled={isLoading}
                 >
-                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size})
+                  저장 ({dirtyAudioIds.size + pendingDeleteIds.size + pendingUnsaveSentences.size + (playlistsDirty ? 1 : 0)})
                 </Button>
               )}
             </Box>
@@ -1207,6 +1256,84 @@ export const HomeScreen: React.FC = () => {
             </Box>
           ) : (
             <>
+              {/* Playlists — 여러 영상 순차 학습 */}
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  Playlists ({playlists.length})
+                </Typography>
+                <Button size="small" startIcon={<AddIcon />} onClick={handleCreatePlaylist}>
+                  새 플레이리스트
+                </Button>
+              </Box>
+              {playlists.length === 0 ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+                  여러 영상을 순서대로 이어서 학습하려면 플레이리스트를 만들어보세요
+                </Typography>
+              ) : (
+                <Box sx={{ mb: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {playlists.map((pl) => {
+                    const orderedIds = playlistOrderedIds(pl);
+                    // saved 모드 재생 시작점: 저장 문장이 있는 첫 아티클
+                    const savedStart = orderedIds
+                      .map((aid) => audioArticles.find((a) => a.id === aid))
+                      .find((a) => a?.savedSentenceIndices?.length);
+                    const isSavedMode = pl.mode === 'saved';
+                    return (
+                      <Card key={pl.id} variant="outlined">
+                        <CardContent sx={{ py: 1, '&:last-child': { pb: 1 } }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>{pl.name}</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {orderedIds.length}영상 · {isSavedMode ? '저장 문장' : '전체'} · {pl.sortMode === 'alpha' ? '알파벳순' : '수동 순서'}
+                              </Typography>
+                            </Box>
+                            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexShrink: 0 }}>
+                              <Button
+                                size="small"
+                                color="primary"
+                                disabled={isSavedMode ? !savedStart : orderedIds.length === 0}
+                                onClick={() => {
+                                  if (isSavedMode && savedStart) {
+                                    navigate(`/learn-audio/${savedStart.id}?playlist=${pl.id}&sentences=${savedStart.savedSentenceIndices!.join(',')}`);
+                                  } else if (orderedIds.length > 0) {
+                                    navigate(`/learn-audio/${orderedIds[0]}?playlist=${pl.id}`);
+                                  }
+                                }}
+                              >
+                                학습
+                              </Button>
+                              <IconButton
+                                size="small"
+                                color={isSavedMode ? 'secondary' : 'default'}
+                                onClick={() => updatePlaylist(pl.id, { mode: isSavedMode ? 'full' : 'saved' })}
+                                title={isSavedMode ? '저장 문장 묶음 → 전체 영상 묶음으로 전환' : '전체 영상 묶음 → 저장 문장 묶음으로 전환'}
+                              >
+                                <Bookmark sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              <IconButton
+                                size="small"
+                                color={pl.sortMode === 'alpha' ? 'info' : 'default'}
+                                onClick={() => updatePlaylist(pl.id, { sortMode: pl.sortMode === 'alpha' ? 'manual' : 'alpha' })}
+                                title={pl.sortMode === 'alpha' ? '수동 순서로 전환' : '알파벳순으로 전환'}
+                              >
+                                <SortByAlpha sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              <IconButton size="small" onClick={() => setEditingPlaylistId(pl.id)} title="영상 편집">
+                                <EditIcon sx={{ fontSize: 16 }} />
+                              </IconButton>
+                              <IconButton size="small" color="error" onClick={() => handleDeletePlaylist(pl.id)} title="삭제">
+                                <DeleteIcon sx={{ fontSize: 16 }} />
+                              </IconButton>
+                            </Box>
+                          </Box>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </Box>
+              )}
+
               {/* Saved Decks — derived from Drive SSOT */}
               {(() => {
                 const savedDeckItems: { id: string; title: string; sentenceCount: number; parentId?: string; reviewInterval: number; nextReviewDate: Date | null; reviewType: 'audio' | 'subdeck'; }[] = [];
@@ -1279,37 +1406,42 @@ export const HomeScreen: React.FC = () => {
 
               {/* Saved Sentences — grouped by deck */}
               <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 600 }}>
-                Saved Sentences ({savedSentences.length})
+                Saved Sentences ({audioArticles.reduce((n, aa) => n + (aa.savedSentenceIndices?.length || 0), 0)})
               </Typography>
-              {savedSentences.length === 0 ? (
+              {audioArticles.reduce((n, aa) => n + (aa.savedSentenceIndices?.length || 0), 0) === 0 ? (
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
                   단일 모드에서 문장을 저장해보세요
                 </Typography>
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {(() => {
-                    // Group sentences by articleTitle
-                    const groups = new Map<string, SavedSentence[]>();
-                    savedSentences.forEach(s => {
-                      const key = s.articleTitle || s.articleId;
-                      if (!groups.has(key)) groups.set(key, []);
-                      groups.get(key)!.push(s);
-                    });
-                    return Array.from(groups.entries()).map(([title, sentences]) => {
-                      const articleId = sentences[0].articleId;
-                      const aa = audioArticles.find(a => a.id === articleId);
-                      const sgReview = aa?.savedSentenceReview;
+                    // Drive SSOT(savedSentenceIndices) 기준으로 덱 구성.
+                    // Dexie 로컬 행은 문장 텍스트 표시용 — 스토어에 없는 아티클의 잔재 행은 렌더하지 않음.
+                    const groups = audioArticles
+                      .filter(aa => aa.savedSentenceIndices?.length)
+                      .map(aa => ({
+                        aa,
+                        indices: aa.savedSentenceIndices!,
+                        rows: savedSentences.filter(
+                          s => s.articleId === aa.id && aa.savedSentenceIndices!.includes(s.sentenceIndex),
+                        ),
+                      }));
+                    return groups.map(({ aa, indices, rows }) => {
+                      const articleId = aa.id;
+                      const title = aa.title;
+                      const sentences = rows;
+                      const sgReview = aa.savedSentenceReview;
                       const sgDue = sgReview?.nextReviewDate ? new Date(sgReview.nextReviewDate) <= new Date() : false;
-                      const sentenceIndices = sentences.map(s => s.sentenceIndex);
+                      const sentenceIndices = indices;
                       return (
-                      <Card key={title} variant="outlined" sx={{
+                      <Card key={articleId} variant="outlined" sx={{
                         border: sgDue ? 2 : undefined,
                         borderColor: sgDue ? 'error.main' : undefined,
                       }}>
                         <CardContent sx={{ pb: 1 }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
                             <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                              {title} ({sentences.length}문장)
+                              {title} ({sentenceIndices.length}문장)
                             </Typography>
                             <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
                               <Button
@@ -1376,6 +1508,11 @@ export const HomeScreen: React.FC = () => {
                               )}
                             </Box>
                           ))}
+                          {sentenceIndices.length > sentences.length && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', pt: 0.5 }}>
+                              외 {sentenceIndices.length - sentences.length}문장 — 텍스트는 학습 화면에서 표시
+                            </Typography>
+                          )}
                         </CardContent>
                       </Card>
                     );});
@@ -1718,6 +1855,115 @@ export const HomeScreen: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Playlist Edit Dialog */}
+      {(() => {
+        const editingPl = playlists.find(p => p.id === editingPlaylistId) || null;
+        const candidates = editingPl
+          ? [...audioArticles].sort((a, b) => a.title.localeCompare(b.title)).filter(a => !editingPl.articleIds.includes(a.id))
+          : [];
+        const handleAddClick = (e: React.MouseEvent, aid: string) => {
+          if (!editingPl) return;
+          if (e.shiftKey && addAnchorId) {
+            // 범위는 정렬된 전체 목록 기준 — anchor가 방금 추가돼 후보 목록에서 빠져도 유효
+            const sortedAll = [...audioArticles].sort((a, b) => a.title.localeCompare(b.title)).map(a => a.id);
+            const i1 = sortedAll.indexOf(addAnchorId);
+            const i2 = sortedAll.indexOf(aid);
+            if (i1 !== -1 && i2 !== -1) {
+              const range = sortedAll
+                .slice(Math.min(i1, i2), Math.max(i1, i2) + 1)
+                .filter(x => !editingPl.articleIds.includes(x));
+              updatePlaylist(editingPl.id, { articleIds: [...editingPl.articleIds, ...range] });
+              setAddAnchorId(null);
+              return;
+            }
+          }
+          updatePlaylist(editingPl.id, { articleIds: [...editingPl.articleIds, aid] });
+          setAddAnchorId(aid);
+        };
+        return (
+          <Dialog open={!!editingPl} onClose={() => setEditingPlaylistId(null)} maxWidth="sm" fullWidth>
+            {editingPl && (
+              <>
+                <DialogTitle sx={{ pb: 1 }}>{editingPl.name} — 영상 편집</DialogTitle>
+                <DialogContent dividers>
+                  <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                    포함된 영상 ({editingPl.articleIds.length})
+                    {editingPl.sortMode === 'alpha' && ' · 알파벳순 정렬 중 (순서 변경은 수동 모드에서)'}
+                  </Typography>
+                  {editingPl.articleIds.length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">아래 목록에서 영상을 추가하세요</Typography>
+                  ) : (
+                    <List dense disablePadding>
+                      {(editingPl.sortMode === 'alpha' ? playlistOrderedIds(editingPl) : editingPl.articleIds).map((aid, i, arr) => (
+                        <ListItem key={aid} disablePadding sx={{ py: 0.25 }}>
+                          <ListItemText
+                            primary={`${i + 1}. ${playlistTitleOf(aid)}`}
+                            primaryTypographyProps={{ variant: 'body2', noWrap: true }}
+                          />
+                          <Box sx={{ display: 'flex', flexShrink: 0 }}>
+                            {editingPl.sortMode === 'manual' && (
+                              <>
+                                <IconButton size="small" disabled={i === 0} onClick={() => movePlaylistItem(editingPl, i, -1)}>
+                                  <ArrowUpward sx={{ fontSize: 14 }} />
+                                </IconButton>
+                                <IconButton size="small" disabled={i === arr.length - 1} onClick={() => movePlaylistItem(editingPl, i, 1)}>
+                                  <ArrowDownward sx={{ fontSize: 14 }} />
+                                </IconButton>
+                              </>
+                            )}
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={() => updatePlaylist(editingPl.id, { articleIds: editingPl.articleIds.filter(x => x !== aid) })}
+                              title="플레이리스트에서 제거"
+                            >
+                              <CloseIcon sx={{ fontSize: 14 }} />
+                            </IconButton>
+                          </Box>
+                        </ListItem>
+                      ))}
+                    </List>
+                  )}
+
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 2, mb: 0.5 }}>
+                    <Typography variant="subtitle2">
+                      추가 가능한 영상 ({candidates.length})
+                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                        클릭 후 Shift+클릭 = 범위 추가
+                      </Typography>
+                    </Typography>
+                    <Button
+                      size="small"
+                      disabled={candidates.length === 0}
+                      onClick={() => updatePlaylist(editingPl.id, { articleIds: [...editingPl.articleIds, ...candidates.map(c => c.id)] })}
+                    >
+                      전체 추가
+                    </Button>
+                  </Box>
+                  <List dense disablePadding sx={{ maxHeight: 300, overflowY: 'auto', userSelect: 'none' }}>
+                    {candidates.map(a => (
+                      <ListItem key={a.id} disablePadding>
+                        <ListItemButton
+                          sx={{ py: 0.25 }}
+                          selected={addAnchorId === a.id}
+                          onClick={(e) => handleAddClick(e, a.id)}
+                        >
+                          <AddIcon sx={{ fontSize: 16, mr: 1, flexShrink: 0 }} />
+                          <ListItemText primary={a.title} primaryTypographyProps={{ variant: 'body2', noWrap: true }} />
+                        </ListItemButton>
+                      </ListItem>
+                    ))}
+                  </List>
+                </DialogContent>
+                <DialogActions>
+                  <Button onClick={() => setEditingPlaylistId(null)}>닫기</Button>
+                </DialogActions>
+              </>
+            )}
+          </Dialog>
+        );
+      })()}
 
     </Container>
   );

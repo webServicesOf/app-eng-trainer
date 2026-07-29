@@ -52,6 +52,8 @@ import {
   Settings,
   Gamepad,
   Mic,
+  SkipPrevious,
+  SkipNext,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { FullArticle, StoreArticle, SentenceEntry } from '../types';
@@ -79,6 +81,53 @@ const AudioLearningScreen: React.FC = () => {
   } = useLearningStore();
 
   const { dirtyAudioIds, saveDirtyArticles } = useAppStore();
+
+  // ── Playlist context (?playlist=<id>) — 이전/다음 영상 내비게이션 ──
+  const playlists = useAppStore((s) => s.playlists);
+  const storeArticles = useAppStore((s) => s.audioArticles);
+  const playlistId = new URLSearchParams(window.location.search).get('playlist');
+  const playlistNav = React.useMemo(() => {
+    if (!playlistId || !id) return null;
+    const pl = playlists.find((p) => p.id === playlistId);
+    if (!pl) return null;
+    // 삭제된 아티클 제외
+    let existing = pl.articleIds.filter((aid) => storeArticles.some((a) => a.id === aid));
+    // saved 모드 플레이리스트: 저장 문장 없는 아티클은 건너뛰어 체인 유지
+    if (pl.mode === 'saved') {
+      existing = existing.filter((aid) =>
+        aid === id || storeArticles.find((a) => a.id === aid)?.savedSentenceIndices?.length,
+      );
+    }
+    const ids = pl.sortMode === 'alpha'
+      ? [...existing].sort((x, y) => {
+          const tx = storeArticles.find((a) => a.id === x)?.title || '';
+          const ty = storeArticles.find((a) => a.id === y)?.title || '';
+          return tx.localeCompare(ty);
+        })
+      : existing;
+    const pos = ids.indexOf(id);
+    if (pos === -1) return null;
+    return {
+      name: pl.name,
+      mode: pl.mode,
+      pos,
+      total: ids.length,
+      prevId: pos > 0 ? ids[pos - 1] : null,
+      nextId: pos < ids.length - 1 ? ids[pos + 1] : null,
+    };
+  }, [playlistId, id, playlists, storeArticles]);
+
+  const goToPlaylistArticle = React.useCallback((targetId: string, autoplay: boolean) => {
+    if (!playlistId) return;
+    audioSeekService.stop();
+    // saved 모드 플레이리스트: 대상 아티클의 저장 문장 덱으로 이동. full 모드는 plain 오픈.
+    const targetSaved = playlistNav?.mode === 'saved'
+      ? storeArticles.find((a) => a.id === targetId)?.savedSentenceIndices
+      : undefined;
+    const savedParam = targetSaved?.length ? `&sentences=${targetSaved.join(',')}` : '';
+    // id 변경 → App.tsx의 key={id}로 강제 remount, 로컬 state 전부 리셋
+    navigate(`/learn-audio/${targetId}?playlist=${playlistId}${savedParam}${autoplay ? '&autoplay=1' : ''}`);
+  }, [playlistId, navigate, storeArticles, playlistNav?.mode]);
 
   const [article, setArticle] = useState<FullArticle | null>(null);
   // Phase 4 exit resume guards
@@ -456,9 +505,13 @@ const AudioLearningScreen: React.FC = () => {
     }
     if (target >= 1) {
       setCurrentIndex(target);
+    } else if (playlistNav?.prevId) {
+      // 첫 문장에서 ← → 플레이리스트 이전 영상
+      goToPlaylistArticle(playlistNav.prevId, true);
+      return;
     }
     debouncedSpeak();
-  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize, playlistNav, goToPlaylistArticle]);
 
   // 진행률 바 클릭 → 해당 위치 문장으로 이동(정지 + 커서 이동). 숨김 문장은 가장 가까운 표시 문장으로.
   const handleProgressJump = React.useCallback((e: React.MouseEvent<HTMLElement>) => {
@@ -502,9 +555,13 @@ const AudioLearningScreen: React.FC = () => {
     }
     if (target <= article.sentences.length && target !== currentIndex) {
       setCurrentIndex(target);
+    } else if (playlistNav?.nextId) {
+      // 마지막 문장에서 → 한 번 더 → 플레이리스트 다음 영상 (자동 재생)
+      goToPlaylistArticle(playlistNav.nextId, true);
+      return;
     }
     debouncedSpeak();
-  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize, playlistNav, goToPlaylistArticle]);
 
   const onPlayEnd = React.useCallback(() => {
     setActiveSentenceLocalIdx(-1);
@@ -905,6 +962,14 @@ const AudioLearningScreen: React.FC = () => {
     }
   }, [article, setCurrentIndex, setIsCumulative]);
 
+  // Playlist autoplay — 이전/다음 영상 전환 도착 시 자동 재생 (?autoplay=1, remount당 1회)
+  const autoplayFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoplayFiredRef.current || !article || !audioLoaded) return;
+    autoplayFiredRef.current = true;
+    if (new URLSearchParams(window.location.search).get('autoplay')) debouncedSpeak();
+  }, [article, audioLoaded, debouncedSpeak]);
+
   // resume 커서: 현재 학습 위치를 ref로 추적 → exit 시점에 최신값 참조. Save 버튼/dirty와 무관.
   const currentIndexRef = useRef(currentIndex);
   useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
@@ -1120,6 +1185,14 @@ const AudioLearningScreen: React.FC = () => {
               size="small"
             />
             <Chip label={isYouTubeMode ? 'YouTube' : 'Audio'} size="small" color={isYouTubeMode ? 'error' : 'info'} variant="outlined" />
+            {playlistNav && (
+              <Chip
+                label={`▶ ${playlistNav.name} ${playlistNav.pos + 1}/${playlistNav.total}`}
+                size="small"
+                color="warning"
+                variant="outlined"
+              />
+            )}
             {windowStepMode && <Chip label="Window Step" size="small" color="success" variant="outlined" />}
           </Stack>
         </Stack>
@@ -1495,12 +1568,12 @@ const AudioLearningScreen: React.FC = () => {
               onClick={handleLeftArrow}
               size="small"
               color="primary"
-              disabled={currentIndex <= 1}
+              disabled={currentIndex <= 1 && !playlistNav?.prevId}
               sx={{
-                backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.light,
+                backgroundColor: currentIndex <= 1 && !playlistNav?.prevId ? theme.palette.grey[300] : theme.palette.primary.light,
                 color: theme.palette.common.white,
                 '&:hover': {
-                  backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.main,
+                  backgroundColor: currentIndex <= 1 && !playlistNav?.prevId ? theme.palette.grey[300] : theme.palette.primary.main,
                 },
               }}
             >
@@ -1524,14 +1597,14 @@ const AudioLearningScreen: React.FC = () => {
               onClick={handleRightArrow}
               size="small"
               color="primary"
-              disabled={currentIndex >= article.sentences.length}
+              disabled={currentIndex >= article.sentences.length && !playlistNav?.nextId}
               sx={{
                 backgroundColor:
-                  currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.light,
+                  currentIndex >= article.sentences.length && !playlistNav?.nextId ? theme.palette.grey[300] : theme.palette.primary.light,
                 color: theme.palette.common.white,
                 '&:hover': {
                   backgroundColor:
-                    currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.main,
+                    currentIndex >= article.sentences.length && !playlistNav?.nextId ? theme.palette.grey[300] : theme.palette.primary.main,
                 },
               }}
             >
@@ -1563,6 +1636,36 @@ const AudioLearningScreen: React.FC = () => {
               <Replay fontSize="small" />
             </IconButton>
           </Box>
+
+          {/* Playlist: 이전/다음 영상 점프 */}
+          {playlistNav && (
+            <Stack spacing={0.5}>
+              <Tooltip title="이전 영상" placement="right">
+                <span>
+                  <IconButton
+                    size="small"
+                    color="warning"
+                    disabled={!playlistNav.prevId}
+                    onClick={() => playlistNav.prevId && goToPlaylistArticle(playlistNav.prevId, true)}
+                  >
+                    <SkipPrevious />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="다음 영상" placement="right">
+                <span>
+                  <IconButton
+                    size="small"
+                    color="warning"
+                    disabled={!playlistNav.nextId}
+                    onClick={() => playlistNav.nextId && goToPlaylistArticle(playlistNav.nextId, true)}
+                  >
+                    <SkipNext />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Stack>
+          )}
         </Paper>
       )}
     </Box>

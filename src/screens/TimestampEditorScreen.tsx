@@ -40,8 +40,15 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { FullArticle, SentenceEntry, WordTimestamp, VariantKey } from '../types';
+import { FullArticle, SentenceEntry, WordTimestamp, VariantKey, SubDeckReview } from '../types';
 import { hasVariants, foldActive, applyVariant } from '../utils/variants';
+import {
+  StructuralOp,
+  mapSentenceRef,
+  remapMarkerSet,
+  remapSentenceRefList,
+  remapSubDeckReviews,
+} from '../utils/indexRemap';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
 import { GoogleDriveService } from '../services/googleDriveService';
@@ -87,8 +94,19 @@ const TimestampEditorScreen: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const handleSaveRef = useRef<() => Promise<void>>(() => Promise.resolve());
-  const undoStackRef = useRef<SentenceEntry[][]>([]);
-  const redoStackRef = useRef<SentenceEntry[][]>([]);
+  // 구조 편집(삽입/삭제/분할/병합)이 문장 번호 공간을 바꾸므로,
+  // undo 스냅샷은 번호를 참조하는 상태 전부를 함께 담아야 어긋나지 않음.
+  type EditorSnapshot = {
+    sentences: SentenceEntry[];
+    splitMarkers: Set<number>;
+    savedSplitMarkers: Set<number>;
+    savedSentenceIndices?: number[];
+    subDeckReviews?: SubDeckReview[];
+    splitPoints?: number[];
+    lastIndex?: number;
+  };
+  const undoStackRef = useRef<EditorSnapshot[]>([]);
+  const redoStackRef = useRef<EditorSnapshot[]>([]);
   const selectedItemRef = useRef<HTMLLIElement | null>(null);
 
   // Load article from Drive (metadata from store) + MP3 from cache or Drive
@@ -515,29 +533,75 @@ const TimestampEditorScreen: React.FC = () => {
     }
   }, [zoom]);
 
+  const takeSnapshot = useCallback((): EditorSnapshot => ({
+    sentences: sentences.map(s => ({ ...s })),
+    splitMarkers: new Set(splitMarkers),
+    savedSplitMarkers: new Set(savedSplitMarkers),
+    savedSentenceIndices: article?.savedSentenceIndices,
+    subDeckReviews: article?.subDeckReviews,
+    splitPoints: article?.splitPoints,
+    lastIndex: article?.lastIndex,
+  }), [sentences, splitMarkers, savedSplitMarkers, article]);
+
+  const restoreSnapshot = useCallback((snap: EditorSnapshot) => {
+    setSentences(snap.sentences);
+    setSplitMarkers(snap.splitMarkers);
+    setSavedSplitMarkers(snap.savedSplitMarkers);
+    setArticle(prev => prev ? {
+      ...prev,
+      savedSentenceIndices: snap.savedSentenceIndices,
+      subDeckReviews: snap.subDeckReviews,
+      splitPoints: snap.splitPoints,
+      lastIndex: snap.lastIndex,
+    } : prev);
+  }, []);
+
   const pushUndo = useCallback(() => {
-    undoStackRef.current.push(sentences.map(s => ({ ...s })));
+    undoStackRef.current.push(takeSnapshot());
     if (undoStackRef.current.length > 50) undoStackRef.current.shift();
     redoStackRef.current = []; // new action clears redo
-  }, [sentences]);
+  }, [takeSnapshot]);
 
   const handleUndo = useCallback(() => {
     const prev = undoStackRef.current.pop();
     if (prev) {
-      redoStackRef.current.push(sentences.map(s => ({ ...s })));
-      setSentences(prev);
+      redoStackRef.current.push(takeSnapshot());
+      restoreSnapshot(prev);
       setHasChanges(true);
     }
-  }, [sentences]);
+  }, [takeSnapshot, restoreSnapshot]);
 
   const handleRedo = useCallback(() => {
     const next = redoStackRef.current.pop();
     if (next) {
-      undoStackRef.current.push(sentences.map(s => ({ ...s })));
-      setSentences(next);
+      undoStackRef.current.push(takeSnapshot());
+      restoreSnapshot(next);
       setHasChanges(true);
     }
-  }, [sentences]);
+  }, [takeSnapshot, restoreSnapshot]);
+
+  // 구조 편집 직후 호출: 문장 번호를 참조하는 모든 상태(저장 문장, 서브덱 구간,
+  // 분할 마커/분할점, 이어보기 위치)를 같은 방향으로 이동시킴.
+  const applyStructuralRemap = useCallback((op: StructuralOp) => {
+    setSplitMarkers(prev => remapMarkerSet(prev, op));
+    setSavedSplitMarkers(prev => remapMarkerSet(prev, op));
+    setArticle(prev => {
+      if (!prev) return prev;
+      const last = prev.lastIndex != null
+        // 이어보기 문장이 삭제되면 바로 앞 문장으로 (최소 1)
+        ? (mapSentenceRef(op, prev.lastIndex) ?? Math.max(1, op.pos))
+        : prev.lastIndex;
+      return {
+        ...prev,
+        savedSentenceIndices: remapSentenceRefList(prev.savedSentenceIndices, op),
+        subDeckReviews: remapSubDeckReviews(prev.subDeckReviews, op),
+        splitPoints: prev.splitPoints
+          ? Array.from(remapMarkerSet(new Set(prev.splitPoints), op)).sort((a, b) => a - b)
+          : prev.splitPoints,
+        lastIndex: last,
+      };
+    });
+  }, []);
 
   const endCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -747,8 +811,9 @@ const TimestampEditorScreen: React.FC = () => {
 
     const reindexed = updated.map((s, i) => ({ ...s, index: i + 1 }));
     setSentences(reindexed);
+    applyStructuralRemap({ type: 'merge', pos: selectedIndex });
     setHasChanges(true);
-  }, [sentences, selectedIndex, pushUndo]);
+  }, [sentences, selectedIndex, pushUndo, applyStructuralRemap]);
 
   const handleSplitSentenceAt = useCallback((wordIndex: number) => {
     const current = sentences[selectedIndex];
@@ -780,9 +845,10 @@ const TimestampEditorScreen: React.FC = () => {
     updated.splice(selectedIndex, 1, first, second);
     const reindexed = updated.map((s, i) => ({ ...s, index: i + 1 }));
     setSentences(reindexed);
+    applyStructuralRemap({ type: 'split', pos: selectedIndex });
     setHasChanges(true);
     setSplitMode(false);
-  }, [sentences, selectedIndex, pushUndo]);
+  }, [sentences, selectedIndex, pushUndo, applyStructuralRemap]);
 
   // variant 전환: 나가는 variant 슬롯에 현재 라이브 편집(sentences+split)을 fold하고,
   // 들어오는 variant 슬롯을 top-level 미러로 hoist. 각 variant 편집 독립 보존.
@@ -790,6 +856,9 @@ const TimestampEditorScreen: React.FC = () => {
     if (!next || !article || !hasVariants(article) || next === article.activeVariant) return;
     const live: FullArticle = { ...article, sentences, splitPoints: Array.from(splitMarkers).sort((a, b) => a - b) };
     const swapped = applyVariant(foldActive(live), next);
+    // variant별 index 공간이 달라 이전 variant 스냅샷 복원은 오염 — 스택 리셋
+    undoStackRef.current = [];
+    redoStackRef.current = [];
     setArticle(swapped);
     setSentences([...swapped.sentences]);
     const nextSplits = new Set(swapped.splitPoints ?? []);
@@ -1149,8 +1218,9 @@ const TimestampEditorScreen: React.FC = () => {
       updated.splice(selectedIndex, 0, empty);
       return updated;
     });
+    applyStructuralRemap({ type: 'insert', pos: selectedIndex });
     setHasChanges(true);
-  }, [selectedIndex, pushUndo]);
+  }, [selectedIndex, pushUndo, applyStructuralRemap]);
 
   /** Insert empty sentence below current (like Jupyter 'b') */
   const handleInsertBelow = useCallback(() => {
@@ -1171,9 +1241,10 @@ const TimestampEditorScreen: React.FC = () => {
       updated.splice(selectedIndex + 1, 0, empty);
       return updated;
     });
+    applyStructuralRemap({ type: 'insert', pos: selectedIndex + 1 });
     setSelectedIndex(selectedIndex + 1);
     setHasChanges(true);
-  }, [selectedIndex, pushUndo]);
+  }, [selectedIndex, pushUndo, applyStructuralRemap]);
 
   /** Delete current sentence */
   const handleDeleteSentence = useCallback(() => {
@@ -1187,22 +1258,23 @@ const TimestampEditorScreen: React.FC = () => {
       }
       return updated;
     });
+    applyStructuralRemap({ type: 'delete', pos: selectedIndex });
     setSelectedIndex(prev => Math.min(prev, sentences.length - 2));
     setHasChanges(true);
-  }, [selectedIndex, sentences.length, pushUndo]);
+  }, [selectedIndex, sentences.length, pushUndo, applyStructuralRemap]);
 
   /** Alt+drag on waveform → create new sentence at dragged time range */
   const handleCreateFromDrag = useCallback((start: number, end: number) => {
     pushUndo();
-    setSentences(prev => {
-      // Find insertion position: first sentence whose start >= drag end, or append
-      let insertAt = prev.length;
-      for (let i = 0; i < prev.length; i++) {
-        if (prev[i].start != null && prev[i].start! >= start) {
-          insertAt = i;
-          break;
-        }
+    // Find insertion position: first sentence whose start >= drag end, or append
+    let insertAt = sentences.length;
+    for (let i = 0; i < sentences.length; i++) {
+      if (sentences[i].start != null && sentences[i].start! >= start) {
+        insertAt = i;
+        break;
       }
+    }
+    setSentences(prev => {
       const newSentence: SentenceEntry = {
         index: insertAt + 1, // will be reindexed below
         text: '',
@@ -1217,15 +1289,11 @@ const TimestampEditorScreen: React.FC = () => {
       }
       return updated;
     });
+    applyStructuralRemap({ type: 'insert', pos: insertAt });
     // Select the newly created sentence
-    setSentences(prev => {
-      // Find it by matching start/end
-      const idx = prev.findIndex(s => s.start === start && s.end === end && s.text === '');
-      if (idx >= 0) setSelectedIndex(idx);
-      return prev;
-    });
+    setSelectedIndex(insertAt);
     setHasChanges(true);
-  }, [pushUndo]);
+  }, [sentences, pushUndo, applyStructuralRemap]);
 
   // Listen for drag-create custom events from WaveSurfer init
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { AudioArticle, ArticleSummary, SentenceEntry, SubDeckReview, TranscriptVariants, VariantKey } from '../types';
+import { AudioArticle, ArticleSummary, Playlist, SentenceEntry, SubDeckReview, TranscriptVariants, VariantKey } from '../types';
 import { hasVariants, foldActive, applyVariant } from '../utils/variants';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -124,16 +124,22 @@ export class GoogleDriveService {
 
   // ── low-level file ops ─────────────────────────────────
 
-  /** List all files inside a specific folder */
+  /** List all files inside a specific folder (nextPageToken 순회 — 1000개 초과 폴더에서 누락 방지) */
   private async listFilesIn(folderId: string): Promise<{ id: string; name: string; modifiedTime: string }[]> {
     const q = `'${folderId}' in parents and trashed=false`;
-    const fields = 'files(id,name,modifiedTime)';
-    const res = await driveRequest(
-      `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=1000&spaces=drive`,
-      this.token,
-    );
-    const data = await res.json();
-    return data.files || [];
+    const fields = 'nextPageToken,files(id,name,modifiedTime)';
+    const files: { id: string; name: string; modifiedTime: string }[] = [];
+    let pageToken: string | undefined;
+    do {
+      const res = await driveRequest(
+        `${DRIVE_API}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=1000&spaces=drive${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`,
+        this.token,
+      );
+      const data = await res.json();
+      files.push(...(data.files || []));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    return files;
   }
 
   /** Upload (create or update) a file. Returns the Drive file ID. */
@@ -394,6 +400,30 @@ export class GoogleDriveService {
     const settingsFile = remoteFiles.find((f) => f.name === 'settings.json');
     if (!settingsFile) return null;
     const blob = await this.downloadFile(settingsFile.id);
+    return JSON.parse(await blob.text());
+  }
+
+  /** Save playlists to Drive sys/ folder */
+  async savePlaylists(playlists: Playlist[]): Promise<void> {
+    const { sys } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(sys);
+    const existing = remoteFiles.find((f) => f.name === 'playlists.json');
+    await this.uploadFile(
+      'playlists.json',
+      JSON.stringify(playlists, null, 2),
+      'application/json',
+      sys,
+      existing?.id,
+    );
+  }
+
+  /** Load playlists from Drive sys/ folder */
+  async loadPlaylists(): Promise<Playlist[] | null> {
+    const { sys } = await this.ensureFolders();
+    const remoteFiles = await this.listFilesIn(sys);
+    const file = remoteFiles.find((f) => f.name === 'playlists.json');
+    if (!file) return null;
+    const blob = await this.downloadFile(file.id);
     return JSON.parse(await blob.text());
   }
 
