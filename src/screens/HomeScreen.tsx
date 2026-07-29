@@ -719,7 +719,7 @@ export const HomeScreen: React.FC = () => {
   };
 
   const handleDeletePlaylist = (plId: string) => {
-    if (!window.confirm('플레이리스트를 삭제할까요? (영상 자체는 삭제되지 않습니다)')) return;
+    // lazy 경유(저장 버튼 전까지 미반영)라 확인 다이얼로그 불필요 — audio 아티클 삭제와 동일 규칙
     setPlaylists(playlists.filter(p => p.id !== plId));
   };
 
@@ -764,7 +764,8 @@ export const HomeScreen: React.FC = () => {
 
   const handleBulkDeleteSentences = async () => {
     if (selectedSentences.size === 0) return;
-    if (window.confirm(`선택한 ${selectedSentences.size}개의 문장을 저장 해제하시겠습니까?`)) {
+    // SSOT 반영은 dirty→저장 버튼 경유 — 확인 다이얼로그 불필요
+    {
       // Group selected sentences by articleId for Drive sync
       const toRemove = savedSentences.filter(s => selectedSentences.has(s.id));
       const byArticle = new Map<string, number[]>();
@@ -1300,7 +1301,7 @@ export const HomeScreen: React.FC = () => {
                                   }
                                 }}
                               >
-                                재생
+                                학습
                               </Button>
                               <IconButton
                                 size="small"
