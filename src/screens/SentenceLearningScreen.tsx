@@ -99,7 +99,7 @@ const SentenceLearningScreen: React.FC = () => {
         const sentenceIndex = parseInt(sentenceParam, 10);
         if (!isNaN(sentenceIndex)) {
           setCurrentIndex(sentenceIndex);
-          setIsCumulative(false); // Switch to single mode
+          useLearningStore.setState({ isCumulative: false }); // 강제 단일 전환 — 전역 pref 안 덮음
         }
       }
     }
@@ -108,7 +108,7 @@ const SentenceLearningScreen: React.FC = () => {
       resetLearningState();
       googleCloudTtsService.stop();
     };
-  }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative]);
+  }, [id, resetLearningState, loadArticle, setCurrentIndex]);
 
   const updateDisplayText = React.useCallback(() => {
     if (!article) return;

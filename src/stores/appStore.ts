@@ -15,6 +15,7 @@ import {
 import { localDB } from '../services/database';
 import { GoogleSheetsService } from '../services/googleSheetsService';
 import { GoogleDriveService, DriveAuthError } from '../services/googleDriveService';
+import { readUiPref, writeUiPref } from '../utils/uiPrefs';
 
 interface AppStore extends AppState {
   // OAuth state
@@ -69,12 +70,12 @@ interface AppStore extends AppState {
   loadPlaylists: () => Promise<void>;
   setPlaylists: (playlists: Playlist[]) => void; // state + dirty 마크 (Drive 반영은 saveDirtyArticles)
   togglePlaylistDelete: (id: string) => void; // pending 삭제 토글 — 실제 삭제는 saveDirtyArticles
-  toggleStarArticle: (id: string) => void; // 최상단 고정 토글 — dirty 경유 lazy 저장
+  toggleStarArticle: (id: string) => void; // 최상단 고정 토글 — lastIndex와 동일하게 index.json 조용히 patch
   setPlaylistCursor: (plId: string, articleId: string) => Promise<void>; // 최근 학습 영상 커서 — 조용히 write
 
   // Review actions
   markReviewDone: (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => Promise<void>;
-  cycleReviewInterval: (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => Promise<void>;
+  cycleReviewInterval: (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string, silent?: boolean) => Promise<void>;
 
   // Saved state (Drive SSOT)
   updateSavedSentenceIndices: (articleId: string, indices: number[]) => void;
@@ -112,8 +113,8 @@ function snapshotArticle(a: StoreArticle): string {
       .sort((a, b) => a.s - b.s || a.e - b.e),
     hidden: a.kind === 'loaded' ? a.sentences.filter(s => s.hidden).map(s => s.index) : [],
     src: a.source || '',
-    star: a.starred || false,
-    // lastIndex(resume 커서)는 dirty/Save 대상 아님 — persistLastIndex가 index.json에 조용히 write.
+    // starred·lastIndex(학습 편의 상태)는 dirty/Save 대상 아님 — toggleStarArticle/persistLastIndex가
+    // index.json에 조용히 write.
     av: a.activeVariant ?? null,
   });
 }
@@ -163,6 +164,36 @@ function checkCleanAndUpdateDirty(get: () => AppStore, set: (partial: Partial<Ap
 function getDriveService(token: string | null): GoogleDriveService | null {
   if (!token) return null;
   return new GoogleDriveService(token);
+}
+
+/** index.json 쓰기 직렬화 큐 — 모든 쓰기가 "전체 GET→전체 PUT"이라, 동시 진행되면
+ *  나중에 착지한 PUT이 앞선 쓰기를 통째로 덮어씀 (star 토글 vs 학습이탈 lastIndex 등).
+ *  이 탭 안의 index 쓰기는 전부 이 큐를 거쳐 한 번에 하나만 실행. */
+let indexWriteQueue: Promise<unknown> = Promise.resolve();
+function enqueueIndexWrite<T>(task: () => Promise<T>): Promise<T> {
+  const p = indexWriteQueue.then(task, task);
+  indexWriteQueue = p.catch(() => { /* 실패해도 큐는 계속 */ });
+  return p;
+}
+
+/** index.json에서 한 아티클 summary만 surgical patch (조용히, dirty/Save 무관).
+ *  persistLastIndex·star·완주 자동복습 공용 — 미저장 콘텐츠 편집은 유출하지 않음. */
+async function patchIndexSummary(
+  get: () => AppStore,
+  articleId: string,
+  patch: (s: ArticleSummary) => ArticleSummary,
+): Promise<void> {
+  const drive = getDriveService(get().accessToken);
+  if (!drive) return;
+  try {
+    await enqueueIndexWrite(async () => {
+      const summaries = await drive.loadIndex();
+      if (!summaries) return;
+      await drive.saveIndex(summaries.map(s => s.id === articleId ? patch(s) : s));
+    });
+  } catch (e) {
+    console.warn('[silent-persist] index patch failed', e);
+  }
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -317,7 +348,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
           return summary;
         });
         articles.sort((a, b) => b.lastAccessed.getTime() - a.lastAccessed.getTime());
-        set({ audioArticles: articles });
+        // clean 스냅샷 시딩 — 없으면 checkClean이 undefined 비교로 '항상 dirty' 판정,
+        // 토글 원복해도 SAVE가 안 꺼짐 (index = 저장된 상태 그 자체이므로 그대로 기준선)
+        const cleanSnapshots = new Map<string, string>();
+        const cleanIntervals = new Map<string, number>();
+        articles.forEach(a => {
+          cleanSnapshots.set(a.id, snapshotArticle(a));
+          cleanIntervals.set(a.id, a.reviewInterval || 0);
+        });
+        set({ audioArticles: articles, cleanAudioSnapshots: cleanSnapshots, cleanAudioIntervals: cleanIntervals });
+        // 재로드로 store가 원격 상태가 됐으니, 남아있던 dirty 중 실제로 차이 없는 것은 해제
+        get().dirtyAudioIds.forEach(did => checkCleanAndUpdateDirty(get, set, did));
         return;
       }
 
@@ -392,9 +433,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   toggleStarArticle: (id: string) => {
     const article = get().audioArticles.find(a => a.id === id);
     if (!article) return;
-    const updated = { ...article, starred: !article.starred } as StoreArticle;
-    set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
-    checkCleanAndUpdateDirty(get, set, id);
+    const starred = !article.starred;
+    set({ audioArticles: get().audioArticles.map(a => a.id === id ? { ...a, starred } as StoreArticle : a) });
+    // 학습 편의 상태 — dirty/Save 안 거치고 즉시 index.json patch (Save 안 눌러도, 리로드해도 유지)
+    void patchIndexSummary(get, id, s => ({ ...s, starred }));
   },
 
   // 플레이리스트 커서 — lastIndex(persistLastIndex)와 동일 규칙: dirty/Save 대상 아님.
@@ -456,12 +498,29 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({
         audioArticles: get().audioArticles.map(a => a.id === id ? loaded : a),
       });
-      // Create clean snapshot now that full data is available
+      // Clean 기준선:
+      //  - 진입 시점에 dirty 아님 → 현재 상태(loaded) 그대로가 "저장된 상태".
+      //    (ri/sr 등은 silent patch로 index.json에 이미 영속 — {id}.json 원본으로 잡으면
+      //     두 파일이 어긋난 아티클이 영구 dirty가 되어 SAVE가 안 꺼짐)
+      //  - dirty(미저장 편집 보유) → Drive 원본({id}.json) 기준 — prev를 섞으면 checkClean이
+      //    미저장 편집을 '이미 저장됨'으로 오판해 dirty를 지움 (편집 유실 경로)
+      const wasDirty = get().dirtyAudioIds.has(id);
+      const baseline: FullArticle = wasDirty
+        ? {
+            ...loaded,
+            savedAsDeck: rawArticle.savedAsDeck,
+            savedSentenceIndices: rawArticle.savedSentenceIndices,
+            savedSentenceReview: rawArticle.savedSentenceReview,
+            source: rawArticle.source,
+            reviewInterval: rawArticle.reviewInterval ?? 0,
+          }
+        : loaded;
       const cleanSnapshots = new Map(get().cleanAudioSnapshots);
       const cleanIntervals = new Map(get().cleanAudioIntervals);
-      cleanSnapshots.set(id, snapshotArticle(loaded));
-      cleanIntervals.set(id, loaded.reviewInterval || 0);
+      cleanSnapshots.set(id, snapshotArticle(baseline));
+      cleanIntervals.set(id, baseline.reviewInterval || 0);
       set({ cleanAudioSnapshots: cleanSnapshots, cleanAudioIntervals: cleanIntervals });
+      checkCleanAndUpdateDirty(get, set, id); // dirty 정확성 동기화 (clean이면 no-op)
     } catch (error) {
       if (error instanceof DriveAuthError) {
         set({ needsReAuth: true, error: '토큰 만료 — 재로그인 후 자동 저장됩니다' });
@@ -482,8 +541,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
       // Save JSON metadata to Drive (AudioArticle persistence type)
       await drive.saveArticle(article);
 
-      // Update index with new article
-      await drive.updateIndex(article);
+      // Update index with new article (직렬화 큐 — quiet patch와의 last-writer-wins 방지)
+      await enqueueIndexWrite(() => drive.updateIndex(article));
 
       // Upload MP3 to Drive (only if not already there) + cache locally
       if (article.audioBlob) {
@@ -682,25 +741,27 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       // 3. Merge into index.json — 원격 index 기준, dirty만 upsert + 삭제분 제거 (single write)
       // 전체 덮어쓰기 금지: stale 클라이언트의 Save가 다른 기기 업로드분을 index에서 지우는 사고 방지
-      // (playlist만 dirty면 index 무변경 — 재기록 스킵)
+      // (playlist만 dirty면 index 무변경 — 재기록 스킵) — 직렬화 큐 경유 (quiet patch와 race 방지)
       if (dirtyIds.size > 0 || pendingDeletes.size > 0) {
-      const remoteIndex = await drive.loadIndex();
-      let summaries: ArticleSummary[];
-      if (remoteIndex) {
-        const merged = new Map(
-          remoteIndex.filter(s => !pendingDeletes.has(s.id)).map(s => [s.id, s] as const)
-        );
-        for (const articleId of Array.from(dirtyIds)) {
-          if (pendingDeletes.has(articleId)) continue;
-          const article = get().audioArticles.find(a => a.id === articleId);
-          if (article) merged.set(articleId, toIndexSummary(article));
+      await enqueueIndexWrite(async () => {
+        const remoteIndex = await drive.loadIndex();
+        let summaries: ArticleSummary[];
+        if (remoteIndex) {
+          const merged = new Map(
+            remoteIndex.filter(s => !pendingDeletes.has(s.id)).map(s => [s.id, s] as const)
+          );
+          for (const articleId of Array.from(dirtyIds)) {
+            if (pendingDeletes.has(articleId)) continue;
+            const article = get().audioArticles.find(a => a.id === articleId);
+            if (article) merged.set(articleId, toIndexSummary(article));
+          }
+          summaries = Array.from(merged.values());
+        } else {
+          // index 자체가 없음(최초/재구축 직후) — 스토어 전체로 생성
+          summaries = get().audioArticles.map(toIndexSummary);
         }
-        summaries = Array.from(merged.values());
-      } else {
-        // index 자체가 없음(최초/재구축 직후) — 스토어 전체로 생성
-        summaries = get().audioArticles.map(toIndexSummary);
-      }
-      await drive.saveIndex(summaries);
+        await drive.saveIndex(summaries);
+      });
 
       // 4. Update clean snapshots to current saved state
       const cleanIntervals = new Map(get().cleanAudioIntervals);
@@ -785,11 +846,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 
-  cycleReviewInterval: async (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string) => {
+  // silent=true (완주 자동복습): dirty/Save 경유 없이 index.json에 복습 필드만 조용히 patch —
+  // persistLastIndex와 동일 규칙. 수동 사이클(홈 chip)은 기존대로 dirty→Save.
+  cycleReviewInterval: async (type: 'article' | 'audio' | 'subdeck' | 'saved-sentences', id: string, silent = false) => {
     try {
       if (type === 'audio') {
         const article = get().audioArticles.find(a => a.id === id);
         if (!article) return;
+        const wasClean = !get().dirtyAudioIds.has(id);
         const newInterval = localDB.cycleInterval(article.reviewInterval || 0);
         let nextReviewDate: Date | null = null;
         if (newInterval > 0) {
@@ -798,7 +862,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
         const updated = { ...article, reviewInterval: newInterval, nextReviewDate, lastAccessed: new Date() };
         set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
-        checkCleanAndUpdateDirty(get, set, id);
+        if (silent) {
+          if (wasClean) {
+            // interval 변경이 dirty로 잡히지 않도록 clean 기준선을 현재 상태로 이동
+            const snaps = new Map(get().cleanAudioSnapshots);
+            snaps.set(id, snapshotArticle(updated));
+            set({ cleanAudioSnapshots: snaps });
+          }
+          await patchIndexSummary(get, id, s => ({
+            ...s,
+            reviewInterval: newInterval,
+            nextReviewDate: nextReviewDate ? nextReviewDate.toISOString() : null,
+          }));
+        } else {
+          checkCleanAndUpdateDirty(get, set, id);
+        }
       } else if (type === 'article') {
         const record = await localDB.getArticleById(id);
         if (!record) return;
@@ -817,6 +895,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       } else if (type === 'saved-sentences') {
         const article = get().audioArticles.find(a => a.id === id);
         if (!article) return;
+        const wasClean = !get().dirtyAudioIds.has(id);
         const currentInterval = article.savedSentenceReview?.reviewInterval || 0;
         const newInterval = localDB.cycleInterval(currentInterval);
         let nextReviewDate: string | null = null;
@@ -826,7 +905,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
         const updated = { ...article, savedSentenceReview: { reviewInterval: newInterval, nextReviewDate } };
         set({ audioArticles: get().audioArticles.map(a => a.id === id ? updated : a) });
-        checkCleanAndUpdateDirty(get, set, id);
+        if (silent) {
+          if (wasClean) {
+            const snaps = new Map(get().cleanAudioSnapshots);
+            snaps.set(id, snapshotArticle(updated));
+            set({ cleanAudioSnapshots: snaps });
+          }
+          await patchIndexSummary(get, id, s => ({
+            ...s,
+            savedSentenceReview: { reviewInterval: newInterval, nextReviewDate },
+          }));
+        } else {
+          checkCleanAndUpdateDirty(get, set, id);
+        }
       } else {
         // SubDeck: local state + mark parent dirty only if changed from clean
         const deck = get().subDecks.find(d => d.id === id);
@@ -839,8 +930,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
         const updated = { ...deck, reviewInterval: newInterval, nextReviewDate };
         set({ subDecks: get().subDecks.map(d => d.id === id ? updated : d) });
-        // SubDeck review is stored in parent article's subDeckReviews — update snapshot there
-        checkCleanAndUpdateDirty(get, set, deck.parentId);
+        if (silent) {
+          // 부모 article의 index summary에서 해당 subdeck 엔트리만 patch
+          await patchIndexSummary(get, deck.parentId, s => ({
+            ...s,
+            subDeckReviews: (s.subDeckReviews || []).map(r =>
+              r.startIndex === deck.startIndex && r.endIndex === deck.endIndex
+                ? { ...r, reviewInterval: newInterval, nextReviewDate: nextReviewDate ? nextReviewDate.toISOString() : null }
+                : r),
+          }));
+        } else {
+          // SubDeck review is stored in parent article's subDeckReviews — update snapshot there
+          checkCleanAndUpdateDirty(get, set, deck.parentId);
+        }
         await localDB.setReviewInterval('subdeck', id, newInterval);
       }
     } catch (error) {
@@ -876,15 +978,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   // ponytail: exit마다 index GET+PUT 1회. 위치 안 바뀌면 setResumeCursor early-return. 과하면 로컬 캐시 후 배치.
   persistLastIndex: async (articleId: string, index: number) => {
     get().setResumeCursor(articleId, index);
-    const drive = getDriveService(get().accessToken);
-    if (!drive) return;
-    try {
-      const summaries = await drive.loadIndex();
-      if (!summaries) return;
-      await drive.saveIndex(summaries.map(s => s.id === articleId ? { ...s, lastIndex: index } : s));
-    } catch (e) {
-      console.warn('[resume] lastIndex persist failed', e);
-    }
+    await patchIndexSummary(get, articleId, s => ({ ...s, lastIndex: index }));
   },
 
   // 미저장 콘텐츠 편집 버리기 — 저장 안 하고 나갈 때 경고 후 확정 discard.
@@ -1061,23 +1155,24 @@ interface LearningStore extends LearningState {
 }
 
 export const useLearningStore = create<LearningStore>((set, get) => ({
-  // Initial state
+  // Initial state — 모드/윈도우는 전역 저장된 마지막 사용값으로 시작 (기본: 단일 / 전체)
   currentIndex: 1,
   isPlaying: false,
-  isCumulative: false, // 기본값: 단일 표시 — 누적은 수동 전환
-  windowSize: 'full', // 기본값: 전체 누적
+  isCumulative: readUiPref('isCumulative', false),
+  windowSize: readUiPref<number | 'full'>('windowSize', 'full'),
 
-  // Actions
+  // Actions — 모드/윈도우 setter는 전역 pref에 영속화.
+  // 화면 로직상 강제 전환(특정 문장 점프 등)은 pref를 덮지 않도록 setState 직접 호출로 우회할 것.
   setCurrentIndex: (index: number) => set({ currentIndex: index }),
   setIsPlaying: (playing: boolean) => set({ isPlaying: playing }),
-  setIsCumulative: (cumulative: boolean) => set({ isCumulative: cumulative }),
-  setWindowSize: (size: number | 'full') => set({ windowSize: size }),
+  setIsCumulative: (cumulative: boolean) => { writeUiPref('isCumulative', cumulative); set({ isCumulative: cumulative }); },
+  setWindowSize: (size: number | 'full') => { writeUiPref('windowSize', size); set({ windowSize: size }); },
 
   resetLearningState: () => set({
     currentIndex: 1,
     isPlaying: false,
-    isCumulative: false, // 단일 시작 — 기본값과 동일
-    windowSize: 'full'
+    isCumulative: readUiPref('isCumulative', false),
+    windowSize: readUiPref<number | 'full'>('windowSize', 'full'),
   }),
 
   // Navigation actions
