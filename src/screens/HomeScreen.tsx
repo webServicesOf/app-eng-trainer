@@ -57,7 +57,7 @@ import { SavedSentence, AudioArticle, ExprTag, Playlist, SentenceEntry, Transcri
 import { applyVariant } from '../utils/variants';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
-import { GoogleDriveService } from '../services/googleDriveService';
+import { GoogleDriveService, DriveAuthError } from '../services/googleDriveService';
 
 // yt2mp3 폴더에서 감지한 변형 파일들
 type VariantFiles = { vtt?: File; whisperx?: File; legacy?: File; meta?: File };
@@ -364,6 +364,25 @@ export const HomeScreen: React.FC = () => {
     await saveAudioArticle(audioArticle);
   };
 
+  /** 기존 아티클 태그만 갱신 (mp3/문장 재업로드 없이 {id}.json 패치) — 성공 시 true */
+  const updateTagsFor = async (
+    drive: GoogleDriveService,
+    fileIds: Map<string, string>,
+    articleId: string,
+    metaFile: File,
+  ): Promise<boolean> => {
+    const exprs = await parseMetaFile(metaFile);
+    if (!exprs) return false;
+    const fileId = fileIds.get(`${articleId}.json`);
+    if (!fileId) return false;
+    await drive.patchArticleExprs(fileId, `${articleId}.json`, exprs);
+    useAppStore.setState(state => ({
+      audioArticles: state.audioArticles.map(a =>
+        a.id === articleId && a.kind === 'loaded' ? { ...a, exprs } : a),
+    }));
+    return true;
+  };
+
   const handleUploadAudioArticle = async () => {
     const hasJson = uploadVariantFiles && (uploadVariantFiles.vtt || uploadVariantFiles.whisperx || uploadVariantFiles.legacy);
     if (!uploadMp3File || !hasJson || !uploadTitle.trim()) {
@@ -373,7 +392,29 @@ export const HomeScreen: React.FC = () => {
 
     try {
       setLoading(true);
-      await uploadSingleArticle(uploadMp3File, uploadVariantFiles!, uploadTitle.trim(), uploadSource.trim());
+
+      // 배치와 동일한 중복 분기: 같은 제목 존재 → 재업로드 금지, meta.json 있으면 태그만 갱신
+      const title = uploadTitle.trim();
+      const existing = useAppStore.getState().audioArticles.find(a => a.title === title);
+      if (existing) {
+        if (uploadVariantFiles?.meta && accessToken) {
+          const drive = new GoogleDriveService(accessToken);
+          const fileIds = await drive.listDataFileIds();
+          if (await updateTagsFor(drive, fileIds, existing.id, uploadVariantFiles.meta)) {
+            alert(`"${title}" 이미 존재 — 태그만 갱신했습니다.`);
+            setUploadMp3File(null);
+            setUploadVariantFiles(null);
+            setUploadTitle('');
+            setUploadSource('');
+            setUploadDialogOpen(false);
+            return;
+          }
+        }
+        alert(`"${title}" 이미 존재 — 스킵. 새로 올리려면 제목을 바꾸세요.`);
+        return;
+      }
+
+      await uploadSingleArticle(uploadMp3File, uploadVariantFiles!, title, uploadSource.trim());
 
       setUploadMp3File(null);
       setUploadVariantFiles(null);
@@ -410,33 +451,38 @@ export const HomeScreen: React.FC = () => {
       }
 
       let tagged = 0;
+      let firstError: string | null = null;
+      let authAborted = 0;
       if (metaOnly.length > 0 && accessToken) {
         const drive = new GoogleDriveService(accessToken);
         const byTitle = new Map(useAppStore.getState().audioArticles.map(a => [a.title, a.id]));
-        for (const folder of metaOnly) {
+        const fileIds = await drive.listDataFileIds(); // data/ 목록 1회 — per-article 재목록 금지
+        for (let i = 0; i < metaOnly.length; i++) {
+          const folder = metaOnly[i];
           try {
+            // silent refresh(GlobalAuthManager)가 갈아끼운 최신 토큰 반영 — 시작 시점 토큰 박제 금지
+            const freshToken = useAppStore.getState().accessToken;
+            if (freshToken) drive.setToken(freshToken);
             const articleId = byTitle.get(folder.name);
             if (!articleId) continue;
-            const exprs = await parseMetaFile(folder.files.meta!);
-            if (!exprs) continue;
             setBatchProgress(`태그 갱신 ${tagged + 1}/${metaOnly.length}: ${folder.name}`);
-            const raw = await drive.getArticle(articleId);
-            if (!raw) continue;
-            await drive.saveArticle({ ...raw, exprs });
-            useAppStore.setState(state => ({
-              audioArticles: state.audioArticles.map(a =>
-                a.id === articleId && a.kind === 'loaded' ? { ...a, exprs } : a),
-            }));
-            tagged++;
+            if (await updateTagsFor(drive, fileIds, articleId, folder.files.meta!)) tagged++;
           } catch (e) {
             console.error(`Failed to update tags for ${folder.name}:`, e);
+            if (e instanceof DriveAuthError) {
+              // 토큰 사망 — 남은 항목 전부 같은 이유로 실패하므로 즉시 중단
+              authAborted = metaOnly.length - i;
+              useAppStore.getState().setNeedsReAuth(true);
+              break;
+            }
             failed++;
+            if (!firstError) firstError = e instanceof Error ? e.message : String(e);
           }
         }
       }
 
       const skipped = batchFolders.filter(f => f.skip).length - tagged;
-      alert(`완료: ${uploaded}개 업로드${tagged ? `, ${tagged}개 태그 갱신` : ''}${skipped > 0 ? `, ${skipped}개 스킵 (이미 존재)` : ''}${failed ? `, ${failed}개 실패` : ''}`);
+      alert(`완료: ${uploaded}개 업로드${tagged ? `, ${tagged}개 태그 갱신` : ''}${skipped > 0 ? `, ${skipped}개 스킵 (이미 존재)` : ''}${failed ? `, ${failed}개 실패` : ''}${authAborted ? `\n토큰 만료로 ${authAborted}개 중단 — 재로그인 후 배치 재실행하면 이어서 갱신됩니다.` : ''}${firstError ? `\n첫 오류: ${firstError}` : ''}`);
 
       setBatchFolders([]);
       setBatchMode(false);

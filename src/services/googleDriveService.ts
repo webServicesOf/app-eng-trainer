@@ -79,6 +79,11 @@ export class GoogleDriveService {
     this.token = token;
   }
 
+  /** 장기 배치 루프용: silent refresh로 갱신된 토큰을 기존 인스턴스에 반영 (폴더 캐시 유지) */
+  setToken(token: string) {
+    this.token = token;
+  }
+
   // ── folder management ──────────────────────────────────
 
   /** Find or create a folder by name under a parent. */
@@ -111,17 +116,32 @@ export class GoogleDriveService {
     return folder.id;
   }
 
+  // 폴더 ID는 세션 내 불변 — 인스턴스가 매번 새로 생성돼도 재조회 안 하도록 모듈 캐시.
+  // ponytail: Drive에서 폴더를 지우고 다시 만들면 stale — 새로고침으로 해소.
+  private static folderIdCache = new Map<string, { root: string; data: string; sys: string }>();
+
   /** Ensure root + data + sys folders exist. */
   private async ensureFolders(): Promise<{ root: string; data: string; sys: string }> {
     if (this.rootId && this.dataFolderId && this.sysFolderId) {
       return { root: this.rootId, data: this.dataFolderId, sys: this.sysFolderId };
     }
 
-    this.rootId = await this.findOrCreateFolder(getDriveFolderName());
+    const cacheKey = getDriveFolderName();
+    const cached = GoogleDriveService.folderIdCache.get(cacheKey);
+    if (cached) {
+      this.rootId = cached.root;
+      this.dataFolderId = cached.data;
+      this.sysFolderId = cached.sys;
+      return cached;
+    }
+
+    this.rootId = await this.findOrCreateFolder(cacheKey);
     this.dataFolderId = await this.findOrCreateFolder('data', this.rootId);
     this.sysFolderId = await this.findOrCreateFolder('sys', this.rootId);
 
-    return { root: this.rootId, data: this.dataFolderId, sys: this.sysFolderId };
+    const resolved = { root: this.rootId, data: this.dataFolderId, sys: this.sysFolderId };
+    GoogleDriveService.folderIdCache.set(cacheKey, resolved);
+    return resolved;
   }
 
   // ── low-level file ops ─────────────────────────────────
@@ -360,6 +380,23 @@ export class GoogleDriveService {
       data,
       existing?.id,
     );
+  }
+
+  /** Batch tag update: name→fileId map of data/ (one listing reused for N patches) */
+  async listDataFileIds(): Promise<Map<string, string>> {
+    const { data } = await this.ensureFolders();
+    return new Map((await this.listFilesIn(data)).map((f) => [f.name, f.id]));
+  }
+
+  /** Patch exprs into an existing {id}.json by fileId — raw passthrough, no re-listing */
+  async patchArticleExprs(fileId: string, jsonName: string, exprs: ExprTag[]): Promise<void> {
+    const raw = JSON.parse(await (await this.downloadFile(fileId)).text());
+    if (!raw.sentences?.length && !raw.variants) {
+      throw new Error(`patchArticleExprs blocked: no sentences/variants in ${jsonName}`);
+    }
+    raw.exprs = exprs;
+    const { data } = await this.ensureFolders();
+    await this.uploadFile(jsonName, JSON.stringify(raw, null, 2), 'application/json', data, fileId);
   }
 
   /** Upload MP3 blob to Drive (only if not already present) */

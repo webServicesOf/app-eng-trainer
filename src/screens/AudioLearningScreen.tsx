@@ -63,6 +63,7 @@ import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
 import RecordCompare from '../components/RecordCompare';
 import { startMediaSession, setMediaPlaybackState, stopMediaSession } from '../services/mediaSession';
+import { usePersistedState, readUiPref, writeUiPref } from '../utils/uiPrefs';
 import { GoogleDriveService } from '../services/googleDriveService';
 import YouTubePlayer from 'react-youtube';
 
@@ -146,16 +147,18 @@ const AudioLearningScreen: React.FC = () => {
   const [activeSentenceLocalIdx, setActiveSentenceLocalIdx] = useState<number>(-1);
   const [activeWordIdx, setActiveWordIdx] = useState<number>(-1);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [playbackRate, setPlaybackRate] = useState<number>(1.0);
+  // UI 조작 상태는 전역 저장(localStorage) — 마지막 사용값으로 진입. recordMode는 제외(마이크 권한 팝업 방지).
+  const [playbackRate, setPlaybackRate] = usePersistedState<number>('playbackRate', 1.0);
   const [isSaved, setIsSaved] = useState<boolean>(false);
-  const [isBlindMode, setIsBlindMode] = useState<boolean>(false);
+  const [isBlindMode, setIsBlindMode] = usePersistedState<boolean>('isBlindMode', false);
   const [audioLoaded, setAudioLoaded] = useState<boolean>(false);
   const [showHiddenList, setShowHiddenList] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false); // 미저장 콘텐츠 편집 두고 홈 이동 경고
-  const [isYouTubeMode, setIsYouTubeMode] = useState(false);
-  const [showControls, setShowControls] = useState(true);
-  const [windowStepMode, setWindowStepMode] = useState(false);
+  const [isYouTubeMode, setIsYouTubeMode] = useState(false); // 영상 아티클 진입 시 loadArticle에서 pref 적용
+  const [showControls, setShowControls] = usePersistedState<boolean>('showControls', true);
+  const [windowStepMode, setWindowStepMode] = usePersistedState<boolean>('windowStepMode', false);
   const [settingsAnchorEl, setSettingsAnchorEl] = useState<HTMLElement | null>(null);
+  const [ytReadyTick, setYtReadyTick] = useState(0); // 진입 자동재생용 onReady 신호 (StrictMode 재마운트마다 증가)
   const [exprAnchorEl, setExprAnchorEl] = useState<HTMLElement | null>(null);
   const [recordMode, setRecordMode] = useState(false);
 
@@ -286,7 +289,7 @@ const AudioLearningScreen: React.FC = () => {
       // YouTube source → skip MP3 loading, use YouTube iframe
       const hasVideo = !!fullArticle.source?.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/))([^?&#]+)/);
       if (hasVideo) {
-        setIsYouTubeMode(true);
+        setIsYouTubeMode(readUiPref('youtubeMode', true)); // 영상/음성 모드 — 마지막 사용값
         setAudioLoaded(true);
       } else {
         // Get MP3: try cache first, then Drive download
@@ -355,7 +358,8 @@ const AudioLearningScreen: React.FC = () => {
           const sentenceIndex = parseInt(sentenceParam, 10);
           if (!isNaN(sentenceIndex)) {
             setCurrentIndex(sentenceIndex);
-            setIsCumulative(false);
+            // 특정 문장 점프는 강제 단일 전환 — 전역 pref는 덮지 않음 (setState 직접)
+            useLearningStore.setState({ isCumulative: false });
           }
         }
       }
@@ -366,7 +370,7 @@ const AudioLearningScreen: React.FC = () => {
       audioSeekService.stop();
       if (ytPollingRef.current) clearInterval(ytPollingRef.current);
     };
-  }, [id, resetLearningState, loadArticle, setCurrentIndex, setIsCumulative]);
+  }, [id, resetLearningState, loadArticle, setCurrentIndex]);
 
   const updateDisplayText = React.useCallback(() => {
     if (!article) return;
@@ -453,15 +457,16 @@ const AudioLearningScreen: React.FC = () => {
     const state = useAppStore.getState();
     // ponytail: 최대 간격(사다리 끝)에서는 자동 순환 안 함 — 120d→0d wrap 방지
     const advances = (cur: number) => localDB.cycleInterval(cur) > cur;
+    // silent: 자동복습은 SAVE 버튼(dirty) 안 거치고 index.json에 조용히 persist — persistLastIndex와 동일 규칙
     if (subDeckRange) {
       const sd = state.subDecks.find(d => d.parentId === id && d.startIndex === subDeckRange.start && d.endIndex === subDeckRange.end);
-      if (sd && advances(sd.reviewInterval || 0)) cycleReviewInterval('subdeck', sd.id);
+      if (sd && advances(sd.reviewInterval || 0)) cycleReviewInterval('subdeck', sd.id, true);
     } else if (isSavedDeck) {
       const a = state.audioArticles.find(x => x.id === id);
-      if (a && advances(a.savedSentenceReview?.reviewInterval || 0)) cycleReviewInterval('saved-sentences', id);
+      if (a && advances(a.savedSentenceReview?.reviewInterval || 0)) cycleReviewInterval('saved-sentences', id, true);
     } else {
       const a = state.audioArticles.find(x => x.id === id);
-      if (a && advances(a.reviewInterval || 0)) cycleReviewInterval('audio', id);
+      if (a && advances(a.reviewInterval || 0)) cycleReviewInterval('audio', id, true);
     }
   }, [article, currentIndex, id, subDeckRange, cycleReviewInterval]);
 
@@ -513,7 +518,11 @@ const AudioLearningScreen: React.FC = () => {
 
   const handleToggleYouTubeMode = React.useCallback(() => {
     // Toggle video visibility only — audio always stays on YouTube player
-    setIsYouTubeMode(prev => !prev);
+    setIsYouTubeMode(prev => {
+      const next = !prev;
+      writeUiPref('youtubeMode', next);
+      return next;
+    });
   }, []);
 
   // ↑ = 윈도우 크기 1~5 순환 (5에서 다시 1). 'full'이면 1부터.
@@ -539,7 +548,11 @@ const AudioLearningScreen: React.FC = () => {
     if (speakTimerRef.current) clearTimeout(speakTimerRef.current);
     speakTimerRef.current = setTimeout(() => {
       speakTimerRef.current = null;
-      handleSpeakRef.current();
+      try {
+        handleSpeakRef.current();
+      } catch (e) {
+        console.warn('[speak] play failed', e); // 파괴된 YT player 등 — 크래시 대신 무시
+      }
     }, 50);
   }, []);
 
@@ -588,9 +601,9 @@ const AudioLearningScreen: React.FC = () => {
     setIsPlaying(false);
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
-    setIsCumulative(false);
+    useLearningStore.setState({ isCumulative: false }); // 점프 시 단일 전환 — pref 안 덮음
     setCurrentIndex(target);
-  }, [article, videoId, stopYouTubePolling, setCurrentIndex, setIsCumulative]);
+  }, [article, videoId, stopYouTubePolling, setCurrentIndex]);
 
   const handleRightArrow = React.useCallback(() => {
     if (!article) return;
@@ -893,6 +906,11 @@ const AudioLearningScreen: React.FC = () => {
     );
   }, [article, audioLoaded, displaySentences, handleSentenceTap, onPlayEnd, onWordUpdate, videoId, startYouTubePolling]);
 
+  // 저장된 배속을 재생 엔진에 반영 — mp3는 여기서, YouTube는 onReady에서 (둘 다 멱등)
+  useEffect(() => {
+    audioSeekService.setRate(playbackRate);
+  }, [playbackRate, audioLoaded]);
+
   const handleRateChange = (newRate: number) => {
     setPlaybackRate(newRate);
     if (videoId && ytPlayerRef.current) {
@@ -1010,29 +1028,48 @@ const AudioLearningScreen: React.FC = () => {
     const li = article.lastIndex;
     if (li && li >= 1 && li <= article.sentences.length) {
       setCurrentIndex(li);
-      setIsCumulative(false);
+      // 모드는 전역 pref 유지 — resume이 단일로 강제하지 않음
     }
-  }, [article, setCurrentIndex, setIsCumulative]);
+  }, [article, setCurrentIndex]);
 
-  // Playlist autoplay — 이전/다음 영상 전환 도착 시 자동 재생 (?autoplay=1, remount당 1회)
+  // 진입 자동재생 — 홈/플레이리스트 어디서 들어와도 현재 문장(resume 위치)부터 자동 재생 (remount당 1회).
+  // YouTube는 onReady를 기다림. StrictMode 이중 마운트로 파괴된 player에 호출되면
+  // 동기 throw를 잡고 다음 onReady 틱에서 재시도 (미가드 시 "Script error." 크래시).
+  // 콜드 로드(새로고침 직행)는 브라우저 자동재생 정책에 막힐 수 있음 — best-effort.
   const autoplayFiredRef = useRef(false);
   useEffect(() => {
     if (autoplayFiredRef.current || !article || !audioLoaded) return;
+    if (videoId && ytReadyTick === 0) return;
     autoplayFiredRef.current = true;
-    if (new URLSearchParams(window.location.search).get('autoplay')) debouncedSpeak();
-  }, [article, audioLoaded, debouncedSpeak]);
+    try {
+      handleSpeakRef.current();
+    } catch (e) {
+      console.warn('[autoplay] play failed — retry on next player ready', e);
+      autoplayFiredRef.current = false;
+    }
+  }, [article, audioLoaded, videoId, ytReadyTick]);
 
   // resume 커서: 현재 학습 위치를 ref로 추적 → exit 시점에 최신값 참조. Save 버튼/dirty와 무관.
   const currentIndexRef = useRef(currentIndex);
   useEffect(() => { currentIndexRef.current = currentIndex; }, [currentIndex]);
+  const sentencesLenRef = useRef(0);
+  useEffect(() => { sentencesLenRef.current = article?.sentences.length ?? 0; }, [article]);
+
+  // 완주(자동복습 트리거) 상태로 마지막 문장에서 나가면 커서를 1로 초기화 — 다음 접속은 처음부터.
+  // 완주 후 다른 문장으로 이동했다면 그 위치 그대로 저장.
+  const resumeIndexToPersist = React.useCallback(() => (
+    completedRef.current && sentencesLenRef.current > 0 && currentIndexRef.current >= sentencesLenRef.current
+      ? 1
+      : currentIndexRef.current
+  ), []);
 
   // req2: 자동 편집(current index) — 홈이동/아티클전환/언마운트 시 커서 자동저장(조용히). 콘텐츠는 안 건드림.
   useEffect(() => {
     return () => {
       if (!(id && plainOpenRef.current && resumeRestoredRef.current)) return;
-      void useAppStore.getState().persistLastIndex(id, currentIndexRef.current);
+      void useAppStore.getState().persistLastIndex(id, resumeIndexToPersist());
     };
-  }, [id]);
+  }, [id, resumeIndexToPersist]);
 
   // 앱 종료/백그라운드(탭 전환·최소화·닫기) 처리:
   //  - req2: 커서를 index.json에 자동저장(best-effort — 하드 종료 시 async 미완 가능, ponytail 수용).
@@ -1042,7 +1079,7 @@ const AudioLearningScreen: React.FC = () => {
     const onHide = () => {
       if (!resumeRestoredRef.current) return;
       if (document.visibilityState === 'hidden') {
-        void useAppStore.getState().persistLastIndex(id, currentIndexRef.current);
+        void useAppStore.getState().persistLastIndex(id, resumeIndexToPersist());
       }
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -1059,7 +1096,7 @@ const AudioLearningScreen: React.FC = () => {
       window.removeEventListener('pagehide', onHide);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
-  }, [id]);
+  }, [id, resumeIndexToPersist]);
 
   // Record-compare needs the decoded MP3 buffer for the reference waveform. YouTube articles
   // skip MP3 load (iframe playback), so lazily fetch it the first time record mode opens.
@@ -1172,22 +1209,6 @@ const AudioLearningScreen: React.FC = () => {
                 <Mic />
               </IconButton>
             </Tooltip>
-            {!isCumulative && (
-              <IconButton
-                onClick={handleSaveSentence}
-                color={isSaved ? 'primary' : 'default'}
-                size="small"
-              >
-                {isSaved ? <Bookmark /> : <BookmarkBorder />}
-              </IconButton>
-            )}
-            {videoId && (
-              <Tooltip title="YouTube 앱에서 열기">
-                <IconButton onClick={handleOpenYouTubeApp} size="small" color="success">
-                  <OpenInNew />
-                </IconButton>
-              </Tooltip>
-            )}
             <Tooltip title="타임스탬프 편집 (현재 문장)">
               <IconButton onClick={handleGoEdit} size="small" color="secondary">
                 <EditIcon />
@@ -1198,14 +1219,15 @@ const AudioLearningScreen: React.FC = () => {
                 <Settings />
               </IconButton>
             </Tooltip>
-            {/* Save = 항상 far-right에 고정 렌더. dirty 없으면 disabled(공간 유지 → 다른 버튼 안 밀림) */}
+            {/* Save = 항상 far-right에 고정 렌더. dirty 없으면 disabled(공간 유지 → 다른 버튼 안 밀림)
+                이 화면에선 현재 아티클 dirty만 반영 — 다른 화면에서 남긴 dirty로 켜지지 않음 */}
             <Tooltip title="변경사항 저장">
               <span>
                 <IconButton
                   onClick={() => saveDirtyArticles()}
                   color="warning"
                   size="small"
-                  disabled={dirtyAudioIds.size === 0}
+                  disabled={!id || !dirtyAudioIds.has(id)}
                 >
                   <Save />
                 </IconButton>
@@ -1291,8 +1313,26 @@ const AudioLearningScreen: React.FC = () => {
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
         <Box sx={{ p: 2, width: 260 }}>
-          {/* 이동된 토글: 음성 모드 전환 · 패드 숨기기 · (단일)숨김 · 숨김 문장 보기 */}
+          {/* 이동된 토글: 문장 저장 · YouTube 앱 열기 · 음성 모드 전환 · 패드 숨기기 · (단일)숨김 · 숨김 문장 보기 */}
           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center" sx={{ mb: 1.5 }}>
+            {!isCumulative && (
+              <Tooltip title={isSaved ? '문장 저장 해제 (s)' : '문장 저장 (s)'}>
+                <IconButton
+                  onClick={handleSaveSentence}
+                  color={isSaved ? 'primary' : 'default'}
+                  size="small"
+                >
+                  {isSaved ? <Bookmark /> : <BookmarkBorder />}
+                </IconButton>
+              </Tooltip>
+            )}
+            {videoId && (
+              <Tooltip title="YouTube 앱에서 열기">
+                <IconButton onClick={handleOpenYouTubeApp} size="small" color="success">
+                  <OpenInNew />
+                </IconButton>
+              </Tooltip>
+            )}
             {videoId && (
               <Tooltip title={isYouTubeMode ? 'MP3로 전환 (y)' : 'YouTube로 전환 (y)'}>
                 <IconButton onClick={handleToggleYouTubeMode} size="small" color={isYouTubeMode ? 'error' : 'default'}>
@@ -1406,7 +1446,7 @@ const AudioLearningScreen: React.FC = () => {
               <YouTubePlayer
                 videoId={videoId}
                 opts={{ width: '100%', playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0, showinfo: 0, iv_load_policy: 3 } }}
-                onReady={(e) => { ytPlayerRef.current = e.target; }}
+                onReady={(e) => { ytPlayerRef.current = e.target; e.target.setPlaybackRate(playbackRate); setYtReadyTick(t => t + 1); }}
                 onStateChange={(e) => {
                   const state = e.data;
                   // Reclaim focus from YouTube iframe so keyboard shortcuts work
@@ -1566,7 +1606,7 @@ const AudioLearningScreen: React.FC = () => {
             onClick={() => {
               setShowLeaveConfirm(false);
               if (id) {
-                useAppStore.getState().setResumeCursor(id, currentIndexRef.current);
+                useAppStore.getState().setResumeCursor(id, resumeIndexToPersist());
                 void useAppStore.getState().discardArticleEdits(id);
               }
               navigate('/');
