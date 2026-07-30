@@ -1064,7 +1064,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   // Initial state
   currentIndex: 1,
   isPlaying: false,
-  isCumulative: true, // 기본값: 누적 표시
+  isCumulative: false, // 기본값: 단일 표시 — 누적은 수동 전환
   windowSize: 'full', // 기본값: 전체 누적
 
   // Actions
@@ -1076,7 +1076,7 @@ export const useLearningStore = create<LearningStore>((set, get) => ({
   resetLearningState: () => set({
     currentIndex: 1,
     isPlaying: false,
-    isCumulative: true,
+    isCumulative: false, // 단일 시작 — 기본값과 동일
     windowSize: 'full'
   }),
 
