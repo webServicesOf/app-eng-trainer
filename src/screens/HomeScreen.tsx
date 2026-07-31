@@ -143,6 +143,8 @@ export const HomeScreen: React.FC = () => {
   const [uploadSource, setUploadSource] = useState('');
   // Batch upload state
   const [batchFolders, setBatchFolders] = useState<{ name: string; mp3: File; files: VariantFiles; skip: boolean }[]>([]);
+  // mp3 백필: <video_id>.mp3 평면 폴더 → 제목 suffix(_<video_id>) 매칭 아티클의 Drive mp3 교체
+  const [mp3Backfill, setMp3Backfill] = useState<{ vid: string; file: File }[]>([]);
   const [batchMode, setBatchMode] = useState(false);
   const [batchProgress, setBatchProgress] = useState('');
   const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
@@ -426,6 +428,70 @@ export const HomeScreen: React.FC = () => {
       alert('업로드 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
     } finally {
       setLoading(false);
+    }
+  };
+
+  /** 아티클 → 유튜브 영상 ID 후보: 제목 suffix(_<id>) + source URL 둘 다 (옛 제목 형식 커버) */
+  const extractVideoIds = (a: { title: string; source?: string }): string[] => {
+    const ids = new Set<string>();
+    const t = a.title.match(/_([A-Za-z0-9_-]{11})$/);
+    if (t) ids.add(t[1]);
+    const s = a.source?.match(/(?:youtu\.be\/|[?&]v=|embed\/|\/v\/)([A-Za-z0-9_-]{11})/);
+    if (s) ids.add(s[1]);
+    return Array.from(ids);
+  };
+
+  /** mp3 백필 실행 — placeholder(~4KB)만 in-place 교체, 실파일은 스킵 (재실행 안전) */
+  const handleMp3Backfill = async () => {
+    if (mp3Backfill.length === 0 || !accessToken) return;
+    try {
+      setLoading(true);
+      const drive = new GoogleDriveService(accessToken);
+      const fileMap = await drive.listDataFilesWithSize(); // data/ 목록 1회
+      const byVid = new Map<string, string[]>();
+      for (const a of useAppStore.getState().audioArticles) {
+        for (const vid of extractVideoIds(a)) {
+          byVid.set(vid, [...(byVid.get(vid) || []), a.id]);
+        }
+      }
+      let replaced = 0; let skipped = 0; let unmatched = 0; let failed = 0;
+      let firstError: string | null = null;
+      let authAborted = false;
+      outer:
+      for (const { vid, file } of mp3Backfill) {
+        const targets = byVid.get(vid);
+        if (!targets) { unmatched++; continue; }
+        for (const articleId of targets) {
+          try {
+            const freshToken = useAppStore.getState().accessToken;
+            if (freshToken) drive.setToken(freshToken);
+            const entry = fileMap.get(`${articleId}.mp3`);
+            if (!entry) { unmatched++; continue; }
+            if (entry.size > 20_000) { skipped++; continue; } // 이미 실파일 — placeholder(~4KB)만 교체
+            setBatchProgress(`mp3 교체 ${replaced + 1}: ${vid}`);
+            await drive.replaceFileContent(entry.id, file);
+            await localDB.removeCachedMp3(articleId); // 로컬 placeholder 캐시 무효화 → 다음 재생 시 실파일
+            replaced++;
+          } catch (e) {
+            console.error(`mp3 replace failed for ${vid} → ${articleId}:`, e);
+            if (e instanceof DriveAuthError) {
+              useAppStore.getState().setNeedsReAuth(true);
+              authAborted = true;
+              break outer; // 죽은 토큰으로 계속 두드리지 않음 — 재로그인 후 재실행하면 이어감
+            }
+            failed++;
+            if (!firstError) firstError = e instanceof Error ? e.message : String(e);
+          }
+        }
+      }
+      alert(`mp3 교체 완료: ${replaced}개 교체${skipped ? `, ${skipped}개 스킵(이미 실파일)` : ''}${unmatched ? `, ${unmatched}개 미매칭` : ''}${failed ? `, ${failed}개 실패` : ''}${authAborted ? '\n토큰 만료 중단 — 재로그인 후 같은 폴더로 재실행하면 이어서 진행됩니다.' : ''}${firstError ? `\n첫 오류: ${firstError}` : ''}`);
+      setMp3Backfill([]);
+      setUploadDialogOpen(false);
+    } catch (error) {
+      alert('mp3 백필 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setLoading(false);
+      setBatchProgress('');
     }
   };
 
@@ -1672,7 +1738,7 @@ export const HomeScreen: React.FC = () => {
       {/* Audio Upload 다이얼로그 */}
       <Dialog
         open={uploadDialogOpen}
-        onClose={() => { if (!isLoading) { setUploadDialogOpen(false); setBatchMode(false); setBatchFolders([]); setBatchProgress(''); } }}
+        onClose={() => { if (!isLoading) { setUploadDialogOpen(false); setBatchMode(false); setBatchFolders([]); setMp3Backfill([]); setBatchProgress(''); } }}
         maxWidth="sm"
         fullWidth
       >
@@ -1688,7 +1754,9 @@ export const HomeScreen: React.FC = () => {
               fullWidth
               sx={{ mb: 1, justifyContent: 'flex-start' }}
             >
-              {batchMode
+              {mp3Backfill.length > 0
+                ? `🎵 mp3 백필: ${mp3Backfill.length}개 파일`
+                : batchMode
                 ? `📁 ${batchFolders.length}개 폴더 감지`
                 : uploadMp3File && uploadVariantFiles
                   ? `📁 ${uploadMp3File.name} + ${[uploadVariantFiles.vtt && 'VTT', uploadVariantFiles.whisperx && 'whisperX', uploadVariantFiles.legacy && 'json'].filter(Boolean).join('/')}`
@@ -1702,6 +1770,15 @@ export const HomeScreen: React.FC = () => {
                 onChange={(e) => {
                   const files = e.target.files;
                   if (!files || files.length === 0) return;
+
+                  // mp3 백필 폴더 감지: <video_id>.mp3 평면 파일 (yt-dlp 다운로드 산출물).
+                  // 덱 폴더의 <id>_full.mp3와는 이름 패턴이 달라 충돌 없음.
+                  const idMp3s: { vid: string; file: File }[] = [];
+                  for (let i = 0; i < files.length; i++) {
+                    const m = files[i].name.match(/^([A-Za-z0-9_-]{11})\.mp3$/);
+                    // 20KB 초과 = 실오디오 (짧은 쇼츠는 64kbps에서 100KB 미만이 정상, placeholder는 ~4KB)
+                    if (m && files[i].size > 20_000) idMp3s.push({ vid: m[1], file: files[i] });
+                  }
 
                   // Group files by subfolder
                   const groups: Record<string, { mp3?: File; files: VariantFiles }> = {};
@@ -1723,10 +1800,22 @@ export const HomeScreen: React.FC = () => {
                     .filter(([, g]) => g.mp3 && (g.files.vtt || g.files.whisperx || g.files.legacy))
                     .map(([name, g]) => ({ name, mp3: g.mp3!, files: g.files, skip: false }));
 
+                  if (validFolders.length === 0 && idMp3s.length > 0) {
+                    // mp3 백필 모드
+                    setMp3Backfill(idMp3s);
+                    setBatchMode(false);
+                    setBatchFolders([]);
+                    setUploadMp3File(null);
+                    setUploadVariantFiles(null);
+                    setUploadTitle('');
+                    return;
+                  }
+
                   if (validFolders.length === 0) {
                     alert('MP3 + sentences_*.json이 있는 폴더를 찾을 수 없습니다.');
                     return;
                   }
+                  setMp3Backfill([]);
 
                   if (validFolders.length === 1) {
                     // Single folder mode
@@ -1753,7 +1842,23 @@ export const HomeScreen: React.FC = () => {
             </Button>
           </Box>
 
-          {batchMode ? (
+          {mp3Backfill.length > 0 ? (
+            /* mp3 백필 모드: placeholder 교체 요약 */
+            <Box sx={{ mt: 1 }}>
+              {batchProgress && (
+                <Typography variant="body2" color="primary" sx={{ mb: 1 }}>
+                  {batchProgress}
+                </Typography>
+              )}
+              <Typography variant="body2">
+                {(() => {
+                  const vids = new Set(audioArticles.flatMap(a => extractVideoIds(a)));
+                  const matched = mp3Backfill.filter(b => vids.has(b.vid)).length;
+                  return `${mp3Backfill.length}개 mp3 중 ${matched}개가 아티클과 매칭됨 (미매칭은 미업로드 덱 몫 — 자동 스킵). placeholder만 교체하고 실파일은 스킵합니다 (재실행 안전).`;
+                })()}
+              </Typography>
+            </Box>
+          ) : batchMode ? (
             /* Batch mode: folder list with skip indicators */
             <Box sx={{ mt: 1 }}>
               {batchProgress && (
@@ -1810,8 +1915,12 @@ export const HomeScreen: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => { setUploadDialogOpen(false); setBatchMode(false); setBatchFolders([]); setBatchProgress(''); }} disabled={isLoading}>취소</Button>
-          {batchMode ? (
+          <Button onClick={() => { setUploadDialogOpen(false); setBatchMode(false); setBatchFolders([]); setMp3Backfill([]); setBatchProgress(''); }} disabled={isLoading}>취소</Button>
+          {mp3Backfill.length > 0 ? (
+            <Button onClick={handleMp3Backfill} variant="contained" disabled={isLoading}>
+              {isLoading ? batchProgress || '교체 중...' : `mp3 교체 실행`}
+            </Button>
+          ) : batchMode ? (
             <Button
               onClick={handleBatchUpload}
               variant="contained"
