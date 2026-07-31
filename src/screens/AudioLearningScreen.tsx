@@ -439,8 +439,10 @@ const AudioLearningScreen: React.FC = () => {
 
   const handleGoEdit = React.useCallback(() => {
     if (!id) return;
-    navigate(`/edit-timestamps/${id}?sentence=${realCurrentIndex}`);
-  }, [id, navigate, realCurrentIndex]);
+    // 플레이리스트 컨텍스트 유지 — 편집 갔다 돌아와도 플레이리스트 모드 그대로
+    const pl = playlistId ? `&playlist=${playlistId}` : '';
+    navigate(`/edit-timestamps/${id}?sentence=${realCurrentIndex}${pl}`);
+  }, [id, navigate, realCurrentIndex, playlistId]);
 
   // ── 덱 완주 시 자동 복습 체크 — 마지막 문장 도달하면 interval 사다리 1단 전진 (0d→1d→3d…) ──
   // resume이 마지막 문장에서 바로 시작하는 경우 오발동 방지: 이번 세션에서 마지막 이전 문장을 본 적 있어야 발동

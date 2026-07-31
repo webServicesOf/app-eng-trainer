@@ -58,6 +58,7 @@ import { applyVariant } from '../utils/variants';
 import { localDB } from '../services/database';
 import { googleCloudTtsService } from '../services/googleCloudTtsService';
 import { GoogleDriveService, DriveAuthError } from '../services/googleDriveService';
+import { usePersistedState } from '../utils/uiPrefs';
 
 // yt2mp3 폴더에서 감지한 변형 파일들
 type VariantFiles = { vtt?: File; whisperx?: File; legacy?: File; meta?: File };
@@ -107,7 +108,7 @@ export const HomeScreen: React.FC = () => {
   const [hasHeader, setHasHeader] = useState(true);
   const [managementMode, setManagementMode] = useState(false);
   const [selectedArticles, setSelectedArticles] = useState<Set<string>>(new Set());
-  const [currentTab, setCurrentTab] = useState(0);
+  const [currentTab, setCurrentTab] = usePersistedState<number>('homeTab', 0); // 학습/편집 갔다 와도 탭 유지
   const [sortBy, setSortBy] = useState<'review' | 'name'>('review');
   const [savedSentences, setSavedSentences] = useState<SavedSentence[]>([]);
   // Derive saved deck IDs from Drive SSOT (audioArticles + subDeckReviews)

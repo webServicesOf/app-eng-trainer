@@ -38,6 +38,7 @@ import {
   Replay,
   Keyboard as KeyboardIcon,
   School,
+  OpenInNew,
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
@@ -84,6 +85,13 @@ const TimestampEditorScreen: React.FC = () => {
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [wsReady, setWsReady] = useState(false);
+  // 헤더 제목 marquee — 제목이 컨테이너보다 길 때만 슬라이드
+  const titleWrapRef = useRef<HTMLDivElement | null>(null);
+  const titleTextRef = useRef<HTMLSpanElement | null>(null);
+  const [titleScrolls, setTitleScrolls] = useState(false);
+  // region DOM 유실 감지 시 강제 재드로우 트리거
+  const [regionRepairTick, setRegionRepairTick] = useState(0);
+  const repairCountRef = useRef(0);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [hasChanges, setHasChanges] = useState(false);
@@ -186,11 +194,12 @@ const TimestampEditorScreen: React.FC = () => {
     navigate('/');
   }, [confirmLeave, navigate]);
 
-  // 학습 화면으로 — 현재 선택 문장에서 시작
+  // 학습 화면으로 — 현재 선택 문장에서 시작. 플레이리스트로 들어왔으면 플레이리스트로 복귀.
   const handleGoLearn = useCallback(async () => {
     await confirmLeave();
     const n = sentences[selectedIndex]?.index ?? 1;
-    navigate(`/learn-audio/${id}?sentence=${n}`);
+    const pl = new URLSearchParams(window.location.search).get('playlist');
+    navigate(`/learn-audio/${id}?sentence=${n}${pl ? `&playlist=${pl}` : ''}`);
   }, [confirmLeave, navigate, id, sentences, selectedIndex]);
 
   // Browser tab close/refresh guard
@@ -299,7 +308,22 @@ const TimestampEditorScreen: React.FC = () => {
       ws.destroy();
       URL.revokeObjectURL(blobUrl);
     };
-  }, [article]);
+  // audioBlob 기준 — undo/메타 변경의 setArticle마다 파형 엔진을 재생성하지 않음
+  //  (재생성 도중 파형/region이 유실된 채 멈추는 원인)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [article?.audioBlob]);
+
+  // 제목 overflow 측정 → marquee on/off (첫 카피 폭 vs 래퍼 폭)
+  useEffect(() => {
+    const wrap = titleWrapRef.current;
+    const text = titleTextRef.current;
+    if (!wrap || !text) return;
+    const check = () => setTitleScrolls(text.scrollWidth > wrap.clientWidth + 4);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [article?.title]);
 
   // Draw regions when sentences change (+ word regions in wordEditMode)
   const lastRegionKeyRef = useRef('');
@@ -323,6 +347,7 @@ const TimestampEditorScreen: React.FC = () => {
         .join('|')
     }${wordKey}`;
     if (regionKey === lastRegionKeyRef.current) return;
+    if (lastRegionKeyRef.current !== '') repairCountRef.current = 0; // 정상 리드로우 → 복구 카운터 리셋
     lastRegionKeyRef.current = regionKey;
 
     regions.clearRegions();
@@ -487,6 +512,7 @@ const TimestampEditorScreen: React.FC = () => {
         }
         if (isCurrent) {
           region.on('update-end', () => {
+            pushUndo(); // 경계 드래그도 Cmd+Z 대상 (단어 모드와 동일)
             const newEnd = Math.round(region.end * 1000) / 1000;
             setSentences(prev => {
               const currentIdx = prev.findIndex(ss => ss.index === s.index);
@@ -538,8 +564,24 @@ const TimestampEditorScreen: React.FC = () => {
         }
       });
     }
+
+    // 재부착 검증 — setScrollTime/zoom의 파형 재렌더와 겹치면 region DOM이 통째로 유실되는
+    // wavesurfer v7 race("한번씩 구분 표시 사라짐"). 감지되면 키 리셋 후 강제 재드로우.
+    const verifyAttached = () => {
+      if (repairCountRef.current >= 3) return; // 연속 복구 3회 상한 — false-positive 무한 루프 방지
+      const rs = regions.getRegions();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (rs.length > 0 && rs.some(r => !(r as any).element?.isConnected)) {
+        repairCountRef.current += 1;
+        lastRegionKeyRef.current = '';
+        setRegionRepairTick(t => t + 1);
+      }
+    };
+    const raf = requestAnimationFrame(verifyAttached);
+    const tid = setTimeout(verifyAttached, 350);
+    return () => { cancelAnimationFrame(raf); clearTimeout(tid); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sentences, selectedIndex, duration, wordEditMode, editingWordIndex]);
+  }, [sentences, selectedIndex, duration, wordEditMode, editingWordIndex, regionRepairTick]);
 
   // Region drag/resize handled via per-region 'update-end' event above
 
@@ -841,8 +883,11 @@ const TimestampEditorScreen: React.FC = () => {
     if (wordIndex < 1 || wordIndex >= words.length) return;
 
     pushUndo();
-    const ratio = wordIndex / words.length;
-    const splitTime = current.start + (current.end - current.start) * ratio;
+    // 단어 타임스탬프가 있으면 선택 단어의 실제 시작 시각에서 분할 — 없을 때만 균등 비례 fallback
+    const wordStart = current.words?.[wordIndex]?.start;
+    const splitTime = wordStart != null && wordStart > current.start && wordStart < current.end
+      ? wordStart
+      : current.start + (current.end - current.start) * (wordIndex / words.length);
 
     const first: SentenceEntry = {
       index: current.index,
@@ -1508,22 +1553,53 @@ const TimestampEditorScreen: React.FC = () => {
         p: { xs: 1, sm: 2 },
       }}
     >
-      {/* Header */}
-      <Paper elevation={2} sx={{ p: 1.5, mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <IconButton onClick={handleNavigateAway} color="primary" size="small" disabled={isSaving}>
+      {/* Header — 좌우 버튼 고정폭, 제목만 남은 폭 차지. 넘치면 marquee 슬라이드 */}
+      <style>{`
+        .te-title-copy { display: inline-block; padding-right: 48px; }
+        .te-marquee { display: inline-block; white-space: nowrap; animation: te-marquee 14s linear infinite; }
+        @keyframes te-marquee { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+      `}</style>
+      <Paper elevation={2} sx={{ p: 1.5, mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, minWidth: 0 }}>
+          <IconButton onClick={handleNavigateAway} color="primary" size="small" disabled={isSaving} sx={{ flexShrink: 0 }}>
             <Home />
           </IconButton>
           <Tooltip title="학습 화면으로 (현재 문장)">
-            <IconButton onClick={handleGoLearn} color="secondary" size="small" disabled={isSaving}>
+            <IconButton onClick={handleGoLearn} color="secondary" size="small" disabled={isSaving} sx={{ flexShrink: 0 }}>
               <School />
             </IconButton>
           </Tooltip>
-          <Typography variant="h6" sx={{ fontSize: { xs: '0.9rem', sm: '1.25rem' } }} noWrap>
-            Timestamp Editor — {article.title}
-          </Typography>
+          {(() => {
+            const vid = article.source?.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/))([^?&#]+)/)?.[1];
+            if (!vid) return null;
+            const start = sentences[selectedIndex]?.start;
+            const t = start != null ? `&t=${Math.floor(start)}s` : '';
+            return (
+              <Tooltip title="YouTube에서 열기 (현재 문장 위치)">
+                <IconButton
+                  onClick={() => window.open(`https://www.youtube.com/watch?v=${vid}${t}`, '_blank')}
+                  size="small"
+                  color="success"
+                  sx={{ flexShrink: 0 }}
+                >
+                  <OpenInNew />
+                </IconButton>
+              </Tooltip>
+            );
+          })()}
+          <Box ref={titleWrapRef} sx={{ flex: 1, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+            <Typography
+              variant="h6"
+              component="span"
+              className={titleScrolls ? 'te-marquee' : undefined}
+              sx={{ fontSize: { xs: '0.9rem', sm: '1.25rem' } }}
+            >
+              <span className="te-title-copy" ref={titleTextRef}>{article.title}</span>
+              {titleScrolls && <span className="te-title-copy">{article.title}</span>}
+            </Typography>
+          </Box>
         </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
           {article.variants && (
             <ToggleButtonGroup
               value={article.activeVariant}
