@@ -75,7 +75,7 @@ class AudioSeekService {
             this.lastReportedSentence = -1;
             this.lastReportedWord = -1;
             if (this.onSentenceChange) this.onSentenceChange(nextIdx);
-            this.playFromOffset(nextSeg.start);
+            this.playFromOffset(nextSeg.start, nextSeg.end ?? undefined);
           }
           return;
         } else {
@@ -186,8 +186,10 @@ class AudioSeekService {
     this.stopTrackingLoop();
   }
 
-  /** Core: play buffer from offset with sample-accurate seek */
-  private playFromOffset(offset: number): void {
+  /** Core: play buffer from offset with sample-accurate seek.
+   *  stopAt 지정 시 duration 예약으로 sample-accurate 정지 — rAF 폴링(≥16ms 지연)이
+   *  끝을 감지하기 전에 다음 문장 첫머리가 흘러나오는 겹침 방지. 폴링은 전환/콜백만 담당. */
+  private playFromOffset(offset: number, stopAt?: number): void {
     const ctx = this.ensureContext();
     if (!this.buffer) return;
 
@@ -206,7 +208,11 @@ class AudioSeekService {
       }
     };
 
-    source.start(0, offset);
+    if (stopAt != null && stopAt > offset + 0.01) {
+      source.start(0, offset, stopAt - offset); // duration = 버퍼 콘텐츠 초 (배속 무관)
+    } else {
+      source.start(0, offset);
+    }
     this.sourceNode = source;
     this.startOffset = offset;
     this.startedAt = ctx.currentTime;
@@ -214,7 +220,7 @@ class AudioSeekService {
   }
 
   /** Start playback with playId race protection + autoplay policy */
-  private async startPlay(offset: number): Promise<void> {
+  private async startPlay(offset: number, stopAt?: number): Promise<void> {
     const ctx = this.ensureContext();
     const id = ++this.playId;
 
@@ -225,7 +231,7 @@ class AudioSeekService {
 
     if (this.playId !== id) return; // stale
 
-    this.playFromOffset(offset);
+    this.playFromOffset(offset, stopAt);
     this.startTrackingLoop();
   }
 
@@ -268,7 +274,7 @@ class AudioSeekService {
       this.onSentenceChange = onSentenceChange || null;
       this.onWordChange = onWordChange || null;
     }
-    this.startPlay(start);
+    this.startPlay(start, end);
   }
 
   playSegments(
@@ -292,7 +298,7 @@ class AudioSeekService {
     this.onSentenceChange = onSentenceChange || null;
     this.onWordChange = onWordChange || null;
     if (onSentenceChange) onSentenceChange(0);
-    this.startPlay(firstSeg.start);
+    this.startPlay(firstSeg.start, firstSeg.end);
   }
 
   playCumulative(
@@ -337,7 +343,7 @@ class AudioSeekService {
       const seg = this.segments[this.currentSegmentIdx];
       if (seg?.end != null) this.targetEndTime = seg.end;
     }
-    this.startPlay(this.pausedOffset);
+    this.startPlay(this.pausedOffset, this.targetEndTime > 0 ? this.targetEndTime : undefined);
   }
 
   setRate(rate: number): void {

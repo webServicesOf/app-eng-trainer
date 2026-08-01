@@ -147,9 +147,9 @@ export class GoogleDriveService {
   // ── low-level file ops ─────────────────────────────────
 
   /** List all files inside a specific folder (nextPageToken 순회 — 1000개 초과 폴더에서 누락 방지) */
-  private async listFilesIn(folderId: string): Promise<{ id: string; name: string; modifiedTime: string }[]> {
+  private async listFilesIn(folderId: string): Promise<{ id: string; name: string; modifiedTime: string; size?: string }[]> {
     const q = `'${folderId}' in parents and trashed=false`;
-    const fields = 'nextPageToken,files(id,name,modifiedTime)';
+    const fields = 'nextPageToken,files(id,name,modifiedTime,size)';
     const files: { id: string; name: string; modifiedTime: string }[] = [];
     let pageToken: string | undefined;
     do {
@@ -386,6 +386,19 @@ export class GoogleDriveService {
   async listDataFileIds(): Promise<Map<string, string>> {
     const { data } = await this.ensureFolders();
     return new Map((await this.listFilesIn(data)).map((f) => [f.name, f.id]));
+  }
+
+  /** mp3 백필용: data/ 파일 name → {id, size(bytes)} (목록 1회) */
+  async listDataFilesWithSize(): Promise<Map<string, { id: string; size: number }>> {
+    const { data } = await this.ensureFolders();
+    return new Map(
+      (await this.listFilesIn(data)).map((f) => [f.name, { id: f.id, size: Number(f.size || 0) }]),
+    );
+  }
+
+  /** 기존 파일 내용을 in-place 교체 (파일 id 유지 — 삭제/재생성 불필요) */
+  async replaceFileContent(fileId: string, blob: Blob, mimeType = 'audio/mpeg'): Promise<void> {
+    await this.uploadFile('', blob, mimeType, '', fileId); // update 경로는 name/parent 미사용
   }
 
   /** Patch exprs into an existing {id}.json by fileId — raw passthrough, no re-listing */
