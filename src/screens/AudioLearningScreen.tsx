@@ -63,6 +63,7 @@ import { localDB } from '../services/database';
 import { audioSeekService } from '../services/audioSeekService';
 import RecordCompare from '../components/RecordCompare';
 import { startMediaSession, setMediaPlaybackState, stopMediaSession } from '../services/mediaSession';
+import { playToggleOn, playToggleOff, playEnter } from '../services/soundFx';
 import { usePersistedState, readUiPref, writeUiPref } from '../utils/uiPrefs';
 import { GoogleDriveService } from '../services/googleDriveService';
 import YouTubePlayer from 'react-youtube';
@@ -361,6 +362,10 @@ const AudioLearningScreen: React.FC = () => {
             // 특정 문장 점프는 강제 단일 전환 — 전역 pref는 덮지 않음 (setState 직접)
             useLearningStore.setState({ isCumulative: false });
           }
+        } else if (params.get('autoplay')) {
+          // 플레이리스트 진입(autoplay=1) — 무조건 첫 문장부터. resume이 lastIndex로 덮지 않도록 가드.
+          setCurrentIndex(1);
+          resumeRestoredRef.current = true;
         }
       }
     }
@@ -527,19 +532,12 @@ const AudioLearningScreen: React.FC = () => {
     });
   }, []);
 
-  // ↑ = 윈도우 크기 1~5 순환 (5에서 다시 1). 'full'이면 1부터.
-  const handleUpArrow = React.useCallback(() => {
-    const cur = typeof windowSize === 'number' ? windowSize : 0;
-    setWindowSize(cur >= 5 || cur < 1 ? 1 : cur + 1);
-  }, [windowSize, setWindowSize]);
-
-  const handleDownArrow = React.useCallback(() => {
-    setIsCumulative(false);
-  }, [setIsCumulative]);
-
-  // 키/미디어키용: 누적↔단일 토글 (화면 버튼은 up/down 개별 유지)
+  // ↑ = 처음부터 재생(handlePlayFromStart). windowSize 조절은 설정 팝오버로 이동.
+  // 누적↔단일 토글 — 키(↓)·화면 ↓버튼·상단 칩 공유. 전역 pref 갱신(writeUiPref) + 켜짐/꺼짐 사운드.
   const handleToggleCumulative = React.useCallback(() => {
-    setIsCumulative(!isCumulative);
+    const next = !isCumulative;
+    setIsCumulative(next);
+    (next ? playToggleOn : playToggleOff)();
   }, [setIsCumulative, isCumulative]);
 
   const handleSpeakRef = React.useRef<() => void>(() => {});
@@ -984,8 +982,9 @@ const AudioLearningScreen: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Use e.code for letter keys (IME-safe: works with Korean input mode)
       // Use e.key for special keys (arrows, space)
-      // ↑=윈도우 크기(1~5 순환), ↓=누적/단일 토글, ←=이전 문장, →=다음, R=처음부터 재생, S=저장 토글
-      if (e.key === 'ArrowUp') { e.preventDefault(); handleUpArrow(); return; }
+      // ↑=처음부터 재생, ↓=누적/단일 토글, ←=이전 문장, →=다음, R=처음부터 재생, S=저장 토글
+      // ↑도 R처럼 record 모드에선 RecordCompare가 소유 → 중복 재생 방지
+      if (e.key === 'ArrowUp') { if (recordMode) return; e.preventDefault(); handlePlayFromStart(); return; }
       if (e.key === 'ArrowDown') { e.preventDefault(); handleToggleCumulative(); return; }
       if (e.key === 'ArrowLeft') { e.preventDefault(); handleLeftArrow(); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); handleRightArrow(); return; }
@@ -1005,7 +1004,7 @@ const AudioLearningScreen: React.FC = () => {
       }
     }, 500);
     return () => { window.removeEventListener('keydown', handleKeyDown); clearInterval(focusInterval); };
-  }, [handleUpArrow, handleToggleCumulative, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleSaveSentence, handleToggleYouTubeMode, recordMode]);
+  }, [handleToggleCumulative, handleLeftArrow, handleRightArrow, handleTogglePlay, handlePlayFromStart, handleSaveSentence, handleToggleYouTubeMode, recordMode]);
 
   // Phase 3: MediaSession — 잠금화면 미디어키(Android). 키보드와 동일 shared handler 공유.
   // prev=이전 문장, next=다음, play/pause=재생정지, stop=저장. (처음부터 재생은 R 키 전용)
@@ -1043,11 +1042,19 @@ const AudioLearningScreen: React.FC = () => {
     if (autoplayFiredRef.current || !article || !audioLoaded) return;
     if (videoId && ytReadyTick === 0) return;
     autoplayFiredRef.current = true;
-    try {
-      handleSpeakRef.current();
-    } catch (e) {
-      console.warn('[autoplay] play failed — retry on next player ready', e);
-      autoplayFiredRef.current = false;
+    const speak = () => {
+      try {
+        handleSpeakRef.current();
+      } catch (e) {
+        console.warn('[autoplay] play failed — retry on next player ready', e);
+        autoplayFiredRef.current = false;
+      }
+    };
+    // 플레이리스트 진입(autoplay=1)이면 진입 사운드 후 첫 문장 재생. 그 외(홈 진입)는 즉시.
+    if (new URLSearchParams(window.location.search).get('autoplay')) {
+      playEnter().then(speak);
+    } else {
+      speak();
     }
   }, [article, audioLoaded, videoId, ytReadyTick]);
 
@@ -1264,6 +1271,8 @@ const AudioLearningScreen: React.FC = () => {
               color="secondary"
               variant="filled"
               size="small"
+              onClick={handleToggleCumulative}
+              sx={{ cursor: 'pointer' }}
             />
             <Chip label={isYouTubeMode ? 'YouTube' : 'Audio'} size="small" color={isYouTubeMode ? 'error' : 'info'} variant="outlined" />
             {playlistNav && (
@@ -1677,7 +1686,7 @@ const AudioLearningScreen: React.FC = () => {
           >
             <Box />
             <IconButton
-              onClick={handleUpArrow}
+              onClick={handlePlayFromStart}
               size="small"
               color="primary"
               sx={{
@@ -1739,7 +1748,7 @@ const AudioLearningScreen: React.FC = () => {
 
             <Box />
             <IconButton
-              onClick={handleDownArrow}
+              onClick={handleToggleCumulative}
               size="small"
               color="primary"
               sx={{
