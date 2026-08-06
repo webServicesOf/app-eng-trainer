@@ -16,6 +16,7 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  Popover,
   useTheme,
   CircularProgress,
   ToggleButton,
@@ -65,6 +66,8 @@ const TimestampEditorScreen: React.FC = () => {
   const waveformRef = useRef<HTMLDivElement>(null);
   const shiftKeyRef = useRef(false);
   const metaKeyRef = useRef(false);
+  const wordStressDragRef = useRef<{ active: boolean; wordIdx: number; value: boolean } | null>(null);
+  const [exprAnchorEl, setExprAnchorEl] = useState<HTMLElement | null>(null);
   const dragCreatingRef = useRef(false);
 
   // Track modifier key state globally for region drag
@@ -1094,6 +1097,46 @@ const TimestampEditorScreen: React.FC = () => {
     setHasChanges(true);
   }, [selectedIndex, pushUndo]);
 
+  /** 단어 wordIdx의 문자 charIdx를 stressed 지정값으로 세팅. 드래그 중 반복 호출돼도 undo push 없음 */
+  const applyCharStress = useCallback((wordIdx: number, charIdx: number, value: boolean) => {
+    setSentences(prev => {
+      const s = prev[selectedIndex];
+      const w = s?.words?.[wordIdx];
+      if (!w) return prev;
+      const already = (w.stressedChars || []).includes(charIdx);
+      if (already === value) return prev;
+      const set = new Set(w.stressedChars || []);
+      if (value) set.add(charIdx); else set.delete(charIdx);
+      const stressedChars = Array.from(set).sort((a, b) => a - b);
+      const words = s.words!.map((ww, i) => i === wordIdx ? { ...ww, stressedChars } : ww);
+      return prev.map((ss, i) => i === selectedIndex ? { ...ss, words } : ss);
+    });
+    setHasChanges(true);
+  }, [selectedIndex]);
+
+  /** 드래그(또는 단순 클릭) 시작 — 시작 문자의 반대값을 목표로 고정. 드래그는 같은 단어 안에서만 유효 */
+  const handleCharStressDragStart = useCallback((wordIdx: number, charIdx: number) => {
+    const s = sentences[selectedIndex];
+    const already = (s?.words?.[wordIdx]?.stressedChars || []).includes(charIdx);
+    const target = !already;
+    pushUndo();
+    wordStressDragRef.current = { active: true, wordIdx, value: target };
+    applyCharStress(wordIdx, charIdx, target);
+  }, [sentences, selectedIndex, pushUndo, applyCharStress]);
+
+  /** 드래그 중 다른 문자 위로 진입 — 같은 단어일 때만 적용, 다른 단어로는 전이 안 됨 */
+  const handleCharStressDragEnter = useCallback((wordIdx: number, charIdx: number) => {
+    const drag = wordStressDragRef.current;
+    if (!drag?.active || drag.wordIdx !== wordIdx) return;
+    applyCharStress(wordIdx, charIdx, drag.value);
+  }, [applyCharStress]);
+
+  useEffect(() => {
+    const up = () => { wordStressDragRef.current = null; };
+    window.addEventListener('mouseup', up);
+    return () => window.removeEventListener('mouseup', up);
+  }, []);
+
   /** Fine-adjust word boundary by delta ms */
   const handleWordTimeAdjust = useCallback((wordIdx: number, field: 'start' | 'end', deltaMs: number) => {
     pushUndo();
@@ -1471,6 +1514,10 @@ const TimestampEditorScreen: React.FC = () => {
           e.preventDefault();
           handlePullWords();
           return;
+        } else if (code === 'KeyR' && !e.metaKey && !e.ctrlKey) {
+          e.preventDefault();
+          handlePlaySentence();
+          return;
         }
       }
 
@@ -1598,7 +1645,33 @@ const TimestampEditorScreen: React.FC = () => {
               {titleScrolls && <span className="te-title-copy">{article.title}</span>}
             </Typography>
           </Box>
+          {article.exprs && article.exprs.length > 0 && (
+            <Chip
+              label={`#${article.exprs[0].surface}${article.exprs.length > 1 ? ` +${article.exprs.length - 1}` : ''}`}
+              size="small"
+              variant="outlined"
+              onClick={(e) => setExprAnchorEl(e.currentTarget)}
+              sx={{ flexShrink: 0 }}
+            />
+          )}
         </Box>
+        <Popover
+          open={!!exprAnchorEl}
+          anchorEl={exprAnchorEl}
+          onClose={() => setExprAnchorEl(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        >
+          <Box sx={{ p: 1.5, maxWidth: 320 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+              표현 태그 ({article.exprs?.length ?? 0})
+            </Typography>
+            {article.exprs?.map((ex, i) => (
+              <Typography key={i} variant="body2">
+                #{ex.surface}{ex.tier != null ? ` · T${ex.tier}` : ''}
+              </Typography>
+            ))}
+          </Box>
+        </Popover>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
           {article.variants && (
             <ToggleButtonGroup
@@ -1760,19 +1833,49 @@ const TimestampEditorScreen: React.FC = () => {
                     borderRadius: 1, display: 'flex', flexWrap: 'wrap', gap: 0.5,
                   }}>
                     {selected.words.map((w, wi) => (
-                      <Chip
-                        key={wi}
-                        label={w.word}
-                        size="small"
-                        color={wi === editingWordIndex ? 'success' : 'default'}
-                        variant={wi === editingWordIndex ? 'filled' : 'outlined'}
-                        onClick={() => setEditingWordIndex(wi)}
-                        draggable
-                        onDragStart={(e) => handleWordDragStart(e as unknown as React.DragEvent, wi)}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => handleWordDrop(e as unknown as React.DragEvent, wi)}
-                        sx={{ cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
-                      />
+                      <Box key={wi} sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', userSelect: 'none' }}>
+                        <Box sx={{ display: 'flex', gap: '1px' }} title="강조(인토네이션) 표시 — 글자 위 드래그로 범위 지정 (단어 안에서만)">
+                          {w.word.split('').map((_, ci) => (
+                            <Box
+                              key={ci}
+                              onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); handleCharStressDragStart(wi, ci); }}
+                              onMouseEnter={() => handleCharStressDragEnter(wi, ci)}
+                              sx={{
+                                width: 6, height: 6, cursor: 'pointer',
+                                bgcolor: (w.stressedChars || []).includes(ci) ? 'error.main' : 'grey.300',
+                                border: '1px solid', borderColor: (w.stressedChars || []).includes(ci) ? 'error.main' : 'grey.400',
+                              }}
+                            />
+                          ))}
+                        </Box>
+                        <Chip
+                          label={
+                            <>
+                              {w.word.split('').map((ch, ci) => (
+                                <span
+                                  key={ci}
+                                  style={{
+                                    textDecoration: (w.stressedChars || []).includes(ci) ? 'underline' : 'none',
+                                    textDecorationColor: '#d32f2f',
+                                    textDecorationThickness: '2px',
+                                  }}
+                                >
+                                  {ch}
+                                </span>
+                              ))}
+                            </>
+                          }
+                          size="small"
+                          color={wi === editingWordIndex ? 'success' : 'default'}
+                          variant={wi === editingWordIndex ? 'filled' : 'outlined'}
+                          onClick={() => setEditingWordIndex(wi)}
+                          draggable
+                          onDragStart={(e) => handleWordDragStart(e as unknown as React.DragEvent, wi)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => handleWordDrop(e as unknown as React.DragEvent, wi)}
+                          sx={{ cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
+                        />
+                      </Box>
                     ))}
                   </Box>
 

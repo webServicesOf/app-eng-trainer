@@ -154,6 +154,7 @@ export const HomeScreen: React.FC = () => {
   const [editSourceValue, setEditSourceValue] = useState('');
   const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
   const [addAnchorId, setAddAnchorId] = useState<string | null>(null); // shift-click 범위 추가 기준점
+  const [deleteAnchorId, setDeleteAnchorId] = useState<string | null>(null); // shift-click 범위 삭제 기준점 (오디오 탭)
   const plScrolledRef = useRef(false); // 다이얼로그 열릴 때 last video 중앙 스크롤 1회 가드
   useEffect(() => { setAddAnchorId(null); plScrolledRef.current = false; }, [editingPlaylistId]);
 
@@ -565,8 +566,23 @@ export const HomeScreen: React.FC = () => {
   };
 
 
-  const handleDeleteAudioArticle = async (id: string) => {
+  const handleDeleteAudioArticle = async (id: string, e?: React.MouseEvent) => {
+    if (e?.shiftKey && deleteAnchorId) {
+      // range는 화면에 보이는 정렬 순서 기준 — anchor가 pending 상태여도 유효
+      const sortedIds = sortedAudioArticles.map(a => a.id);
+      const i1 = sortedIds.indexOf(deleteAnchorId);
+      const i2 = sortedIds.indexOf(id);
+      if (i1 !== -1 && i2 !== -1) {
+        // anchor(1번)는 첫 클릭 때 이미 토글됨 — range에 포함시켜 재토글하면 원상복구되므로 제외
+        const range = sortedIds.slice(Math.min(i1, i2), Math.max(i1, i2) + 1)
+          .filter(rid => !pendingDeleteIds.has(rid));
+        for (const rid of range) await deleteAudioArticle(rid); // toggles pending delete
+        setDeleteAnchorId(id);
+        return;
+      }
+    }
     await deleteAudioArticle(id); // toggles pending delete
+    setDeleteAnchorId(id);
   };
 
   const handleLearnAudioArticle = async (id: string) => {
@@ -650,6 +666,19 @@ export const HomeScreen: React.FC = () => {
     const unique = new Set(articles.map(a => a.length).filter(Boolean));
     return Array.from(unique).sort();
   }, [articles]);
+
+  // 오디오 탭 표시 순서 — shift-click 범위 삭제가 이 순서를 기준으로 계산됨
+  const sortedAudioArticles = React.useMemo(() => [...audioArticles].sort((a, b) => {
+    const starDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
+    if (starDiff !== 0) return starDiff;
+    if (sortBy === 'name') return a.title.localeCompare(b.title);
+    const aDue = isDue(a.nextReviewDate) ? 0 : 1;
+    const bDue = isDue(b.nextReviewDate) ? 0 : 1;
+    if (aDue !== bDue) return aDue - bDue;
+    const aDate = a.nextReviewDate ? new Date(a.nextReviewDate).getTime() : Infinity;
+    const bDate = b.nextReviewDate ? new Date(b.nextReviewDate).getTime() : Infinity;
+    return aDate - bDate;
+  }), [audioArticles, sortBy]);
 
   const handleFetchArticles = async (mode: 'full-refresh' | 'upsert') => {
     if (!isAuthenticated) {
@@ -1259,18 +1288,7 @@ export const HomeScreen: React.FC = () => {
             </Box>
           ) : (
             <List dense disablePadding>
-              {[...audioArticles].sort((a, b) => {
-                // starred 최상단 고정 — 어떤 정렬이든 우선
-                const starDiff = (b.starred ? 1 : 0) - (a.starred ? 1 : 0);
-                if (starDiff !== 0) return starDiff;
-                if (sortBy === 'name') return a.title.localeCompare(b.title);
-                const aDue = isDue(a.nextReviewDate) ? 0 : 1;
-                const bDue = isDue(b.nextReviewDate) ? 0 : 1;
-                if (aDue !== bDue) return aDue - bDue;
-                const aDate = a.nextReviewDate ? new Date(a.nextReviewDate).getTime() : Infinity;
-                const bDate = b.nextReviewDate ? new Date(b.nextReviewDate).getTime() : Infinity;
-                return aDate - bDate;
-              }).map((aa) => (
+              {sortedAudioArticles.map((aa) => (
                 <React.Fragment key={aa.id}>
                   <ListItem
                     disablePadding
@@ -1346,7 +1364,7 @@ export const HomeScreen: React.FC = () => {
                       >
                         <LinkIcon sx={{ fontSize: 16 }} />
                       </IconButton>
-                      <IconButton size="small" sx={{ p: 0.3 }} color="error" onClick={() => handleDeleteAudioArticle(aa.id)} title="삭제">
+                      <IconButton size="small" sx={{ p: 0.3 }} color="error" onClick={(e) => handleDeleteAudioArticle(aa.id, e)} title="삭제 (Shift+클릭 = 범위 삭제)">
                         <DeleteIcon sx={{ fontSize: 16 }} />
                       </IconButton>
                     </Box>

@@ -21,6 +21,7 @@ export interface WordTimestamp {
   word: string;
   start: number;
   end: number;
+  stressedChars?: number[]; // 인토네이션 강조 표시할 문자 인덱스(word 문자열 기준 0-based) — 편집모드 드래그 → 학습모드 언더바
 }
 
 // 문장 엔트리

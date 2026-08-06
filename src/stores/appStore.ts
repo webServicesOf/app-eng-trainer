@@ -642,6 +642,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
         }
       }
 
+      // 삭제된 영상이 플레이리스트에 남아있으면 로드 시 자동 정리 ("(삭제된 영상)" 표기 방지)
+      const currentPlaylists = get().playlists;
+      const cleanedPlaylists = currentPlaylists.map(p => ({
+        ...p,
+        articleIds: p.articleIds.filter(aid => audioIds.has(aid)),
+        lastArticleId: p.lastArticleId && !audioIds.has(p.lastArticleId) ? undefined : p.lastArticleId,
+      }));
+      if (cleanedPlaylists.some((p, i) => p.articleIds.length !== currentPlaylists[i].articleIds.length)) {
+        get().setPlaylists(cleanedPlaylists);
+      }
+
       const subDecks = await localDB.getSubDecks();
       const cleanSdIntervals = new Map<string, number>();
       subDecks.forEach(sd => cleanSdIntervals.set(sd.id, sd.reviewInterval || 0));
@@ -707,7 +718,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
       if (pendingDeletes.size > 0) {
         const remaining = get().audioArticles.filter(a => !pendingDeletes.has(a.id));
-        set({ audioArticles: remaining, pendingDeleteIds: new Set() });
+        // 삭제된 영상은 플레이리스트에서도 제거 — 안 하면 "(삭제된 영상)" 고아 항목만 남음
+        const currentPlaylists = get().playlists;
+        const cleanedPlaylists = currentPlaylists.map(p => ({
+          ...p,
+          articleIds: p.articleIds.filter(aid => !pendingDeletes.has(aid)),
+          lastArticleId: p.lastArticleId && pendingDeletes.has(p.lastArticleId) ? undefined : p.lastArticleId,
+        }));
+        const playlistsChanged = cleanedPlaylists.some((p, i) => p.articleIds.length !== currentPlaylists[i].articleIds.length);
+        set({
+          audioArticles: remaining,
+          pendingDeleteIds: new Set(),
+          playlists: cleanedPlaylists,
+          playlistsDirty: get().playlistsDirty || playlistsChanged,
+        });
         await get().loadSubDecks();
       }
 
@@ -777,7 +801,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       }
 
       // 5. Flush playlist edits (create/rename/reorder/delete/mode 전부 lazy 경유)
-      if (playlistsDirty || pendingPlaylistDeletes.size > 0) {
+      if (get().playlistsDirty || pendingPlaylistDeletes.size > 0) {
         const remaining = get().playlists.filter(p => !pendingPlaylistDeletes.has(p.id));
         await drive.savePlaylists(remaining);
         set({ playlists: remaining, playlistsDirty: false, pendingDeletePlaylistIds: new Set() });

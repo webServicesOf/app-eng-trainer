@@ -1574,7 +1574,19 @@ const AudioLearningScreen: React.FC = () => {
                               cursor: sent.words?.[wIdx] ? 'pointer' : 'default',
                             }}
                           >
-                            {word}
+                            {sent.words?.[wIdx]?.stressedChars?.length
+                              ? word.split('').map((ch, ci) => (
+                                  <span
+                                    key={ci}
+                                    style={{
+                                      textDecoration: sent.words![wIdx].stressedChars!.includes(ci) ? 'underline' : 'none',
+                                      textDecorationThickness: '2px',
+                                    }}
+                                  >
+                                    {ch}
+                                  </span>
+                                ))
+                              : word}
                           </span>
                         );
                       })}
