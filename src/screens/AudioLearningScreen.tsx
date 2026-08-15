@@ -562,7 +562,7 @@ const AudioLearningScreen: React.FC = () => {
     setIsPlaying(false);
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
-    const step = windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
+    const step = isCumulative && windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
     // Skip hidden sentences
     let target = currentIndex - step;
     while (target >= 1 && article.sentences[target - 1]?.hidden) {
@@ -576,7 +576,7 @@ const AudioLearningScreen: React.FC = () => {
       return;
     }
     debouncedSpeak();
-  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize, playlistNav, goToPlaylistArticle]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, isCumulative, windowStepMode, windowSize, playlistNav, goToPlaylistArticle]);
 
   // 진행률 바 클릭 → 해당 위치 문장으로 이동(정지 + 커서 이동). 숨김 문장은 가장 가까운 표시 문장으로.
   const handleProgressJump = React.useCallback((e: React.MouseEvent<HTMLElement>) => {
@@ -611,7 +611,7 @@ const AudioLearningScreen: React.FC = () => {
     setIsPlaying(false);
     setActiveSentenceLocalIdx(-1);
     setActiveWordIdx(-1);
-    const step = windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
+    const step = isCumulative && windowStepMode && typeof windowSize === 'number' ? windowSize : 1;
     // Clamp to max instead of blocking when remaining < step
     let target = Math.min(currentIndex + step, article.sentences.length);
     // Skip hidden sentences
@@ -626,7 +626,7 @@ const AudioLearningScreen: React.FC = () => {
       return;
     }
     debouncedSpeak();
-  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, windowStepMode, windowSize, playlistNav, goToPlaylistArticle]);
+  }, [article, currentIndex, setCurrentIndex, debouncedSpeak, isCumulative, windowStepMode, windowSize, playlistNav, goToPlaylistArticle]);
 
   const onPlayEnd = React.useCallback(() => {
     setActiveSentenceLocalIdx(-1);
