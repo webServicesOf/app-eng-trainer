@@ -12,6 +12,7 @@ import {
   DialogContent,
   DialogActions,
   TextField,
+  InputAdornment,
   Alert,
   CircularProgress,
   IconButton,
@@ -51,6 +52,7 @@ import {
   SortByAlpha,
   Star as StarIcon,
   StarBorder as StarBorderIcon,
+  Search as SearchIcon,
 } from '@mui/icons-material';
 import { useAppStore } from '../stores/appStore';
 import { SavedSentence, AudioArticle, ExprTag, Playlist, SentenceEntry, TranscriptVariants, VariantKey } from '../types';
@@ -154,9 +156,10 @@ export const HomeScreen: React.FC = () => {
   const [editSourceValue, setEditSourceValue] = useState('');
   const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
   const [addAnchorId, setAddAnchorId] = useState<string | null>(null); // shift-click 범위 추가 기준점
+  const [plSearch, setPlSearch] = useState(''); // 추가 가능한 영상 제목 필터
   const [deleteAnchorId, setDeleteAnchorId] = useState<string | null>(null); // shift-click 범위 삭제 기준점 (오디오 탭)
   const plScrolledRef = useRef(false); // 다이얼로그 열릴 때 last video 중앙 스크롤 1회 가드
-  useEffect(() => { setAddAnchorId(null); plScrolledRef.current = false; }, [editingPlaylistId]);
+  useEffect(() => { setAddAnchorId(null); setPlSearch(''); plScrolledRef.current = false; }, [editingPlaylistId]);
 
   // login is now global — use triggerLogin from store
   const login = useCallback(() => {
@@ -2086,18 +2089,26 @@ export const HomeScreen: React.FC = () => {
       {/* Playlist Edit Dialog */}
       {(() => {
         const editingPl = playlists.find(p => p.id === editingPlaylistId) || null;
+        const plSearchQ = plSearch.trim().toLowerCase();
         const candidates = editingPl
-          ? [...audioArticles].sort((a, b) => a.title.localeCompare(b.title)).filter(a => !editingPl.articleIds.includes(a.id))
+          ? [...audioArticles]
+              .sort((a, b) => a.title.localeCompare(b.title))
+              .filter(a => !editingPl.articleIds.includes(a.id))
+              .filter(a => !plSearchQ || a.title.toLowerCase().includes(plSearchQ))
           : [];
         const handleAddClick = (e: React.MouseEvent, aid: string) => {
           if (!editingPl) return;
           if (e.shiftKey && addAnchorId) {
-            // 범위는 정렬된 전체 목록 기준 — anchor가 방금 추가돼 후보 목록에서 빠져도 유효
-            const sortedAll = [...audioArticles].sort((a, b) => a.title.localeCompare(b.title)).map(a => a.id);
-            const i1 = sortedAll.indexOf(addAnchorId);
-            const i2 = sortedAll.indexOf(aid);
+            // 범위 기준 = 현재 검색 필터가 적용된 정렬 목록 — 필터에 안 보이는 항목은 포함 안 함.
+            // anchor는 방금 추가돼 candidates(미포함만)에선 빠지므로, 필터만 적용한 base로 계산.
+            const rangeBase = [...audioArticles]
+              .sort((a, b) => a.title.localeCompare(b.title))
+              .filter(a => !plSearchQ || a.title.toLowerCase().includes(plSearchQ))
+              .map(a => a.id);
+            const i1 = rangeBase.indexOf(addAnchorId);
+            const i2 = rangeBase.indexOf(aid);
             if (i1 !== -1 && i2 !== -1) {
-              const range = sortedAll
+              const range = rangeBase
                 .slice(Math.min(i1, i2), Math.max(i1, i2) + 1)
                 .filter(x => !editingPl.articleIds.includes(x));
               updatePlaylist(editingPl.id, { articleIds: [...editingPl.articleIds, ...range] });
@@ -2195,7 +2206,43 @@ export const HomeScreen: React.FC = () => {
                       전체 추가
                     </Button>
                   </Box>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    autoComplete="off"
+                    placeholder="제목으로 검색…"
+                    value={plSearch}
+                    onChange={(e) => setPlSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Enter: 결과가 1개면 바로 추가하고 검색어 비움 (연속 추가)
+                      if (e.key === 'Enter' && candidates.length === 1) {
+                        updatePlaylist(editingPl.id, { articleIds: [...editingPl.articleIds, candidates[0].id] });
+                        setAddAnchorId(null);
+                        setPlSearch('');
+                      }
+                    }}
+                    sx={{ mb: 1 }}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon sx={{ fontSize: 18 }} />
+                        </InputAdornment>
+                      ),
+                      endAdornment: plSearch ? (
+                        <InputAdornment position="end">
+                          <IconButton size="small" onClick={() => setPlSearch('')} edge="end" title="지우기">
+                            <CloseIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </InputAdornment>
+                      ) : null,
+                    }}
+                  />
                   <List dense disablePadding sx={{ maxHeight: 300, overflowY: 'auto', userSelect: 'none' }}>
+                    {plSearch && candidates.length === 0 && (
+                      <Typography variant="body2" color="text.secondary" sx={{ py: 1, px: 1 }}>
+                        "{plSearch}" 검색 결과 없음
+                      </Typography>
+                    )}
                     {candidates.map(a => (
                       <ListItem key={a.id} disablePadding>
                         <ListItemButton
