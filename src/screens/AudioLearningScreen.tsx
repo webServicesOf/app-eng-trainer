@@ -1209,19 +1209,18 @@ const AudioLearningScreen: React.FC = () => {
             >
               {isBlindMode ? <VisibilityOff /> : <Visibility />}
             </IconButton>
-            <Tooltip title={recordMode ? '녹음 비교 끄기 (m)' : '녹음 비교 (m)'}>
-              <IconButton
-                onClick={() => setRecordMode(m => !m)}
-                color={recordMode ? 'error' : 'default'}
-                size="small"
-              >
-                <Mic />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="타임스탬프 편집 (현재 문장)">
-              <IconButton onClick={handleGoEdit} size="small" color="secondary">
-                <EditIcon />
-              </IconButton>
+            {/* 문장 저장 = 상시 노출. 누적 모드엔 개념 없음 → disabled(span)로 공간 유지 → 레이아웃 안 밀림 */}
+            <Tooltip title={isCumulative ? '문장 저장 (단일 모드 전용)' : (isSaved ? '문장 저장 해제 (s)' : '문장 저장 (s)')}>
+              <span>
+                <IconButton
+                  onClick={handleSaveSentence}
+                  color={isSaved ? 'primary' : 'default'}
+                  size="small"
+                  disabled={isCumulative}
+                >
+                  {isSaved ? <Bookmark /> : <BookmarkBorder />}
+                </IconButton>
+              </span>
             </Tooltip>
             <Tooltip title="설정">
               <IconButton onClick={(e) => setSettingsAnchorEl(e.currentTarget)} size="small">
@@ -1246,20 +1245,21 @@ const AudioLearningScreen: React.FC = () => {
         </Box>
 
         <Stack spacing={0.5} sx={{ flex: 1, minWidth: 0 }}>
-          <Stack direction="row" alignItems="center" spacing={{ xs: 0.5, sm: 1 }} flexWrap="wrap">
-            <Typography
-              variant="h6"
-              component="h1"
-              sx={{
-                fontSize: { xs: '0.9rem', sm: '1.1rem' },
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                flex: { xs: '1 1 100%', sm: '0 1 auto' },
-              }}
-            >
-              {article.title}
-            </Typography>
+          {/* 1행: 제목 (truncate). 2행: 정보 칩 — 제목 길이와 무관하게 위치 고정 */}
+          <Typography
+            variant="h6"
+            component="h1"
+            sx={{
+              fontSize: { xs: '0.9rem', sm: '1.1rem' },
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              minWidth: 0,
+            }}
+          >
+            {article.title}
+          </Typography>
+          <Stack direction="row" alignItems="center" spacing={{ xs: 0.5, sm: 1 }} flexWrap="wrap" useFlexGap>
             <Chip
               label={`${currentIndex}/${article.sentences.length}`}
               color="primary"
@@ -1324,19 +1324,22 @@ const AudioLearningScreen: React.FC = () => {
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
         <Box sx={{ p: 2, width: 260 }}>
-          {/* 이동된 토글: 문장 저장 · YouTube 앱 열기 · 음성 모드 전환 · 패드 숨기기 · (단일)숨김 · 숨김 문장 보기 */}
-          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center" sx={{ mb: 1.5 }}>
-            {!isCumulative && (
-              <Tooltip title={isSaved ? '문장 저장 해제 (s)' : '문장 저장 (s)'}>
-                <IconButton
-                  onClick={handleSaveSentence}
-                  color={isSaved ? 'primary' : 'default'}
-                  size="small"
-                >
-                  {isSaved ? <Bookmark /> : <BookmarkBorder />}
-                </IconButton>
-              </Tooltip>
-            )}
+          {/* 이동된 토글: 녹음 비교 · 타임스탬프 편집 · YouTube 앱 열기 · 음성 모드 전환 · 패드 숨기기 · (단일)숨김 · 숨김 문장 보기 */}
+          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center" flexWrap="wrap" sx={{ mb: 1.5 }}>
+            <Tooltip title={recordMode ? '녹음 비교 끄기 (m)' : '녹음 비교 (m)'}>
+              <IconButton
+                onClick={() => setRecordMode(m => !m)}
+                color={recordMode ? 'error' : 'default'}
+                size="small"
+              >
+                <Mic />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="타임스탬프 편집 (현재 문장)">
+              <IconButton onClick={handleGoEdit} size="small" color="secondary">
+                <EditIcon />
+              </IconButton>
+            </Tooltip>
             {videoId && (
               <Tooltip title="YouTube 앱에서 열기">
                 <IconButton onClick={handleOpenYouTubeApp} size="small" color="success">
@@ -1717,10 +1720,11 @@ const AudioLearningScreen: React.FC = () => {
               color="primary"
               disabled={currentIndex <= 1 && !playlistNav?.prevId}
               sx={{
-                backgroundColor: currentIndex <= 1 && !playlistNav?.prevId ? theme.palette.grey[300] : theme.palette.primary.light,
+                // 첫 문장이면 회색(플레이리스트 이전 영상 이동은 클릭으로 여전히 동작 → disabled 아님)
+                backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.light,
                 color: theme.palette.common.white,
                 '&:hover': {
-                  backgroundColor: currentIndex <= 1 && !playlistNav?.prevId ? theme.palette.grey[300] : theme.palette.primary.main,
+                  backgroundColor: currentIndex <= 1 ? theme.palette.grey[300] : theme.palette.primary.main,
                 },
               }}
             >
@@ -1746,12 +1750,13 @@ const AudioLearningScreen: React.FC = () => {
               color="primary"
               disabled={currentIndex >= article.sentences.length && !playlistNav?.nextId}
               sx={{
+                // 마지막 문장이면 회색(플레이리스트 다음 영상 이동은 클릭으로 여전히 동작 → disabled 아님)
                 backgroundColor:
-                  currentIndex >= article.sentences.length && !playlistNav?.nextId ? theme.palette.grey[300] : theme.palette.primary.light,
+                  currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.light,
                 color: theme.palette.common.white,
                 '&:hover': {
                   backgroundColor:
-                    currentIndex >= article.sentences.length && !playlistNav?.nextId ? theme.palette.grey[300] : theme.palette.primary.main,
+                    currentIndex >= article.sentences.length ? theme.palette.grey[300] : theme.palette.primary.main,
                 },
               }}
             >
