@@ -158,10 +158,18 @@ export class LocalDatabaseService {
 
   // ── MP3 Blob Cache (IndexedDB) ────────────────────────
 
-  /** Get cached MP3 blob by article ID */
+  /** Get cached MP3 blob by article ID.
+   *  Stale placeholder(~4KB) 캐시는 miss 취급 — 삭제 후 undefined 반환해
+   *  호출처가 Drive 실파일을 재다운·재캐시하도록 자가치유. (mp3 백필 이전 브라우저 캐시 대응)
+   *  20KB 기준: placeholder ~4KB, 실파일은 짧은 쇼츠도 64kbps에서 그 이상. */
   async getCachedMp3(id: string): Promise<Blob | undefined> {
     const record = await db.audioArticles.get(id);
-    return record?.audioBlob;
+    const blob = record?.audioBlob;
+    if (blob && blob.size <= 20_000) {
+      await db.audioArticles.delete(id);
+      return undefined;
+    }
+    return blob;
   }
 
   /** Cache MP3 blob in IndexedDB */
@@ -182,6 +190,15 @@ export class LocalDatabaseService {
   /** Remove cached MP3 blob */
   async removeCachedMp3(id: string): Promise<void> {
     await db.audioArticles.delete(id);
+  }
+
+  /** 오디오 캐시 전체 비우기 — audioArticles는 순수 mp3 blob 캐시라 안전.
+   *  메타데이터(articles 테이블·Drive SSOT)는 안 건드림. 다음 재생 시 Drive서 재다운.
+   *  Returns 삭제된 캐시 개수. */
+  async clearMp3Cache(): Promise<number> {
+    const n = await db.audioArticles.count();
+    await db.audioArticles.clear();
+    return n;
   }
 
   // SubDeck methods

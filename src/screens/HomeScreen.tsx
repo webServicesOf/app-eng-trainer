@@ -349,6 +349,12 @@ export const HomeScreen: React.FC = () => {
     // meta.json → 표현 태그 (없거나 깨져도 업로드는 진행)
     const exprs = files.meta ? await parseMetaFile(files.meta) : undefined;
 
+    // placeholder(~4KB) mp3 업로드 차단 — Drive는 SSOT라 placeholder가 올라가면
+    // 모든 클라이언트에서 무음 재생. yt2mp3 실파일(짧은 쇼츠도 64kbps에서 20KB↑) 확인.
+    if (mp3.size <= 20_000) {
+      throw new Error(`"${title}" mp3가 placeholder 크기(${mp3.size}B ≤ 20KB)입니다. yt2mp3 실파일인지 확인 후 다시 업로드하세요.`);
+    }
+
     const audioBlob = new Blob([await mp3.arrayBuffer()], { type: 'audio/mpeg' });
 
     let audioArticle: AudioArticle = {
@@ -1997,6 +2003,21 @@ export const HomeScreen: React.FC = () => {
             size="small"
             helperText="내 Drive에 생성될 동기화 폴더"
           />
+          <Button
+            variant="outlined"
+            size="small"
+            color="warning"
+            sx={{ mt: 1 }}
+            onClick={async () => {
+              const n = await localDB.clearMp3Cache();
+              alert(`오디오 캐시 ${n}개 비웠습니다. 다음 재생 시 Drive에서 실파일을 다시 받습니다.`);
+            }}
+          >
+            오디오 캐시 비우기
+          </Button>
+          <Typography variant="caption" display="block" sx={{ color: 'text.secondary', mt: 0.5 }}>
+            Drive mp3를 교체했는데 옛 오디오(placeholder)가 계속 재생될 때 사용. 학습 데이터는 안 지워짐.
+          </Typography>
 
           {/* Google Sheets */}
           <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>Google Sheets</Typography>
