@@ -55,13 +55,24 @@ import {
 } from '../utils/indexRemap';
 import { localDB } from '../services/database';
 import { useAppStore } from '../stores/appStore';
-import { GoogleDriveService } from '../services/googleDriveService';
+import { GoogleDriveService, DriveAuthError } from '../services/googleDriveService';
 
 const TimestampEditorScreen: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const theme = useTheme();
-  const { createSubDeck, loadSubDecks, loadAudioArticles, accessToken, audioArticles } = useAppStore();
+  const { createSubDeck, loadSubDecks, loadAudioArticles, accessToken, audioArticles, setNeedsReAuth } = useAppStore();
+
+  // Drive 저장 오류 처리: 토큰 만료면 전역 재로그인 다이얼로그(ReAuthDialog) 띄움, 그 외는 alert.
+  // editor는 store 우회하고 drive를 직접 호출해 store의 needsReAuth 트리거를 안 타므로 여기서 명시.
+  const handleDriveError = useCallback((error: unknown) => {
+    console.error('Save failed:', error);
+    if (error instanceof DriveAuthError) {
+      setNeedsReAuth(true); // → 재로그인 후 다시 저장하면 반영
+    } else {
+      alert('저장 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }, [setNeedsReAuth]);
 
   const waveformRef = useRef<HTMLDivElement>(null);
   const shiftKeyRef = useRef(false);
@@ -943,7 +954,7 @@ const TimestampEditorScreen: React.FC = () => {
   const handleSave = useCallback(async () => {
     if (!article) return;
     if (!accessToken) {
-      alert('로그인 필요 — 토큰이 만료되었습니다. 홈에서 재로그인 후 다시 시도하세요.');
+      setNeedsReAuth(true); // 토큰 없음 → 재로그인 다이얼로그
       return;
     }
     setIsSaving(true);
@@ -963,12 +974,11 @@ const TimestampEditorScreen: React.FC = () => {
       }
       await loadAudioArticles();
     } catch (error) {
-      console.error('Save failed:', error);
-      alert('저장 실패: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      handleDriveError(error);
     } finally {
       setIsSaving(false);
     }
-  }, [article, sentences, accessToken, loadAudioArticles, id]);
+  }, [article, sentences, accessToken, loadAudioArticles, id, setNeedsReAuth, handleDriveError]);
   handleSaveRef.current = handleSave;
 
   const toggleSplitMarker = useCallback((idx: number) => {
@@ -981,31 +991,36 @@ const TimestampEditorScreen: React.FC = () => {
   }, []);
 
   const handleSaveSplits = useCallback(async () => {
-    if (!article || splitMarkers.size === 0 || !accessToken) return;
+    if (!article || splitMarkers.size === 0) return;
+    if (!accessToken) { setNeedsReAuth(true); return; }
 
     const sortedMarkers = Array.from(splitMarkers).sort((a, b) => a - b);
 
-    // Save splitPoints into the article (Drive SSOT)
-    const updated: FullArticle = { ...article, sentences, splitPoints: sortedMarkers };
-    const drive = new GoogleDriveService(accessToken);
-    await drive.saveArticle(updated);
-    setArticle(updated);
+    try {
+      // Save splitPoints into the article (Drive SSOT)
+      const updated: FullArticle = { ...article, sentences, splitPoints: sortedMarkers };
+      const drive = new GoogleDriveService(accessToken);
+      await drive.saveArticle(updated);
+      setArticle(updated);
 
-    // Recreate SubDecks from splitPoints
-    await localDB.deleteSubDecksByParent(article.id);
-    let prev = 0;
-    for (let i = 0; i <= sortedMarkers.length; i++) {
-      const end = i < sortedMarkers.length ? sortedMarkers[i] + 1 : sentences.length;
-      await createSubDeck(article.id, `${article.title} Part ${i + 1}`, prev, end);
-      prev = end;
+      // Recreate SubDecks from splitPoints
+      await localDB.deleteSubDecksByParent(article.id);
+      let prev = 0;
+      for (let i = 0; i <= sortedMarkers.length; i++) {
+        const end = i < sortedMarkers.length ? sortedMarkers[i] + 1 : sentences.length;
+        await createSubDeck(article.id, `${article.title} Part ${i + 1}`, prev, end);
+        prev = end;
+      }
+      // Sync appStore so HomeScreen sees fresh splitPoints + SubDecks
+      await loadAudioArticles();
+      await loadSubDecks();
+      setHasChanges(false);
+      setSavedSplitMarkers(new Set(splitMarkers));
+      alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
+    } catch (error) {
+      handleDriveError(error);
     }
-    // Sync appStore so HomeScreen sees fresh splitPoints + SubDecks
-    await loadAudioArticles();
-    await loadSubDecks();
-    setHasChanges(false);
-    setSavedSplitMarkers(new Set(splitMarkers));
-    alert(`${sortedMarkers.length + 1}개 파트로 분할 완료`);
-  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, loadAudioArticles, accessToken]);
+  }, [article, sentences, splitMarkers, createSubDeck, loadSubDecks, loadAudioArticles, accessToken, setNeedsReAuth, handleDriveError]);
 
   const handleHideSentence = useCallback(() => {
     pushUndo();
