@@ -672,6 +672,15 @@ const TimestampEditorScreen: React.FC = () => {
         splitPoints: prev.splitPoints
           ? Array.from(remapMarkerSet(new Set(prev.splitPoints), op)).sort((a, b) => a - b)
           : prev.splitPoints,
+        // 표현 태그도 문장 이동 따라감 (sent_idx는 0-based, op.pos와 동일 base).
+        // 앵커 없는(구 제목매칭 sent_idx=null) 태그는 보존, 문장 삭제 시 해당 태그만 제거.
+        exprs: prev.exprs
+          ? prev.exprs.flatMap(e => {
+              if (e.sent_idx == null) return [e];
+              const ni = mapSentenceRef(op, e.sent_idx);
+              return ni == null ? [] : [{ ...e, sent_idx: ni }];
+            })
+          : prev.exprs,
         lastIndex: last,
       };
     });
