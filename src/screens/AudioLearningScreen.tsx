@@ -45,6 +45,7 @@ import {
   VisibilityOff,
   VisibilityOffOutlined,
   Save,
+  Delete,
   FormatListBulleted,
   RestoreFromTrash,
   YouTube as YouTubeIcon,
@@ -83,7 +84,7 @@ const AudioLearningScreen: React.FC = () => {
     resetLearningState,
   } = useLearningStore();
 
-  const { dirtyAudioIds, saveDirtyArticles, cycleReviewInterval } = useAppStore();
+  const { dirtyAudioIds, saveDirtyArticles, cycleReviewInterval, deleteAudioArticle, pendingDeleteIds } = useAppStore();
 
   // ── Playlist context (?playlist=<id>) — 이전/다음 영상 내비게이션 ──
   const playlists = useAppStore((s) => s.playlists);
@@ -139,6 +140,17 @@ const AudioLearningScreen: React.FC = () => {
   }, [playlistId, id, setPlaylistCursor]);
 
   const [article, setArticle] = useState<FullArticle | null>(null);
+  // 표현 태그 → 문장별 그룹 (sent_idx = 0-based 원본 문장 index; 앱 sentence.index = pos+1)
+  const exprsBySentIdx = React.useMemo(() => {
+    const m = new Map<number, { surface: string; tier?: number }[]>();
+    for (const e of article?.exprs ?? []) {
+      if (e.sent_idx == null) continue;
+      const arr = m.get(e.sent_idx);
+      if (arr) arr.push({ surface: e.surface, tier: e.tier });
+      else m.set(e.sent_idx, [{ surface: e.surface, tier: e.tier }]);
+    }
+    return m;
+  }, [article]);
   // Phase 4 exit resume guards
   const plainOpenRef = useRef(false);             // remap 모드(저장덱/subdeck) 제외 — 실제 index 공간일 때만 true
   const resumeRestoredRef = useRef(false);        // lastIndex 복원 1회 가드
@@ -1164,6 +1176,7 @@ const AudioLearningScreen: React.FC = () => {
   const hiddenCount = hiddenSentences.length;
   const progress = (currentIndex / article.sentences.length) * 100;
   const settingsOpen = Boolean(settingsAnchorEl);
+  const pendingDelete = !!id && pendingDeleteIds.has(id);
 
   return (
     <Box
@@ -1232,10 +1245,14 @@ const AudioLearningScreen: React.FC = () => {
             <Tooltip title="변경사항 저장">
               <span>
                 <IconButton
-                  onClick={() => saveDirtyArticles()}
+                  onClick={async () => {
+                    const wasDeleting = !!id && pendingDeleteIds.has(id);
+                    await saveDirtyArticles();
+                    if (wasDeleting) navigate('/');   // 삭제되면 이 화면은 유효하지 않음
+                  }}
                   color="warning"
                   size="small"
-                  disabled={!id || !dirtyAudioIds.has(id)}
+                  disabled={!id || (!dirtyAudioIds.has(id) && !pendingDeleteIds.has(id))}
                 >
                   <Save />
                 </IconButton>
@@ -1378,6 +1395,18 @@ const AudioLearningScreen: React.FC = () => {
               </IconButton>
             </Tooltip>
           </Stack>
+
+          <Button
+            fullWidth
+            size="small"
+            variant={pendingDelete ? 'contained' : 'outlined'}
+            color="error"
+            startIcon={<Delete />}
+            onClick={() => { if (id) deleteAudioArticle(id); }}
+            sx={{ mb: 1.5, borderTop: '1px solid', borderTopColor: 'divider', borderRadius: 1 }}
+          >
+            {pendingDelete ? '삭제 예정 · 저장(💾) 눌러 반영' : '이 덱 삭제'}
+          </Button>
 
           <Typography variant="caption" color="text.secondary">재생속도: {playbackRate.toFixed(1)}x</Typography>
           <Slider
@@ -1593,6 +1622,22 @@ const AudioLearningScreen: React.FC = () => {
                           </span>
                         );
                       })}
+                      {(() => {
+                        const tags = exprsBySentIdx.get(sent.index - 1);
+                        return tags && tags.length ? (
+                          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.25 }}>
+                            {tags.map((t, ti) => (
+                              <Chip
+                                key={ti}
+                                label={`#${t.surface}`}
+                                size="small"
+                                variant="outlined"
+                                sx={{ height: 18, fontSize: '0.68rem', opacity: 0.7, '& .MuiChip-label': { px: 0.75 } }}
+                              />
+                            ))}
+                          </Box>
+                        ) : null;
+                      })()}
                     </Box>
                   );
                 })
