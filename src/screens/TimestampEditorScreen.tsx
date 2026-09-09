@@ -672,6 +672,17 @@ const TimestampEditorScreen: React.FC = () => {
         splitPoints: prev.splitPoints
           ? Array.from(remapMarkerSet(new Set(prev.splitPoints), op)).sort((a, b) => a - b)
           : prev.splitPoints,
+        // 표현 태그도 문장 이동 따라감. sent_idx=0-based인데 mapSentenceRef는 1-based
+        // 참조 기대(내부 idx-1) → +1/-1 shim으로 base 맞춤.
+        // 앵커 없는(구 제목매칭 sent_idx=null) 태그는 보존, 문장 삭제 시 해당 태그만 제거.
+        // split 문장의 태그는 여기선 일괄 앞쪽 절반에 남고, handleSplitSentenceAt이 반쪽별 재분배.
+        exprs: prev.exprs
+          ? prev.exprs.flatMap(e => {
+              if (e.sent_idx == null) return [e];
+              const ni = mapSentenceRef(op, e.sent_idx + 1);
+              return ni == null ? [] : [{ ...e, sent_idx: ni - 1 }];
+            })
+          : prev.exprs,
         lastIndex: last,
       };
     });
@@ -923,6 +934,21 @@ const TimestampEditorScreen: React.FC = () => {
     const reindexed = updated.map((s, i) => ({ ...s, index: i + 1 }));
     setSentences(reindexed);
     applyStructuralRemap({ type: 'split', pos: selectedIndex });
+    // 분할 문장에 달렸던 태그를 반쪽 텍스트로 재분배: surface가 뒤 절반에만 있으면 2번째 문장으로.
+    // (위치 remap만으론 다 앞절반에 뭉침 — surface 문자열로 어느 반쪽인지 판단)
+    const nz = (s: string) => s.toLowerCase().replace(/[‘’']/g, "'");
+    const h1 = nz(first.text), h2 = nz(second.text);
+    setArticle(prev => {
+      if (!prev?.exprs) return prev;
+      return {
+        ...prev,
+        exprs: prev.exprs.map(e => {
+          if (e.sent_idx !== selectedIndex) return e;   // remap 후 분할 문장 태그는 selectedIndex(앞절반)
+          const s = nz(e.surface);
+          return (h2.includes(s) && !h1.includes(s)) ? { ...e, sent_idx: selectedIndex + 1 } : e;
+        }),
+      };
+    });
     setHasChanges(true);
     setSplitMode(false);
   }, [sentences, selectedIndex, pushUndo, applyStructuralRemap]);
