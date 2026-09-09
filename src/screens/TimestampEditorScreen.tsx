@@ -2148,6 +2148,35 @@ const TimestampEditorScreen: React.FC = () => {
         </Paper>
 
         {/* Sentence List */}
+        {(article?.exprs ?? []).some(e => e.sent_idx == null) && (
+          <Box sx={{ mb: 1, p: 1, border: '1px dashed', borderColor: 'divider', borderRadius: 1 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+              미배치 태그 — 드래그해 문장에 배정 · ×삭제
+            </Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+              {(article?.exprs ?? [])
+                .map((ex, idx) => ({ ex, idx }))
+                .filter(({ ex }) => ex.sent_idx == null)
+                .map(({ ex, idx }) => (
+                  <Chip
+                    key={idx}
+                    size="small"
+                    label={`#${ex.surface}`}
+                    color="warning"
+                    variant="outlined"
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/x-expr-idx', String(idx));
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDelete={() => deleteTag(idx)}
+                    title="드래그해 문장에 배정 · ×로 삭제"
+                    sx={{ cursor: 'grab', fontSize: '0.68rem', height: 20, '& .MuiChip-label': { px: 0.75 } }}
+                  />
+                ))}
+            </Box>
+          </Box>
+        )}
         <Paper elevation={3} sx={{ flex: 1, overflow: 'auto', maxHeight: { xs: 300, md: 'calc(100vh - 380px)' } }}>
           <List dense disablePadding>
             {sentences.map((s, i) => (
