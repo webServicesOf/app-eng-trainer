@@ -1247,13 +1247,15 @@ const AudioLearningScreen: React.FC = () => {
                 <IconButton
                   onClick={async () => {
                     const wasDeleting = !!id && pendingDeleteIds.has(id);
-                    const nextId = playlistNav?.nextId;   // 삭제 전 캡처
-                    await saveDirtyArticles();
-                    // 실제 삭제됐을 때만(토큰만료 등 실패 시 store에 남음 → 재로그인 다이얼로그가 처리)
-                    if (wasDeleting && id && !useAppStore.getState().audioArticles.some(a => a.id === id)) {
-                      if (nextId) goToPlaylistArticle(nextId, true);   // 플레이리스트 다음 영상으로
+                    if (wasDeleting) {
+                      // 화면을 먼저 뜬다 — saveDirtyArticles가 store에서 현재 영상 제거하면
+                      // 이 화면의 "not-found→홈" 효과가 다음영상 이동과 race. 먼저 떠나 회피.
+                      const nextId = playlistNav?.nextId;
+                      if (nextId) goToPlaylistArticle(nextId, true);   // 플레이리스트 다음 영상
                       else navigate('/');
                     }
+                    // store action이라 언마운트돼도 완주 — Drive 삭제 + pendingDeleteIds 클리어
+                    await saveDirtyArticles();
                   }}
                   color="warning"
                   size="small"
