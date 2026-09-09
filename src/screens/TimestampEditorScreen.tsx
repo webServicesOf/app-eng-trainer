@@ -2148,7 +2148,7 @@ const TimestampEditorScreen: React.FC = () => {
         </Paper>
 
         {/* Sentence List */}
-        {(article?.exprs ?? []).some(e => e.sent_idx == null) && (
+        {(article?.exprs ?? []).some(e => e.sent_idx == null || e.sent_idx < 0 || e.sent_idx >= sentences.length) && (
           <Box sx={{ mb: 1, p: 1, border: '1px dashed', borderColor: 'divider', borderRadius: 1 }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
               미배치 태그 — 드래그해 문장에 배정 · ×삭제
@@ -2156,7 +2156,8 @@ const TimestampEditorScreen: React.FC = () => {
             <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
               {(article?.exprs ?? [])
                 .map((ex, idx) => ({ ex, idx }))
-                .filter(({ ex }) => ex.sent_idx == null)
+                // sent_idx 없거나(null) 문장 범위 밖(구 슬라이스 잔재) = 유효 앵커 아님 → 트레이
+                .filter(({ ex }) => ex.sent_idx == null || ex.sent_idx < 0 || ex.sent_idx >= sentences.length)
                 .map(({ ex, idx }) => (
                   <Chip
                     key={idx}
