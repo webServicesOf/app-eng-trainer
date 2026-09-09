@@ -44,7 +44,7 @@ import {
 import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js';
-import { FullArticle, SentenceEntry, WordTimestamp, VariantKey, SubDeckReview } from '../types';
+import { FullArticle, SentenceEntry, WordTimestamp, VariantKey, SubDeckReview, ExprTag } from '../types';
 import { hasVariants, foldActive, applyVariant } from '../utils/variants';
 import {
   StructuralOp,
@@ -686,6 +686,31 @@ const TimestampEditorScreen: React.FC = () => {
         lastIndex: last,
       };
     });
+  }, []);
+
+  // 표현 태그: 문장별 그룹(원본 배열 index 동반) — 편집화면서 드래그 재배치/삭제용
+  const exprsBySentIdx = React.useMemo(() => {
+    const m = new Map<number, { ex: ExprTag; idx: number }[]>();
+    (article?.exprs ?? []).forEach((ex, idx) => {
+      if (ex.sent_idx == null) return;
+      const arr = m.get(ex.sent_idx);
+      if (arr) arr.push({ ex, idx }); else m.set(ex.sent_idx, [{ ex, idx }]);
+    });
+    return m;
+  }, [article]);
+
+  // 태그를 다른 문장으로 재배치 (드롭 대상 문장의 0-based index = sent_idx)
+  const reassignTag = useCallback((exprIdx: number, targetSentIdx: number) => {
+    setArticle(prev => {
+      if (!prev?.exprs || prev.exprs[exprIdx]?.sent_idx === targetSentIdx) return prev;
+      return { ...prev, exprs: prev.exprs.map((e, i) => i === exprIdx ? { ...e, sent_idx: targetSentIdx } : e) };
+    });
+    setHasChanges(true);
+  }, []);
+
+  const deleteTag = useCallback((exprIdx: number) => {
+    setArticle(prev => prev?.exprs ? { ...prev, exprs: prev.exprs.filter((_, i) => i !== exprIdx) } : prev);
+    setHasChanges(true);
   }, []);
 
   const endCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -2127,7 +2152,16 @@ const TimestampEditorScreen: React.FC = () => {
           <List dense disablePadding>
             {sentences.map((s, i) => (
               <React.Fragment key={s.index}>
-                <ListItem disablePadding ref={i === selectedIndex ? selectedItemRef : undefined}>
+                <ListItem
+                  disablePadding
+                  ref={i === selectedIndex ? selectedItemRef : undefined}
+                  onDragOver={(e) => { if (e.dataTransfer.types.includes('application/x-expr-idx')) e.preventDefault(); }}
+                  onDrop={(e) => {
+                    const raw = e.dataTransfer.getData('application/x-expr-idx');
+                    if (raw !== '') { e.preventDefault(); reassignTag(Number(raw), i); }
+                  }}
+                  sx={{ display: 'block' }}
+                >
                   <ListItemButton
                     selected={i === selectedIndex}
                     onClick={(e) => {
@@ -2166,6 +2200,25 @@ const TimestampEditorScreen: React.FC = () => {
                       <span style={{ marginLeft: 'auto', fontSize: '0.8rem' }} title="단어 타이밍 없음">⚠️</span>
                     )}
                   </ListItemButton>
+                  {(exprsBySentIdx.get(i)?.length ?? 0) > 0 && (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, px: 2, pb: 0.5 }}>
+                      {exprsBySentIdx.get(i)!.map(({ ex, idx }) => (
+                        <Chip
+                          key={idx}
+                          size="small"
+                          label={`#${ex.surface}`}
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.setData('application/x-expr-idx', String(idx));
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDelete={() => deleteTag(idx)}
+                          title="드래그해 다른 문장으로 이동 · ×로 삭제"
+                          sx={{ cursor: 'grab', fontSize: '0.68rem', height: 20, '& .MuiChip-label': { px: 0.75 } }}
+                        />
+                      ))}
+                    </Box>
+                  )}
                 </ListItem>
                 {splitMarkers.has(i) && (
                   <Box
