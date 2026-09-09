@@ -1247,8 +1247,13 @@ const AudioLearningScreen: React.FC = () => {
                 <IconButton
                   onClick={async () => {
                     const wasDeleting = !!id && pendingDeleteIds.has(id);
+                    const nextId = playlistNav?.nextId;   // 삭제 전 캡처
                     await saveDirtyArticles();
-                    if (wasDeleting) navigate('/');   // 삭제되면 이 화면은 유효하지 않음
+                    // 실제 삭제됐을 때만(토큰만료 등 실패 시 store에 남음 → 재로그인 다이얼로그가 처리)
+                    if (wasDeleting && id && !useAppStore.getState().audioArticles.some(a => a.id === id)) {
+                      if (nextId) goToPlaylistArticle(nextId, true);   // 플레이리스트 다음 영상으로
+                      else navigate('/');
+                    }
                   }}
                   color="warning"
                   size="small"
