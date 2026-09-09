@@ -627,11 +627,15 @@ export class GoogleDriveService {
     const jsonFile = remoteFiles.find((f) => f.name === `${id}.json`);
     const mp3File = remoteFiles.find((f) => f.name === `${id}.mp3`);
 
+    // 토큰 만료(DriveAuthError)는 rethrow — 삼키면 로컬만 삭제되고 Drive엔 남음(재로그인 유도).
+    // 파일이 이미 없는(404 등) 경우만 무시.
     if (jsonFile) {
-      try { await this.deleteDriveFile(jsonFile.id); } catch { /* ignore */ }
+      try { await this.deleteDriveFile(jsonFile.id); }
+      catch (e) { if (e instanceof DriveAuthError) throw e; }
     }
     if (mp3File) {
-      try { await this.deleteDriveFile(mp3File.id); } catch { /* ignore */ }
+      try { await this.deleteDriveFile(mp3File.id); }
+      catch (e) { if (e instanceof DriveAuthError) throw e; }
     }
   }
 }

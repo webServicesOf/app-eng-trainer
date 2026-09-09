@@ -1247,8 +1247,15 @@ const AudioLearningScreen: React.FC = () => {
                 <IconButton
                   onClick={async () => {
                     const wasDeleting = !!id && pendingDeleteIds.has(id);
+                    if (wasDeleting) {
+                      // 화면을 먼저 뜬다 — saveDirtyArticles가 store에서 현재 영상 제거하면
+                      // 이 화면의 "not-found→홈" 효과가 다음영상 이동과 race. 먼저 떠나 회피.
+                      const nextId = playlistNav?.nextId;
+                      if (nextId) goToPlaylistArticle(nextId, true);   // 플레이리스트 다음 영상
+                      else navigate('/');
+                    }
+                    // store action이라 언마운트돼도 완주 — Drive 삭제 + pendingDeleteIds 클리어
                     await saveDirtyArticles();
-                    if (wasDeleting) navigate('/');   // 삭제되면 이 화면은 유효하지 않음
                   }}
                   color="warning"
                   size="small"
