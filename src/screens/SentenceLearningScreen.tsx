@@ -524,7 +524,6 @@ const SentenceLearningScreen: React.FC = () => {
                     }}
                     style={{
                       color: index === highlightIndex ? '#000000' : (isBlindMode ? 'transparent' : '#cccccc'),
-                      marginRight: '0.3em',
                       transition: 'color 0.2s',
                       display: 'inline',
                       cursor: 'pointer',
@@ -532,6 +531,7 @@ const SentenceLearningScreen: React.FC = () => {
                     }}
                   >
                     {word}
+                    {' ' /* 실제 공백 = 줄바꿈 지점 */}
                   </span>
                 ))
               ) : (
