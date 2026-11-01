@@ -53,6 +53,8 @@ import {
   Edit as EditIcon,
   Settings,
   Gamepad,
+  Fullscreen,
+  FullscreenExit,
   Mic,
   SkipPrevious,
   SkipNext,
@@ -169,6 +171,7 @@ const AudioLearningScreen: React.FC = () => {
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false); // 미저장 콘텐츠 편집 두고 홈 이동 경고
   const [isYouTubeMode, setIsYouTubeMode] = useState(false); // 영상 아티클 진입 시 loadArticle에서 pref 적용
   const [showControls, setShowControls] = usePersistedState<boolean>('showControls', true);
+  const [minimalMode, setMinimalMode] = usePersistedState<boolean>('minimalMode', false); // 메인 박스만 표시. 패드 설정(showControls)은 보존
   const [windowStepMode, setWindowStepMode] = usePersistedState<boolean>('windowStepMode', false);
   const [settingsAnchorEl, setSettingsAnchorEl] = useState<HTMLElement | null>(null);
   const [ytReadyTick, setYtReadyTick] = useState(0); // 진입 자동재생용 onReady 신호 (StrictMode 재마운트마다 증가)
@@ -1190,7 +1193,7 @@ const AudioLearningScreen: React.FC = () => {
       }}
     >
       {/* Top Bar: home + title + chips + toggle buttons */}
-      <Paper
+      {!minimalMode && <Paper
         elevation={2}
         sx={{
           p: { xs: 1, sm: 1.5 },
@@ -1318,7 +1321,7 @@ const AudioLearningScreen: React.FC = () => {
             )}
           </Stack>
         </Stack>
-      </Paper>
+      </Paper>}
 
       {/* 표현 태그 전체 리스트 Popover */}
       <Popover
@@ -1348,7 +1351,7 @@ const AudioLearningScreen: React.FC = () => {
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
         <Box sx={{ p: 2, width: 260 }}>
-          {/* 이동된 토글: 녹음 비교 · 타임스탬프 편집 · YouTube 앱 열기 · 음성 모드 전환 · 패드 숨기기 · (단일)숨김 · 숨김 문장 보기 */}
+          {/* 이동된 토글: 녹음 비교 · 타임스탬프 편집 · YouTube 앱 열기 · 음성 모드 전환 · 패드 숨기기 · 최소 노출 · (단일)숨김 · 숨김 문장 보기 */}
           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="center" flexWrap="wrap" sx={{ mb: 1.5 }}>
             <Tooltip title={recordMode ? '녹음 비교 끄기 (m)' : '녹음 비교 (m)'}>
               <IconButton
@@ -1381,6 +1384,12 @@ const AudioLearningScreen: React.FC = () => {
             <Tooltip title={showControls ? '패드 숨기기' : '패드 보이기'}>
               <IconButton onClick={() => setShowControls(prev => !prev)} size="small" color={showControls ? 'primary' : 'default'}>
                 <Gamepad />
+              </IconButton>
+            </Tooltip>
+            {/* 앵커(설정 버튼)가 헤더와 함께 사라지므로 팝오버도 같이 닫음 */}
+            <Tooltip title="최소 노출 (메인 박스만 표시)">
+              <IconButton onClick={() => { setSettingsAnchorEl(null); setMinimalMode(true); }} size="small">
+                <Fullscreen />
               </IconButton>
             </Tooltip>
             {!isCumulative && (
@@ -1468,9 +1477,11 @@ const AudioLearningScreen: React.FC = () => {
       </Popover>
 
       {/* Progress Bar — 클릭해서 해당 위치 문장으로 이동 */}
-      <Box onClick={handleProgressJump} sx={{ cursor: 'pointer', py: 0.5, mb: 1, flexShrink: 0 }}>
-        <LinearProgress variant="determinate" value={progress} sx={{ height: 6, borderRadius: 3 }} />
-      </Box>
+      {!minimalMode && (
+        <Box onClick={handleProgressJump} sx={{ cursor: 'pointer', py: 0.5, mb: 1, flexShrink: 0 }}>
+          <LinearProgress variant="determinate" value={progress} sx={{ height: 6, borderRadius: 3 }} />
+        </Box>
+      )}
 
       {/* Main Content Area */}
       <Card
@@ -1483,8 +1494,29 @@ const AudioLearningScreen: React.FC = () => {
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
+          position: 'relative',
         }}
       >
+        {/* 최소 노출 해제 — 유일하게 남는 버튼. zIndex 2 = 영상 클릭 오버레이(1) 위 */}
+        {minimalMode && (
+          <Tooltip title="최소 노출 해제">
+            <IconButton
+              onClick={() => setMinimalMode(false)}
+              size="small"
+              color="primary"
+              sx={{
+                position: 'absolute',
+                top: 4,
+                right: 4,
+                zIndex: 2,
+                backgroundColor: 'rgba(255,255,255,0.7)',
+                '&:hover': { backgroundColor: theme.palette.common.white },
+              }}
+            >
+              <FullscreenExit />
+            </IconButton>
+          </Tooltip>
+        )}
         <CardContent sx={{ p: { xs: 1.5, sm: 2, md: 3 }, flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {videoId && (
             <Box sx={{
@@ -1605,7 +1637,6 @@ const AudioLearningScreen: React.FC = () => {
                             onClick={(e) => handleWordTap(sentIdx, wIdx, e)}
                             style={{
                               color,
-                              marginRight: '0.3em',
                               transition: 'color 0.15s',
                               display: 'inline',
                               fontWeight: isActiveWord ? 700 : 400,
@@ -1626,6 +1657,7 @@ const AudioLearningScreen: React.FC = () => {
                                   </span>
                                 ))
                               : word}
+                            {' ' /* 실제 공백 = 줄바꿈 지점. 없으면 문장 전체가 한 덩어리 → 글자 단위로 잘림 */}
                           </span>
                         );
                       })}
@@ -1728,7 +1760,7 @@ const AudioLearningScreen: React.FC = () => {
       </Dialog>
 
       {/* Bottom: 3x3 Navigation Pad (hideable) */}
-      {showControls && (
+      {showControls && !minimalMode && (
         <Paper
           elevation={3}
           sx={{

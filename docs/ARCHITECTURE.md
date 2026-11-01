@@ -160,6 +160,8 @@ Primary study screen (`/learn-audio/:id`). Plays MP3 (WebAudio) or YouTube IFram
 
 **Blind mode**: 재생 중 active word 외 모든 단어 blur.
 
+**최소 노출**: 설정 팝오버에서 켬 → 헤더·진행바·패드 숨김, 메인 박스 우측 상단 해제 버튼만 남음. 키보드 단축키 유지, 녹음 패널은 켜져 있으면 유지. `minimalMode` pref로 저장, 패드 표시 설정(`showControls`)과 별개.
+
 **Hide toggle**: `hidden: true/false` on sentence → dirty → Save로 Drive 반영. Hidden list dialog로 view/unhide.
 
 **MediaSession** (`services/mediaSession.ts`): 잠금화면 미디어키 → 키보드와 동일 shared handler. 무음 `<audio>` 앵커로 세션 점유(Web Audio 단독은 잠금 위젯 안 뜸). ⚠️ Android 실측 미완.
